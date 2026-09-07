@@ -1,0 +1,84 @@
+{
+  "_comment": "Konfigurasi pipeline Sentinel-1. Edit sesuai kebutuhan lalu restart server.",
+  "_coord_source": "Koordinat diverifikasi dari Biro Pemerintahan Pemprov DKI Jakarta + OpenStreetMap",
+  "area": {
+    "_DEPRECATED": "DEPRECATED sejak migrasi 012 — tidak dibaca kode mana pun. Lokasi/AOI dipilih dari tabel regions_of_interest lewat UI atau API /api/regions.",
+    "selected_regions": [
+      "dki_jakarta_test_1_6"
+    ],
+    "bbox_wkt": "POLYGON((106.7472 -5.9874, 106.9734 -5.9874, 106.9734 -5.6024, 106.7472 -5.6024, 106.7472 -5.9874))",
+    "time_mode": "relative",
+    "days_back": 30,
+    "date_from": "2024-01-01",
+    "date_to": "2024-12-31",
+    "orbit_ascending": true,
+    "orbit_descending": false
+  },
+  "area_presets": {
+    "_DEPRECATED": "DEPRECATED sejak migrasi 012 — tidak dibaca kode mana pun. Lokasi/AOI dipilih dari tabel regions_of_interest lewat UI atau API /api/regions.",
+    "_comment": "Copy salah satu preset ke bagian 'area' di atas sesuai kebutuhan.",
+    "quick_test": {
+      "selected_regions": [
+        "dki_jakarta_test_1_6"
+      ],
+      "bbox_wkt": "POLYGON((106.7472 -5.9874, 106.9734 -5.9874, 106.9734 -5.6024, 106.7472 -5.6024, 106.7472 -5.9874))",
+      "days_back": 30,
+      "max_scenes_per_run": 3,
+      "_note": "AOI kecil, window pendek — untuk smoke test pipeline sebelum full run."
+    },
+    "full_jakarta": {
+      "selected_regions": [
+        "dki_jakarta"
+      ],
+      "bbox_wkt": "POLYGON((106.2948 -6.3724, 106.9734 -6.3724, 106.9734 -5.6024, 106.2948 -5.6024, 106.2948 -6.3724))",
+      "days_back": 90,
+      "max_scenes_per_run": 20,
+      "_note": "Seluruh DKI Jakarta, window 90 hari — untuk run produksi."
+    }
+  },
+  "pipeline": {
+    "lee_window_size": 7,
+    "lee_looks": 1,
+    "cog_compression": "LZW",
+    "cog_blocksize": 512,
+    "cog_convert_db": false,
+    "retry_count": 3,
+    "retry_delay_sec": 30,
+    "check_interval_hours": 12,
+    "max_scenes_per_run": 3,
+    "output_dir": "processed",
+    "raw_dir": "recovered_temp",
+    "keep_raw": true,
+    "keep_bronze": true,
+    "keep_silver": true
+  },
+  "quality": {
+    "min_quality_score": 60,
+    "max_nodata_percent": 30,
+    "cloud_threshold_percent": 20,
+    "alert_on_fail": true,
+    "alert_on_arrival": true,
+    "alert_on_error": true
+  },
+  "storage_presets": {
+    "_comment": "Copy salah satu preset ke bagian 'pipeline' di atas sesuai kebutuhan.",
+    "minimal": {
+      "keep_raw": true,
+      "keep_bronze": false,
+      "keep_silver": false,
+      "_note": "keep_raw wajib true — dipakai module1b_calibrate (SNAP GPT) sebelum crop. Bronze/silver dihapus setelah tiap tahap selesai."
+    },
+    "standard": {
+      "keep_raw": true,
+      "keep_bronze": true,
+      "keep_silver": true,
+      "_note": "Simpan semua tier termasuk ZIP asli untuk audit/reproduksi."
+    },
+    "full": {
+      "keep_raw": true,
+      "keep_bronze": true,
+      "keep_silver": true,
+      "_note": "Sama seperti standard — RAW sekarang selalu wajib disimpan karena dipakai tahap kalibrasi."
+    }
+  }
+}

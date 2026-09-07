@@ -1,0 +1,1023 @@
+PS C:\Users\BigData\Downloads\sentinel1> tree /f /a
+Folder PATH listing
+Volume serial number is 000000ED 328C:C00E
+C:.
+|   .env.example
+|   .gitignore
+|   README.md
+|   requirements.txt
+|   
++---analytics
+|       .gitkeep
+|       
++---api
+|   |   main.py
+|   |   schemas.py
+|   |   __init__.py
+|   |   
+|   \---routes
+|           health.py
+|           lineage.py
+|           products.py
+|           quality.py
+|           scenes.py
+|           __init__.py
+|           
++---checkpoints_pipeline
+|       .gitkeep
+|       
++---config
+|       config.json
+|       config_locations.json
+|       docker-compose.yml
+|       
++---database
+|   |   indexes.sql
+|   |   schema.sql
+|   |   seed_data.sql
+|   |   
+|   \---migrations
+|           001_initial_schema.sql
+|           002_add_timescaledb.sql
+|           
++---docs
+|       DATABASE_DESIGN.md
+|       
++---etl
+|       config.py
+|       database_client.py
+|       lineage_tracker.py
+|       metadata_manager.py
+|       module1_download.py
+|       module2_crop.py
+|       module3_lee_filter.py
+|       module4_cog_export.py
+|       module5_orchestrator.py
+|       module6_analytics.py
+|       seed_data.py
+|       __init__.py
+|       
++---logs_pipeline
+|       .gitkeep
+|       
++---processed
+|   +---bronze
+|   |       .gitkeep
+|   |       
+|   +---gold
+|   |       .gitkeep
+|   |       
+|   \---silver
+|           .gitkeep
+|           
++---recovered_temp
+|       .gitkeep
+|       
+\---tests
+        conftest.py
+        
+PS C:\Users\BigData\Downloads\sentinel1> tree /f /a
+Folder PATH listing
+Volume serial number is 000000A1 328C:C00E
+C:.
+|   .env
+|   .env.example
+|   .gitignore
+|   docker-compose.yml
+|   README.md
+|   requirements.txt
+|   
++---analytics
+|       .gitkeep
+|       
++---api
+|   |   main.py
+|   |   schemas.py
+|   |   __init__.py
+|   |   
+|   \---routes
+|           health.py
+|           lineage.py
+|           products.py
+|           quality.py
+|           scenes.py
+|           __init__.py
+|           
++---checkpoints_pipeline
+|       .gitkeep
+|       
++---config
+|       config.json
+|       config_locations.json
+|       docker-compose.yml
+|       
++---database
+|   |   indexes.sql
+|   |   schema.sql
+|   |   seed_data.sql
+|   |   
+|   \---migrations
+|           001_initial_schema.sql
+|           002_add_timescaledb.sql
+|           
++---docs
+|       API_DOCUMENTATION.md
+|       DATABASE_DESIGN.md
+|       DATA_DICTIONARY.md
+|       DEPLOYMENT.md
+|       SETUP_GUIDE.md
+|       THESIS_CHAPTERS.md
+|       TROUBLESHOOTING.md
+|       
++---etl
+|       config.py
+|       database_client.py
+|       lineage_tracker.py
+|       metadata_manager.py
+|       module1_download.py
+|       module2_crop.py
+|       module3_lee_filter.py
+|       module4_cog_export.py
+|       module5_orchestrator.py
+|       module6_analytics.py
+|       seed_data.py
+|       __init__.py
+|       
++---logs_pipeline
+|       .gitkeep
+|       
++---processed
+|   +---bronze
+|   |       .gitkeep
+|   |       
+|   +---gold
+|   |       .gitkeep
+|   |       
+|   \---silver
+|           .gitkeep
+|           
++---recovered_temp
+|       .gitkeep
+|       
+\---tests
+        conftest.py
+        test_api_endpoints.py
+        test_database.py
+        test_etl_pipeline.py
+        test_quality_metrics.py
+        
+PS C:\Users\BigData\Downloads\sentinel1> ^C
+PS C:\Users\BigData\Downloads\sentinel1> psql --version
+psql (PostgreSQL) 13.23
+PS C:\Users\BigData\Downloads\sentinel1> python --version
+Python 3.10.11
+PS C:\Users\BigData\Downloads\sentinel1> python -m venv venv
+PS C:\Users\BigData\Downloads\sentinel1> venv\Scripts\activate
+(venv) PS C:\Users\BigData\Downloads\sentinel1> Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+(venv) PS C:\Users\BigData\Downloads\sentinel1> pip install -r requirements.txt
+Collecting SQLAlchemy==2.0.36
+  Downloading SQLAlchemy-2.0.36-cp310-cp310-win_amd64.whl (2.1 MB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 2.1/2.1 MB 10.2 MB/s eta 0:00:00
+Collecting psycopg2-binary==2.9.10
+  Downloading psycopg2_binary-2.9.10-cp310-cp310-win_amd64.whl (1.2 MB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1.2/1.2 MB 14.8 MB/s eta 0:00:00
+Collecting GeoAlchemy2==0.15.2
+  Downloading GeoAlchemy2-0.15.2-py3-none-any.whl (73 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 73.6/73.6 kB ? eta 0:00:00
+Collecting alembic==1.14.0
+  Downloading alembic-1.14.0-py3-none-any.whl (233 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 233.5/233.5 kB 14.0 MB/s eta 0:00:00
+Collecting fastapi==0.115.5
+  Downloading fastapi-0.115.5-py3-none-any.whl (94 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 94.9/94.9 kB ? eta 0:00:00
+Collecting uvicorn[standard]==0.32.1
+  Downloading uvicorn-0.32.1-py3-none-any.whl (63 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 63.8/63.8 kB 3.6 MB/s eta 0:00:00
+Collecting pydantic==2.10.3
+  Downloading pydantic-2.10.3-py3-none-any.whl (456 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 457.0/457.0 kB 14.4 MB/s eta 0:00:00
+Collecting python-multipart==0.0.18
+  Downloading python_multipart-0.0.18-py3-none-any.whl (24 kB)
+Collecting rasterio==1.4.3
+  Downloading rasterio-1.4.3-cp310-cp310-win_amd64.whl (25.4 MB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 25.4/25.4 MB 9.5 MB/s eta 0:00:00
+Collecting shapely==2.0.6
+  Downloading shapely-2.0.6-cp310-cp310-win_amd64.whl (1.4 MB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1.4/1.4 MB 15.2 MB/s eta 0:00:00
+Collecting pyproj==3.7.0
+  Downloading pyproj-3.7.0-cp310-cp310-win_amd64.whl (6.2 MB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 6.2/6.2 MB 11.7 MB/s eta 0:00:00
+Collecting numpy==2.1.3
+  Downloading numpy-2.1.3-cp310-cp310-win_amd64.whl (12.9 MB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 12.9/12.9 MB 18.7 MB/s eta 0:00:00
+Collecting xarray==2024.11.0
+  Downloading xarray-2024.11.0-py3-none-any.whl (1.2 MB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1.2/1.2 MB 19.4 MB/s eta 0:00:00
+Collecting dask[array]==2024.11.2
+  Downloading dask-2024.11.2-py3-none-any.whl (1.3 MB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1.3/1.3 MB 16.1 MB/s eta 0:00:00
+Collecting pandas==2.2.3
+  Downloading pandas-2.2.3-cp310-cp310-win_amd64.whl (11.6 MB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 11.6/11.6 MB 16.8 MB/s eta 0:00:00
+Collecting matplotlib==3.9.3
+  Downloading matplotlib-3.9.3-cp310-cp310-win_amd64.whl (7.8 MB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 7.8/7.8 MB 17.2 MB/s eta 0:00:00
+Collecting seaborn==0.13.2
+  Downloading seaborn-0.13.2-py3-none-any.whl (294 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 294.9/294.9 kB 19.0 MB/s eta 0:00:00
+Collecting python-dotenv==1.0.1
+  Downloading python_dotenv-1.0.1-py3-none-any.whl (19 kB)
+Collecting tenacity==9.0.0
+  Downloading tenacity-9.0.0-py3-none-any.whl (28 kB)
+Collecting pytest==8.3.4
+  Downloading pytest-8.3.4-py3-none-any.whl (343 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 343.1/343.1 kB ? eta 0:00:00
+Collecting pytest-asyncio==0.24.0
+  Downloading pytest_asyncio-0.24.0-py3-none-any.whl (18 kB)
+Collecting pytest-cov==6.0.0
+  Downloading pytest_cov-6.0.0-py3-none-any.whl (22 kB)
+Collecting httpx==0.28.1
+  Downloading httpx-0.28.1-py3-none-any.whl (73 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 73.5/73.5 kB 4.0 MB/s eta 0:00:00
+Collecting greenlet!=0.4.17
+  Downloading greenlet-3.5.3-cp310-cp310-win_amd64.whl (238 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 238.7/238.7 kB 15.2 MB/s eta 0:00:00
+Collecting typing-extensions>=4.6.0
+  Downloading typing_extensions-4.15.0-py3-none-any.whl (44 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 44.6/44.6 kB 2.3 MB/s eta 0:00:00
+Collecting packaging
+  Downloading packaging-26.2-py3-none-any.whl (100 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 100.2/100.2 kB 5.6 MB/s eta 0:00:00
+Collecting Mako
+  Downloading mako-1.3.12-py3-none-any.whl (78 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 78.5/78.5 kB ? eta 0:00:00
+Collecting starlette<0.42.0,>=0.40.0
+  Downloading starlette-0.41.3-py3-none-any.whl (73 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 73.2/73.2 kB ? eta 0:00:00
+Collecting h11>=0.8
+  Downloading h11-0.16.0-py3-none-any.whl (37 kB)
+Collecting click>=7.0
+  Downloading click-8.4.2-py3-none-any.whl (119 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 119.2/119.2 kB ? eta 0:00:00
+Collecting watchfiles>=0.13
+  Downloading watchfiles-1.2.0-cp310-cp310-win_amd64.whl (290 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 290.1/290.1 kB 17.5 MB/s eta 0:00:00
+Collecting websockets>=10.4
+  Downloading websockets-16.0-cp310-cp310-win_amd64.whl (178 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 178.7/178.7 kB ? eta 0:00:00
+Collecting httptools>=0.6.3
+  Downloading httptools-0.8.0-cp310-cp310-win_amd64.whl (90 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 90.5/90.5 kB ? eta 0:00:00
+Collecting pyyaml>=5.1
+  Downloading pyyaml-6.0.3-cp310-cp310-win_amd64.whl (158 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 158.6/158.6 kB ? eta 0:00:00
+Collecting colorama>=0.4
+  Downloading colorama-0.4.6-py2.py3-none-any.whl (25 kB)
+Collecting pydantic-core==2.27.1
+  Downloading pydantic_core-2.27.1-cp310-none-win_amd64.whl (2.0 MB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 2.0/2.0 MB 17.9 MB/s eta 0:00:00
+Collecting annotated-types>=0.6.0
+  Downloading annotated_types-0.7.0-py3-none-any.whl (13 kB)
+Collecting affine
+  Downloading affine-2.4.0-py3-none-any.whl (15 kB)
+Collecting cligj>=0.5
+  Downloading cligj-0.7.2-py3-none-any.whl (7.1 kB)
+Collecting click-plugins
+  Downloading click_plugins-1.1.1.2-py2.py3-none-any.whl (11 kB)
+Collecting certifi
+  Downloading certifi-2026.6.17-py3-none-any.whl (133 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 133.3/133.3 kB ? eta 0:00:00
+Collecting attrs
+  Downloading attrs-26.1.0-py3-none-any.whl (67 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 67.5/67.5 kB ? eta 0:00:00
+Collecting pyparsing
+  Downloading pyparsing-3.3.2-py3-none-any.whl (122 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 122.8/122.8 kB 7.0 MB/s eta 0:00:00
+Collecting cloudpickle>=3.0.0
+  Downloading cloudpickle-3.1.2-py3-none-any.whl (22 kB)
+Collecting partd>=1.4.0
+  Downloading partd-1.4.2-py3-none-any.whl (18 kB)
+Collecting toolz>=0.10.0
+  Downloading toolz-1.1.0-py3-none-any.whl (58 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 58.1/58.1 kB ? eta 0:00:00
+Collecting fsspec>=2021.09.0
+  Downloading fsspec-2026.6.0-py3-none-any.whl (203 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 203.9/203.9 kB 12.1 MB/s eta 0:00:00
+Collecting importlib-metadata>=4.13.0
+  Downloading importlib_metadata-9.0.0-py3-none-any.whl (27 kB)
+Collecting tzdata>=2022.7
+  Downloading tzdata-2026.2-py2.py3-none-any.whl (349 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 349.3/349.3 kB 10.9 MB/s eta 0:00:00
+Collecting pytz>=2020.1
+  Downloading pytz-2026.2-py2.py3-none-any.whl (510 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 510.1/510.1 kB 31.2 MB/s eta 0:00:00
+Collecting python-dateutil>=2.8.2
+  Downloading python_dateutil-2.9.0.post0-py2.py3-none-any.whl (229 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 229.9/229.9 kB 13.7 MB/s eta 0:00:00
+Collecting cycler>=0.10
+  Downloading cycler-0.12.1-py3-none-any.whl (8.3 kB)
+Collecting kiwisolver>=1.3.1
+  Downloading kiwisolver-1.5.0-cp310-cp310-win_amd64.whl (73 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 73.4/73.4 kB ? eta 0:00:00
+Collecting pillow>=8
+  Downloading pillow-12.2.0-cp310-cp310-win_amd64.whl (7.1 MB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 7.1/7.1 MB 18.1 MB/s eta 0:00:00
+Collecting fonttools>=4.22.0
+  Downloading fonttools-4.63.0-cp310-cp310-win_amd64.whl (1.6 MB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1.6/1.6 MB 9.1 MB/s eta 0:00:00
+Collecting contourpy>=1.0.1
+  Downloading contourpy-1.3.2-cp310-cp310-win_amd64.whl (221 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 221.2/221.2 kB ? eta 0:00:00
+Collecting exceptiongroup>=1.0.0rc8
+  Downloading exceptiongroup-1.3.1-py3-none-any.whl (16 kB)
+Collecting iniconfig
+  Downloading iniconfig-2.3.0-py3-none-any.whl (7.5 kB)
+Collecting pluggy<2,>=1.5
+  Downloading pluggy-1.6.0-py3-none-any.whl (20 kB)
+Collecting tomli>=1
+  Downloading tomli-2.4.1-py3-none-any.whl (14 kB)
+Collecting coverage[toml]>=7.5
+  Downloading coverage-7.14.3-cp310-cp310-win_amd64.whl (223 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 223.1/223.1 kB 13.3 MB/s eta 0:00:00
+Collecting anyio
+  Downloading anyio-4.14.1-py3-none-any.whl (124 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 124.9/124.9 kB 7.2 MB/s eta 0:00:00
+Collecting idna
+  Downloading idna-3.18-py3-none-any.whl (65 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 65.5/65.5 kB ? eta 0:00:00
+Collecting httpcore==1.*
+  Downloading httpcore-1.0.9-py3-none-any.whl (78 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 78.8/78.8 kB ? eta 0:00:00
+Collecting zipp>=3.20
+  Downloading zipp-4.1.0-py3-none-any.whl (10 kB)
+Collecting locket
+  Downloading locket-1.0.0-py2.py3-none-any.whl (4.4 kB)
+Collecting six>=1.5
+  Downloading six-1.17.0-py2.py3-none-any.whl (11 kB)
+Collecting MarkupSafe>=0.9.2
+  Downloading markupsafe-3.0.3-cp310-cp310-win_amd64.whl (15 kB)
+Installing collected packages: pytz, zipp, websockets, tzdata, typing-extensions, toolz, tomli, tenacity, six, pyyaml, python-multipart, python-dotenv, pyparsing, psycopg2-binary, pluggy, pillow, packaging, numpy, MarkupSafe, locket, kiwisolver, iniconfig, idna, httptools, h11, greenlet, fsspec, fonttools, cycler, coverage, colorama, cloudpickle, certifi, attrs, annotated-types, affine, SQLAlchemy, shapely, python-dateutil, pyproj, pydantic-core, partd, Mako, importlib-metadata, httpcore, exceptiongroup, contourpy, click, uvicorn, pytest, pydantic, pandas, matplotlib, GeoAlchemy2, dask, cligj, click-plugins, anyio, alembic, xarray, watchfiles, starlette, seaborn, rasterio, pytest-cov, pytest-asyncio, httpx, fastapi
+Successfully installed GeoAlchemy2-0.15.2 Mako-1.3.12 MarkupSafe-3.0.3 SQLAlchemy-2.0.36 affine-2.4.0 alembic-1.14.0 annotated-types-0.7.0 anyio-4.14.1 attrs-26.1.0 certifi-2026.6.17 click-8.4.2 click-plugins-1.1.1.2 cligj-0.7.2 cloudpickle-3.1.2 colorama-0.4.6 contourpy-1.3.2 coverage-7.14.3 cycler-0.12.1 dask-2024.11.2 exceptiongroup-1.3.1 fastapi-0.115.5 fonttools-4.63.0 fsspec-2026.6.0 greenlet-3.5.3 h11-0.16.0 httpcore-1.0.9 httptools-0.8.0 httpx-0.28.1 idna-3.18 importlib-metadata-9.0.0 iniconfig-2.3.0 kiwisolver-1.5.0 locket-1.0.0 matplotlib-3.9.3 numpy-2.1.3 packaging-26.2 pandas-2.2.3 partd-1.4.2 pillow-12.2.0 pluggy-1.6.0 psycopg2-binary-2.9.10 pydantic-2.10.3 pydantic-core-2.27.1 pyparsing-3.3.2 pyproj-3.7.0 pytest-8.3.4 pytest-asyncio-0.24.0 pytest-cov-6.0.0 python-dateutil-2.9.0.post0 python-dotenv-1.0.1 python-multipart-0.0.18 pytz-2026.2 pyyaml-6.0.3 rasterio-1.4.3 seaborn-0.13.2 shapely-2.0.6 six-1.17.0 starlette-0.41.3 tenacity-9.0.0 tomli-2.4.1 toolz-1.1.0 typing-extensions-4.15.0 tzdata-2026.2 uvicorn-0.32.1 watchfiles-1.2.0 websockets-16.0 xarray-2024.11.0 zipp-4.1.0
+
+[notice] A new release of pip is available: 23.0.1 -> 26.1.2
+[notice] To update, run: python.exe -m pip install --upgrade pip
+(venv) PS C:\Users\BigData\Downloads\sentinel1> pip install psycopg2-binary
+Requirement already satisfied: psycopg2-binary in c:\users\bigdata\downloads\sentinel1\venv\lib\site-packages (2.9.10)
+
+[notice] A new release of pip is available: 23.0.1 -> 26.1.2
+[notice] To update, run: python.exe -m pip install --upgrade pip
+(venv) PS C:\Users\BigData\Downloads\sentinel1> createdb -U postgres sentinel1_flood
+Password: 
+
+(venv) PS C:\Users\BigData\Downloads\sentinel1> psql -U postgres -d sentinel1_flood -c "CREATE EXTENSION IF NOT EXISTS postgis;"
+Password for user postgres: 
+
+ERROR:  could not open extension control file "C:/Program Files/PostgreSQL/13/share/extension/postgis.control": No such file or directory
+(venv) PS C:\Users\BigData\Downloads\sentinel1> psql -U postgres -d sentinel1_flood -c "CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\";"
+Password for user postgres: 
+
+ERROR:  unterminated quoted identifier at or near "" uuid-ossp\;"
+LINE 1: CREATE EXTENSION IF NOT EXISTS " uuid-ossp\;
+                                       ^
+(venv) PS C:\Users\BigData\Downloads\sentinel1> dir "C:\Program Files\PostgreSQL\13\share\extension\postgis*"
+(venv) PS C:\Users\BigData\Downloads\sentinel1> psql -U postgres -d sentinel1_flood -c "CREATE EXTENSION IF NOT EXISTS postgis;"
+Password for user postgres: 
+
+CREATE EXTENSION
+(venv) PS C:\Users\BigData\Downloads\sentinel1> psql -U postgres -d sentinel1_flood -c "CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\";"
+Password for user postgres: 
+
+ERROR:  unterminated quoted identifier at or near "" uuid-ossp\;"
+LINE 1: CREATE EXTENSION IF NOT EXISTS " uuid-ossp\;
+                                       ^
+(venv) PS C:\Users\BigData\Downloads\sentinel1> psql -U postgres -d sentinel1_flood
+Password for user postgres: 
+
+psql (13.23)
+WARNING: Console code page (437) differs from Windows code page (1252)
+         8-bit characters might not work correctly. See psql reference
+         page "Notes for Windows users" for details.
+Type "help" for help.
+
+sentinel1_flood=# psql -U postgres -d sentinel1_flood
+sentinel1_flood-# CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+ERROR:  syntax error at or near "psql"
+LINE 1: psql -U postgres -d sentinel1_flood
+        ^
+sentinel1_flood=# CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+CREATE EXTENSION
+sentinel1_flood=# quit
+(venv) PS C:\Users\BigData\Downloads\sentinel1> psql -U postgres -d sentinel1_flood -c "SELECT PostGIS_version();"
+Password for user postgres: 
+
+            postgis_version                                                                                                                                      
+---------------------------------------
+ 3.6 USE_GEOS=1 USE_PROJ=1 USE_STATS=1
+(1 row)
+
+
+(venv) PS C:\Users\BigData\Downloads\sentinel1> psql -U postgres -d sentinel1_flood -f database/schema.sql
+Password for user postgres: 
+
+psql:database/schema.sql:17: NOTICE:  extension "postgis" already exists, skipping
+CREATE EXTENSION
+psql:database/schema.sql:18: ERROR:  could not open extension control file "C:/Program Files/PostgreSQL/13/share/extension/timescaledb.control": No such file or directory
+psql:database/schema.sql:19: NOTICE:  extension "uuid-ossp" already exists, skipping
+CREATE EXTENSION
+CREATE EXTENSION
+DO
+DO
+DO
+DO
+DO
+DO
+DO
+DO
+CREATE TABLE
+CREATE INDEX
+CREATE INDEX
+CREATE INDEX
+CREATE INDEX
+COMMENT
+COMMENT
+COMMENT
+CREATE TABLE
+CREATE INDEX
+CREATE INDEX
+CREATE INDEX
+COMMENT
+COMMENT
+CREATE TABLE
+CREATE INDEX
+CREATE INDEX
+CREATE INDEX
+CREATE INDEX
+CREATE INDEX
+CREATE INDEX
+COMMENT
+COMMENT
+COMMENT
+psql:database/schema.sql:178: NOTICE:  TimescaleDB not installed - satellite_scenes remains plain PostgreSQL table
+DO
+CREATE TABLE
+CREATE INDEX
+CREATE INDEX
+CREATE INDEX
+CREATE INDEX
+CREATE INDEX
+COMMENT
+COMMENT
+CREATE TABLE
+CREATE INDEX
+CREATE INDEX
+CREATE INDEX
+CREATE INDEX
+CREATE INDEX
+CREATE INDEX
+COMMENT
+COMMENT
+COMMENT
+CREATE TABLE
+CREATE INDEX
+CREATE INDEX
+CREATE INDEX
+CREATE INDEX
+CREATE INDEX
+COMMENT
+COMMENT
+COMMENT
+CREATE TABLE
+CREATE INDEX
+CREATE INDEX
+CREATE INDEX
+CREATE INDEX
+COMMENT
+COMMENT
+CREATE TABLE
+CREATE INDEX
+CREATE INDEX
+CREATE INDEX
+CREATE INDEX
+CREATE INDEX
+COMMENT
+COMMENT
+CREATE TABLE
+CREATE INDEX
+CREATE INDEX
+CREATE INDEX
+CREATE INDEX
+COMMENT
+CREATE TABLE
+CREATE INDEX
+CREATE INDEX
+CREATE INDEX
+CREATE INDEX
+CREATE INDEX
+COMMENT
+psql:database/schema.sql:455: NOTICE:  TimescaleDB not installed - api_access_logs remains plain table
+DO
+CREATE TABLE
+CREATE INDEX
+CREATE INDEX
+CREATE INDEX
+CREATE INDEX
+CREATE INDEX
+COMMENT
+COMMENT
+psql:database/schema.sql:506: NOTICE:  TimescaleDB not installed - alert_events remains plain table
+DO
+CREATE FUNCTION
+psql:database/schema.sql:540: NOTICE:  trigger "trg_regions_of_interest_updated_at" for relation "regions_of_interest" does not exist, skipping
+psql:database/schema.sql:540: NOTICE:  trigger "trg_processing_stages_updated_at" for relation "processing_stages" does not exist, skipping
+psql:database/schema.sql:540: NOTICE:  trigger "trg_satellite_scenes_updated_at" for relation "satellite_scenes" does not exist, skipping
+psql:database/schema.sql:540: NOTICE:  trigger "trg_processing_jobs_updated_at" for relation "processing_jobs" does not exist, skipping
+psql:database/schema.sql:540: NOTICE:  trigger "trg_data_products_updated_at" for relation "data_products" does not exist, skipping
+psql:database/schema.sql:540: NOTICE:  trigger "trg_processing_rules_updated_at" for relation "processing_rules" does not exist, skipping
+psql:database/schema.sql:540: NOTICE:  trigger "trg_dataset_versions_updated_at" for relation "dataset_versions" does not exist, skipping
+DO
+CREATE FUNCTION
+psql:database/schema.sql:551: NOTICE:  trigger "trg_roi_centroid" for relation "regions_of_interest" does not exist, skipping
+DROP TRIGGER
+CREATE TRIGGER
+INSERT 0 6
+INSERT 0 10
+CREATE VIEW
+COMMENT
+CREATE VIEW
+COMMENT
+CREATE TABLE
+INSERT 0 1
+(venv) PS C:\Users\BigData\Downloads\sentinel1> python -m etl.seed_data
+2026-06-29 20:11:31,171 [INFO] etl.database_client: DatabaseClient initialized. Pool size: 5 + 10 overflow
+2026-06-29 20:11:31,171 [INFO] seed_data: ═══ SEED DATA START ═══
+2026-06-29 20:11:31,188 [ERROR] etl.database_client: Session rolled back due to error: (psycopg2.OperationalError) connection to server at "localhost" (::1), port 5432 failed: fe_sendauth: no password supplied
+
+(Background on this error at: https://sqlalche.me/e/20/e3q8)
+2026-06-29 20:11:31,188 [ERROR] seed_data: Seed failed: (psycopg2.OperationalError) connection to server at "localhost" (::1), port 5432 failed: fe_sendauth: no password supplied
+
+(Background on this error at: https://sqlalche.me/e/20/e3q8)
+Traceback (most recent call last):
+  File "C:\Users\BigData\Downloads\sentinel1\venv\lib\site-packages\sqlalchemy\engine\base.py", line 146, in __init__
+    self._dbapi_connection = engine.raw_connection()
+  File "C:\Users\BigData\Downloads\sentinel1\venv\lib\site-packages\sqlalchemy\engine\base.py", line 3302, in raw_connection
+    return self.pool.connect()
+  File "C:\Users\BigData\Downloads\sentinel1\venv\lib\site-packages\sqlalchemy\pool\base.py", line 449, in connect
+    return _ConnectionFairy._checkout(self)
+  File "C:\Users\BigData\Downloads\sentinel1\venv\lib\site-packages\sqlalchemy\pool\base.py", line 1263, in _checkout
+    fairy = _ConnectionRecord.checkout(pool)
+  File "C:\Users\BigData\Downloads\sentinel1\venv\lib\site-packages\sqlalchemy\pool\base.py", line 712, in checkout
+    rec = pool._do_get()
+  File "C:\Users\BigData\Downloads\sentinel1\venv\lib\site-packages\sqlalchemy\pool\impl.py", line 179, in _do_get
+    with util.safe_reraise():
+  File "C:\Users\BigData\Downloads\sentinel1\venv\lib\site-packages\sqlalchemy\util\langhelpers.py", line 146, in __exit__
+    raise exc_value.with_traceback(exc_tb)
+  File "C:\Users\BigData\Downloads\sentinel1\venv\lib\site-packages\sqlalchemy\pool\impl.py", line 177, in _do_get
+    return self._create_connection()
+  File "C:\Users\BigData\Downloads\sentinel1\venv\lib\site-packages\sqlalchemy\pool\base.py", line 390, in _create_connection
+    return _ConnectionRecord(self)
+  File "C:\Users\BigData\Downloads\sentinel1\venv\lib\site-packages\sqlalchemy\pool\base.py", line 674, in __init__
+    self.__connect()
+  File "C:\Users\BigData\Downloads\sentinel1\venv\lib\site-packages\sqlalchemy\pool\base.py", line 900, in __connect
+    with util.safe_reraise():
+  File "C:\Users\BigData\Downloads\sentinel1\venv\lib\site-packages\sqlalchemy\util\langhelpers.py", line 146, in __exit__
+    raise exc_value.with_traceback(exc_tb)
+  File "C:\Users\BigData\Downloads\sentinel1\venv\lib\site-packages\sqlalchemy\pool\base.py", line 896, in __connect
+    self.dbapi_connection = connection = pool._invoke_creator(self)
+  File "C:\Users\BigData\Downloads\sentinel1\venv\lib\site-packages\sqlalchemy\engine\create.py", line 643, in connect
+    return dialect.connect(*cargs, **cparams)
+  File "C:\Users\BigData\Downloads\sentinel1\venv\lib\site-packages\sqlalchemy\engine\default.py", line 621, in connect
+    return self.loaded_dbapi.connect(*cargs, **cparams)
+  File "C:\Users\BigData\Downloads\sentinel1\venv\lib\site-packages\psycopg2\__init__.py", line 122, in connect
+    conn = _connect(dsn, connection_factory=connection_factory, **kwasync)
+psycopg2.OperationalError: connection to server at "localhost" (::1), port 5432 failed: fe_sendauth: no password supplied
+
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "C:\Users\BigData\Downloads\sentinel1\etl\seed_data.py", line 368, in <module>
+    inserted_ids = seed(db)
+  File "C:\Users\BigData\Downloads\sentinel1\etl\seed_data.py", line 84, in seed
+    roi = sess.scalar(
+  File "C:\Users\BigData\Downloads\sentinel1\venv\lib\site-packages\sqlalchemy\orm\session.py", line 2410, in scalar
+    return self._execute_internal(
+  File "C:\Users\BigData\Downloads\sentinel1\venv\lib\site-packages\sqlalchemy\orm\session.py", line 2237, in _execute_internal
+    conn = self._connection_for_bind(bind)
+  File "C:\Users\BigData\Downloads\sentinel1\venv\lib\site-packages\sqlalchemy\orm\session.py", line 2106, in _connection_for_bind
+    return trans._connection_for_bind(engine, execution_options)
+  File "<string>", line 2, in _connection_for_bind
+  File "C:\Users\BigData\Downloads\sentinel1\venv\lib\site-packages\sqlalchemy\orm\state_changes.py", line 139, in _go
+    ret_value = fn(self, *arg, **kw)
+  File "C:\Users\BigData\Downloads\sentinel1\venv\lib\site-packages\sqlalchemy\orm\session.py", line 1189, in _connection_for_bind
+    conn = bind.connect()
+  File "C:\Users\BigData\Downloads\sentinel1\venv\lib\site-packages\sqlalchemy\engine\base.py", line 3278, in connect
+    return self._connection_cls(self)
+  File "C:\Users\BigData\Downloads\sentinel1\venv\lib\site-packages\sqlalchemy\engine\base.py", line 148, in __init__
+    Connection._handle_dbapi_exception_noconnection(
+  File "C:\Users\BigData\Downloads\sentinel1\venv\lib\site-packages\sqlalchemy\engine\base.py", line 2442, in _handle_dbapi_exception_noconnection
+    raise sqlalchemy_exception.with_traceback(exc_info[2]) from e
+  File "C:\Users\BigData\Downloads\sentinel1\venv\lib\site-packages\sqlalchemy\engine\base.py", line 146, in __init__
+    self._dbapi_connection = engine.raw_connection()
+  File "C:\Users\BigData\Downloads\sentinel1\venv\lib\site-packages\sqlalchemy\engine\base.py", line 3302, in raw_connection
+    return self.pool.connect()
+  File "C:\Users\BigData\Downloads\sentinel1\venv\lib\site-packages\sqlalchemy\pool\base.py", line 449, in connect
+    return _ConnectionFairy._checkout(self)
+  File "C:\Users\BigData\Downloads\sentinel1\venv\lib\site-packages\sqlalchemy\pool\base.py", line 1263, in _checkout
+    fairy = _ConnectionRecord.checkout(pool)
+  File "C:\Users\BigData\Downloads\sentinel1\venv\lib\site-packages\sqlalchemy\pool\base.py", line 712, in checkout
+    rec = pool._do_get()
+  File "C:\Users\BigData\Downloads\sentinel1\venv\lib\site-packages\sqlalchemy\pool\impl.py", line 179, in _do_get
+    with util.safe_reraise():
+  File "C:\Users\BigData\Downloads\sentinel1\venv\lib\site-packages\sqlalchemy\util\langhelpers.py", line 146, in __exit__
+    raise exc_value.with_traceback(exc_tb)
+  File "C:\Users\BigData\Downloads\sentinel1\venv\lib\site-packages\sqlalchemy\pool\impl.py", line 177, in _do_get
+    return self._create_connection()
+  File "C:\Users\BigData\Downloads\sentinel1\venv\lib\site-packages\sqlalchemy\pool\base.py", line 390, in _create_connection
+    return _ConnectionRecord(self)
+  File "C:\Users\BigData\Downloads\sentinel1\venv\lib\site-packages\sqlalchemy\pool\base.py", line 674, in __init__
+    self.__connect()
+  File "C:\Users\BigData\Downloads\sentinel1\venv\lib\site-packages\sqlalchemy\pool\base.py", line 900, in __connect
+    with util.safe_reraise():
+  File "C:\Users\BigData\Downloads\sentinel1\venv\lib\site-packages\sqlalchemy\util\langhelpers.py", line 146, in __exit__
+    raise exc_value.with_traceback(exc_tb)
+  File "C:\Users\BigData\Downloads\sentinel1\venv\lib\site-packages\sqlalchemy\pool\base.py", line 896, in __connect
+    self.dbapi_connection = connection = pool._invoke_creator(self)
+  File "C:\Users\BigData\Downloads\sentinel1\venv\lib\site-packages\sqlalchemy\engine\create.py", line 643, in connect
+    return dialect.connect(*cargs, **cparams)
+  File "C:\Users\BigData\Downloads\sentinel1\venv\lib\site-packages\sqlalchemy\engine\default.py", line 621, in connect
+    return self.loaded_dbapi.connect(*cargs, **cparams)
+  File "C:\Users\BigData\Downloads\sentinel1\venv\lib\site-packages\psycopg2\__init__.py", line 122, in connect
+    conn = _connect(dsn, connection_factory=connection_factory, **kwasync)
+sqlalchemy.exc.OperationalError: (psycopg2.OperationalError) connection to server at "localhost" (::1), port 5432 failed: fe_sendauth: no password supplied
+
+(Background on this error at: https://sqlalche.me/e/20/e3q8)
+2026-06-29 20:11:31,191 [INFO] etl.database_client: DatabaseClient disposed. All connections closed.
+(venv) PS C:\Users\BigData\Downloads\sentinel1> python -c "from dotenv import load_dotenv; load_dotenv(); import os; print(os.getenv('DB_PASSWORD'))"
+12345678
+(venv) PS C:\Users\BigData\Downloads\sentinel1> ^C
+(venv) PS C:\Users\BigData\Downloads\sentinel1> psql -U postgres -h localhost -d sentinel1_flood
+Password for user postgres: 
+
+psql (13.23)
+WARNING: Console code page (437) differs from Windows code page (1252)
+         8-bit characters might not work correctly. See psql reference
+         page "Notes for Windows users" for details.
+Type "help" for help.
+
+sentinel1_flood=# quit
+(venv) PS C:\Users\BigData\Downloads\sentinel1> Select-String -Path .\etl\database_client.py -Pattern "create_engine|DB_PASSWORD|DATABASE_URL|load_dotenv|os.getenv|os.environ" -Context 2,2  
+
+  etl\database_client.py:35:    Text,
+  etl\database_client.py:36:    UniqueConstraint,
+> etl\database_client.py:37:    create_engine,
+  etl\database_client.py:38:    event,
+  etl\database_client.py:39:    text,
+  etl\database_client.py:528:    _RETRY_BACKOFF  = 2.0   # seconds, doubles each attempt
+  etl\database_client.py:529:
+> etl\database_client.py:530:    def __init__(self, database_url: str, pool_size: int = 5,
+  etl\database_client.py:531:                 max_overflow: int = 10, echo: bool = False) -> None:
+  etl\database_client.py:532:        """
+  etl\database_client.py:534:
+  etl\database_client.py:535:        Args:
+> etl\database_client.py:536:            database_url : PostgreSQL DSN (postgresql+psycopg2://user:pass@host/db)
+  etl\database_client.py:537:            pool_size    : Persistent connection pool size
+  etl\database_client.py:538:            max_overflow : Additional connections allowed above pool_size
+  etl\database_client.py:539:            echo         : Echo SQL statements to logger (dev only)
+  etl\database_client.py:540:        """
+> etl\database_client.py:541:        self._database_url = database_url
+> etl\database_client.py:542:        self._engine = create_engine(
+> etl\database_client.py:543:            database_url,
+  etl\database_client.py:544:            poolclass=QueuePool,
+  etl\database_client.py:545:            pool_size=pool_size,
+  etl\database_client.py:564:
+  etl\database_client.py:565:        Required env vars:
+> etl\database_client.py:566:            DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD
+  etl\database_client.py:567:        Optional:
+  etl\database_client.py:568:            DB_POOL_SIZE (default 5), DB_MAX_OVERFLOW (default 10), DB_ECHO (default false)
+  etl\database_client.py:569:        """
+> etl\database_client.py:570:        host     = os.getenv("DB_HOST",     "localhost")
+> etl\database_client.py:571:        port     = os.getenv("DB_PORT",     "5432")
+> etl\database_client.py:572:        name     = os.getenv("DB_NAME",     "sentinel1_flood")
+> etl\database_client.py:573:        user     = os.getenv("DB_USER",     "postgres")
+> etl\database_client.py:574:        password = os.getenv("DB_PASSWORD", "")
+> etl\database_client.py:575:        pool     = int(os.getenv("DB_POOL_SIZE",    "5"))
+> etl\database_client.py:576:        overflow = int(os.getenv("DB_MAX_OVERFLOW", "10"))
+> etl\database_client.py:577:        echo     = os.getenv("DB_ECHO", "false").lower() == "true"
+  etl\database_client.py:578:
+  etl\database_client.py:579:        url = f"postgresql+psycopg2://{user}:{password}@{host}:{port}/{name}"
+
+
+(venv) PS C:\Users\BigData\Downloads\sentinel1> 
+
+
+
+
+SAYA MELAKUKAN PERUBAHAN:
+
+
+
+
+
+No	Lokasi	Masalah	Penyebab	Dampak
+1	metadata_manager.py:insert_alert_event() → seed_data.py pemanggilan	AttributeError: ‘str’ object has no attribute ‘value’	seed_data.py mengirim event_type="DATA_ARRIVAL" dan severity="INFO" (string), sedangkan method insert_alert_event() memiliki type hint AlertEventTypeEnum dan AlertSeverityEnum. Di dalam method, logging mengakses severity.value yang gagal karena severity masih string.	Pipeline berhenti saat membuat AlertEvent.
+2	metadata_manager.py:complete_job()	Potensi bug serupa pada status.value jika caller mengirim string.	Method menerima status: JobStatusEnum tetapi tidak memvalidasi/mengonversi input. Jika kelak ada caller yang mengirim string (misal "SUCCESS"), logging status.value akan gagal.	Robustness rendah.
+3	metadata_manager.py:insert_data_product()	Inkonsistensi konversi antara pembuatan objek baru (menggunakan ProductTierEnum(product_tier)) dan query update (menggunakan string product_tier mentah).	Parameter product_tier: str di-pass langsung ke kondisi .where(DataProduct.product_tier == product_tier). Secara fungsional SQLAlchemy masih bisa membandingkan, tetapi tidak konsisten dengan praktik penggunaan Enum di tempat lain.	Maintenance risk.
+4	metadata_manager.py berbagai method	Type hint tidak fleksibel untuk parameter yang seharusnya bisa menerima string atau Enum (contoh: product_tier, storage_location, status, event_type, severity).	Method hanya menerima satu tipe, padahal project lain mungkin mengirim string.	Tidak robust, memaksa caller untuk selalu tahu apakah harus string atau Enum.
+5	seed_data.py	Panggilan ke insert_alert_event menggunakan string untuk event_type dan severity.	Tidak mengimpor Enum terkait, sehingga tidak ada cara memakai Enum.	Error saat runtime.
+6	seed_data.py	Panggilan ke insert_data_product menggunakan string untuk product_tier dan default storage_location.	Bukan bug karena method menerima string, tetapi tidak konsisten dengan best practice.	Kode kurang eksplisit, berpotensi typo.
+7	metadata_manager.py:insert_satellite_scene()	Parameter orbit_direction hanya bertipe str, meskipun kolom database menggunakan Enum.	Tidak ada konversi ke OrbitDirectionEnum. SQLAlchemy bisa menerima string, tetapi tidak konsisten.	Robustness.
+Kesimpulan: Akar masalah adalah tidak adanya lapisan konversi dan validasi di MetadataManager untuk parameter yang terkait Enum. Selain itu, pemanggilan di seed_data.py menggunakan string tanpa impor Enum. Pendekatan terbaik adalah membuat MetadataManager menerima str maupun Enum untuk seluruh parameter tersebut, melakukan konversi di awal method, dan memberikan error yang jelas jika string tidak valid. Dengan demikian, semua caller (termasuk seed_data) dapat menggunakan Enum tanpa khawatir, namun tetap kompatibel dengan string jika diperlukan.
+
+
+
+
+
+
+
+
+LALU HASILNYA MENJADI
+
+
+(venv) PS C:\Users\BigData\Downloads\sentinel1> psql -U postgres -d sentinel1_flood                                                              
+Password for user postgres: 
+
+psql (13.23)
+WARNING: Console code page (437) differs from Windows code page (1252)
+         8-bit characters might not work correctly. See psql reference
+         page "Notes for Windows users" for details.
+Type "help" for help.
+
+sentinel1_flood=# \q
+(venv) PS C:\Users\BigData\Downloads\sentinel1> dropdb -U postgres sentinel1_flood                                                               
+Password: 
+
+(venv) PS C:\Users\BigData\Downloads\sentinel1> createdb -U postgres sentinel1_flood                      
+Password: 
+
+(venv) PS C:\Users\BigData\Downloads\sentinel1> psql -U postgres -d sentinel1_flood -f database/schema.sql                                       
+Password for user postgres: 
+
+CREATE EXTENSION
+psql:database/schema.sql:18: ERROR:  could not open extension control file "C:/Program Files/PostgreSQL/13/share/extension/timescaledb.control": No such file or directory
+CREATE EXTENSION
+CREATE EXTENSION
+DO
+DO
+DO
+DO
+DO
+DO
+DO
+DO
+CREATE TABLE
+CREATE INDEX
+CREATE INDEX
+CREATE INDEX
+CREATE INDEX
+COMMENT
+COMMENT
+COMMENT
+CREATE TABLE
+CREATE INDEX
+CREATE INDEX
+CREATE INDEX
+COMMENT
+COMMENT
+CREATE TABLE
+CREATE INDEX
+CREATE INDEX
+CREATE INDEX
+CREATE INDEX
+CREATE INDEX
+CREATE INDEX
+COMMENT
+COMMENT
+COMMENT
+psql:database/schema.sql:178: NOTICE:  TimescaleDB not installed - satellite_scenes remains plain PostgreSQL table
+DO
+CREATE TABLE
+CREATE INDEX
+CREATE INDEX
+CREATE INDEX
+CREATE INDEX
+CREATE INDEX
+COMMENT
+COMMENT
+CREATE TABLE
+CREATE INDEX
+CREATE INDEX
+CREATE INDEX
+CREATE INDEX
+CREATE INDEX
+CREATE INDEX
+COMMENT
+COMMENT
+COMMENT
+CREATE TABLE
+CREATE INDEX
+CREATE INDEX
+CREATE INDEX
+CREATE INDEX
+CREATE INDEX
+COMMENT
+COMMENT
+COMMENT
+CREATE TABLE
+CREATE INDEX
+CREATE INDEX
+CREATE INDEX
+CREATE INDEX
+COMMENT
+COMMENT
+CREATE TABLE
+CREATE INDEX
+CREATE INDEX
+CREATE INDEX
+CREATE INDEX
+CREATE INDEX
+COMMENT
+COMMENT
+CREATE TABLE
+CREATE INDEX
+CREATE INDEX
+CREATE INDEX
+CREATE INDEX
+COMMENT
+CREATE TABLE
+CREATE INDEX
+CREATE INDEX
+CREATE INDEX
+CREATE INDEX
+CREATE INDEX
+COMMENT
+psql:database/schema.sql:455: NOTICE:  TimescaleDB not installed - api_access_logs remains plain table
+DO
+CREATE TABLE
+CREATE INDEX
+CREATE INDEX
+CREATE INDEX
+CREATE INDEX
+CREATE INDEX
+COMMENT
+COMMENT
+psql:database/schema.sql:506: NOTICE:  TimescaleDB not installed - alert_events remains plain table
+DO
+CREATE FUNCTION
+psql:database/schema.sql:540: NOTICE:  trigger "trg_regions_of_interest_updated_at" for relation "regions_of_interest" does not exist, skipping
+psql:database/schema.sql:540: NOTICE:  trigger "trg_processing_stages_updated_at" for relation "processing_stages" does not exist, skipping
+psql:database/schema.sql:540: NOTICE:  trigger "trg_satellite_scenes_updated_at" for relation "satellite_scenes" does not exist, skipping
+psql:database/schema.sql:540: NOTICE:  trigger "trg_processing_jobs_updated_at" for relation "processing_jobs" does not exist, skipping
+psql:database/schema.sql:540: NOTICE:  trigger "trg_data_products_updated_at" for relation "data_products" does not exist, skipping
+psql:database/schema.sql:540: NOTICE:  trigger "trg_processing_rules_updated_at" for relation "processing_rules" does not exist, skipping
+psql:database/schema.sql:540: NOTICE:  trigger "trg_dataset_versions_updated_at" for relation "dataset_versions" does not exist, skipping
+DO
+CREATE FUNCTION
+psql:database/schema.sql:551: NOTICE:  trigger "trg_roi_centroid" for relation "regions_of_interest" does not exist, skipping
+DROP TRIGGER
+CREATE TRIGGER
+INSERT 0 6
+INSERT 0 10
+CREATE VIEW
+COMMENT
+CREATE VIEW
+COMMENT
+CREATE TABLE
+INSERT 0 1
+(venv) PS C:\Users\BigData\Downloads\sentinel1> python -m etl.seed_data                                                                          
+DB_PASSWORD = '12345678'
+2026-06-29 20:55:09,546 [INFO] etl.database_client: DatabaseClient initialized. Pool size: 5 + 10 overflow
+2026-06-29 20:55:09,546 [INFO] seed_data: ═══ SEED DATA START ═══
+2026-06-29 20:55:09,587 [INFO] seed_data: [SEED] ROI region_id=1
+2026-06-29 20:55:09,611 [INFO] etl.metadata_manager: [SCENE] Registered scene_id=1 pid=S1A_IW_GRDH_1SDV_20240115T225041_20240115T225106_052186_064F3A_B5C2 acq=2024-01-15T22:50:41+00:00
+2026-06-29 20:55:09,611 [INFO] seed_data: [SEED] Scene scene_id=1
+2026-06-29 20:55:09,618 [INFO] etl.metadata_manager: [JOB] Created job_id=1 scene=1 stage=DOWNLOAD attempt=1
+2026-06-29 20:55:09,621 [INFO] etl.metadata_manager: [JOB] job_id=1 → RUNNING
+2026-06-29 20:55:09,626 [INFO] etl.metadata_manager: [PRODUCT] Registered product_id=1 scene=1 band=VV tier=RAW file=S1A_20240115_VV.tif
+2026-06-29 20:55:09,626 [INFO] etl.metadata_manager: [PRODUCT] Registered product_id=2 scene=1 band=VH tier=RAW file=S1A_20240115_VH.tif
+2026-06-29 20:55:09,626 [INFO] etl.metadata_manager: [JOB] job_id=1 → SUCCESS
+2026-06-29 20:55:09,626 [INFO] seed_data: [SEED] DOWNLOAD complete. RAW products: VV=1 VH=2
+2026-06-29 20:55:09,626 [INFO] etl.metadata_manager: [JOB] Created job_id=2 scene=1 stage=CROP attempt=1
+2026-06-29 20:55:09,626 [INFO] etl.metadata_manager: [JOB] job_id=2 → RUNNING
+2026-06-29 20:55:09,635 [INFO] etl.metadata_manager: [PRODUCT] Registered product_id=3 scene=1 band=VV tier=BRONZE file=S1A_20240115_VV_crop.tif
+2026-06-29 20:55:09,636 [INFO] etl.metadata_manager: [PRODUCT] Registered product_id=4 scene=1 band=VH tier=BRONZE file=S1A_20240115_VH_crop.tif
+2026-06-29 20:55:09,638 [INFO] etl.metadata_manager: [JOB] job_id=2 → SUCCESS
+2026-06-29 20:55:09,645 [INFO] etl.lineage_tracker: [LINEAGE] lineage_id=1 parent=1 →[CROP]→ child=3
+2026-06-29 20:55:09,647 [INFO] etl.lineage_tracker: [LINEAGE] lineage_id=2 parent=2 →[CROP]→ child=4
+2026-06-29 20:55:09,647 [INFO] seed_data: [SEED] CROP complete. BRONZE: VV=3 VH=4
+2026-06-29 20:55:09,648 [INFO] etl.metadata_manager: [JOB] Created job_id=3 scene=1 stage=LEE_FILTER attempt=1
+2026-06-29 20:55:09,649 [INFO] etl.metadata_manager: [JOB] job_id=3 → RUNNING
+2026-06-29 20:55:09,651 [INFO] etl.metadata_manager: [PRODUCT] Registered product_id=5 scene=1 band=VV tier=SILVER file=S1A_20240115_VV_lee.tif
+2026-06-29 20:55:09,652 [INFO] etl.metadata_manager: [PRODUCT] Registered product_id=6 scene=1 band=VH tier=SILVER file=S1A_20240115_VH_lee.tif
+2026-06-29 20:55:09,654 [INFO] etl.metadata_manager: [JOB] job_id=3 → SUCCESS
+2026-06-29 20:55:09,655 [INFO] etl.lineage_tracker: [LINEAGE] lineage_id=3 parent=3 →[LEE_FILTER]→ child=5
+2026-06-29 20:55:09,657 [INFO] etl.lineage_tracker: [LINEAGE] lineage_id=4 parent=4 →[LEE_FILTER]→ child=6
+2026-06-29 20:55:09,657 [INFO] seed_data: [SEED] LEE_FILTER complete. SILVER: VV=5 VH=6
+2026-06-29 20:55:09,660 [INFO] etl.metadata_manager: [JOB] Created job_id=4 scene=1 stage=COG_EXPORT attempt=1
+2026-06-29 20:55:09,661 [INFO] etl.metadata_manager: [JOB] job_id=4 → RUNNING
+2026-06-29 20:55:09,663 [INFO] etl.metadata_manager: [PRODUCT] Registered product_id=7 scene=1 band=VV tier=GOLD file=S1A_20240115_VV_cog.tif
+2026-06-29 20:55:09,665 [INFO] etl.metadata_manager: [PRODUCT] Registered product_id=8 scene=1 band=VH tier=GOLD file=S1A_20240115_VH_cog.tif
+2026-06-29 20:55:09,666 [INFO] etl.metadata_manager: [JOB] job_id=4 → SUCCESS
+2026-06-29 20:55:09,667 [INFO] etl.lineage_tracker: [LINEAGE] lineage_id=5 parent=5 →[COG_EXPORT]→ child=7
+2026-06-29 20:55:09,668 [INFO] etl.lineage_tracker: [LINEAGE] lineage_id=6 parent=6 →[COG_EXPORT]→ child=8
+2026-06-29 20:55:09,668 [INFO] seed_data: [SEED] COG_EXPORT complete. GOLD: VV=7 VH=8
+2026-06-29 20:55:09,669 [INFO] etl.metadata_manager: [JOB] Created job_id=5 scene=1 stage=QUALITY_ANALYTICS attempt=1
+2026-06-29 20:55:09,672 [INFO] etl.metadata_manager: [JOB] job_id=5 → RUNNING
+2026-06-29 20:55:09,675 [INFO] etl.metadata_manager: [QUALITY] metric_id=1 scene=1 band=VV score=82.40 flag=PASS
+2026-06-29 20:55:09,676 [INFO] etl.metadata_manager: [QUALITY] metric_id=2 scene=1 band=VH score=81.10 flag=PASS
+2026-06-29 20:55:09,677 [INFO] etl.metadata_manager: [JOB] job_id=5 → SUCCESS
+2026-06-29 20:55:09,682 [INFO] etl.metadata_manager: [ALERT] alert_id=1 [INFO] New scene processed: scene_id=1: Scene S1A_IW_GRDH_1SDV_20240115T225041_20240115T225106_052186_064F3A_B5C2 completed full pipeline. QA PASS (VV=82.4, VH=81.1).
+2026-06-29 20:55:09,682 [INFO] seed_data: [SEED] QUALITY_ANALYTICS complete. Metrics: VV=1 VH=2
+2026-06-29 20:55:09,682 [INFO] seed_data: ═══ SEED DATA COMPLETE ═══
+2026-06-29 20:55:09,682 [INFO] seed_data: Summary IDs: {'region_id': 1, 'scene_id': 1, 'dl_job_id': 1, 'raw_vv_id': 1, 'raw_vh_id': 2, 'crop_job_id': 2, 'bronze_vv_id': 3, 'bronze_vh_id': 4, 'lee_job_id': 3, 'silver_vv_id': 5, 'silver_vh_id': 6, 'cog_job_id': 4, 'gold_vv_id': 7, 'gold_vh_id': 8, 'qa_job_id': 5, 'vv_metric_id': 1, 'vh_metric_id': 2, 'alert_id': 1}
+2026-06-29 20:55:09,682 [INFO] seed_data: ═══ VERIFICATION START ═══
+2026-06-29 20:55:09,684 [INFO] seed_data: [VERIFY] satellite_scenes count: 1
+2026-06-29 20:55:09,684 [INFO] seed_data: [VERIFY] GOLD latest products: 2
+2026-06-29 20:55:09,684 [INFO] seed_data: [VERIFY] Lineage records for COG job: 2
+2026-06-29 20:55:09,685 [INFO] seed_data: [VERIFY] Quality metrics for scene: 2
+2026-06-29 20:55:09,685 [INFO] seed_data: [VERIFY] Failed jobs: 0
+2026-06-29 20:55:09,685 [INFO] seed_data: ═══ ALL VERIFICATIONS PASSED ═══
+
+✅ Seed data inserted and verified successfully.
+   Scene ID  : 1
+   GOLD VV   : product_id=7
+   GOLD VH   : product_id=8
+   QA VV     : metric_id=1
+2026-06-29 20:55:09,685 [INFO] etl.database_client: DatabaseClient disposed. All connections closed.
+(venv) PS C:\Users\BigData\Downloads\sentinel1> 
+
+venv) PS C:\Users\BigData\Downloads\sentinel1> psql -U postgres -d sentinel1_flood                                                              
+Password for user postgres: 
+
+psql (13.23)
+WARNING: Console code page (437) differs from Windows code page (1252)
+         8-bit characters might not work correctly. See psql reference
+         page "Notes for Windows users" for details.
+Type "help" for help.
+
+sentinel1_flood=# SELECT * FROM satellite_scenes;
+ scene_id |              scene_uuid              |                         product_identifier                          |  platform  | instrument_mode | polarization_vv | polarization_vh |  acquisition_datetime  | orbit_number | orbit_direction | relative_orbit |                                                                                                bbox                                                                                                | cloud_cover_percent | incidence_angle_near | incidence_angle_far | resolution_m | region_id |           raw_file_path            | raw_file_size_mb |                         download_url                          |           checksum_md5           | is_available |          created_at           |          updated_at           
+----------+--------------------------------------+---------------------------------------------------------------------+------------+-----------------+-----------------+-----------------+------------------------+--------------+-----------------+----------------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+---------------------+----------------------+---------------------+--------------+-----------+------------------------------------+------------------+---------------------------------------------------------------+----------------------------------+--------------+-------------------------------+-------------------------------
+        1 | d31a0448-2c1b-4237-96c1-773b87bf6d1d | S1A_IW_GRDH_1SDV_20240115T225041_20240115T225106_052186_064F3A_B5C2 | SENTINEL-1 | IW              | t               | t               | 2024-01-16 05:50:41+07 |        52186 | ASCENDING       |             98 | 0103000020E610000001000000050000009A99999999995A40CDCCCCCCCCCC1AC0CDCCCCCCCCCC5A40CDCCCCCCCCCC1AC0CDCCCCCCCCCC5A409A999999999917C09A99999999995A409A999999999917C09A99999999995A40CDCCCCCCCCCC1AC0 |               12.50 |               30.800 |              46.200 |           10 |         1 | /data/raw/S1A_IW_GRDH_20240115.zip |          847.300 | https://scihub.copernicus.eu/dhus/odata/v1/Products('052186') | d41d8cd98f00b204e9800998ecf8427e | t            | 2026-06-29 20:55:09.603312+07 | 2026-06-29 20:55:09.603312+07
+(1 row)
+
+
+sentinel1_flood=# SELECT * FROM processing_jobs;
+ job_id |               job_uuid               | scene_id | stage_id | attempt_number | status  |           queued_at           |          started_at           |         completed_at          | duration_seconds | worker_hostname | cpu_usage_percent | memory_usage_mb | input_size_mb | output_size_mb | error_code | error_message | log_file_path |                                               parameters_json                                                |          created_at           |          updated_at           
+--------+--------------------------------------+----------+----------+----------------+---------+-------------------------------+-------------------------------+-------------------------------+------------------+-----------------+-------------------+-----------------+---------------+----------------+------------+---------------+---------------+--------------------------------------------------------------------------------------------------------------+-------------------------------+-------------------------------
+      1 | 62b9bfad-0f99-4255-8faa-8b5afd191984 |        1 |        1 |              1 | SUCCESS | 2026-06-29 20:55:09.612617+07 | 2026-06-29 20:55:09.620591+07 | 2026-06-29 20:55:09.62641+07  |            0.006 | DESKTOP-QANKH1R |                   |                 |               |        847.300 |            |               |               | {"source": "copernicus"}                                                                                     | 2026-06-29 20:55:09.612617+07 | 2026-06-29 20:55:09.630443+07
+      2 | f7cbcc3e-79ef-442c-9085-36c028a13dd7 |        1 |        2 |              1 | SUCCESS | 2026-06-29 20:55:09.631726+07 | 2026-06-29 20:55:09.62641+07  | 2026-06-29 20:55:09.638013+07 |            0.012 | DESKTOP-QANKH1R |                   |                 |               |         96.300 |            |               |               | {"bbox": "POLYGON((106.4 -6.7, 107.2 -6.7, 107.2 -5.9, 106.4 -5.9, 106.4 -6.7))", "target_crs": "EPSG:4326"} | 2026-06-29 20:55:09.631726+07 | 2026-06-29 20:55:09.638196+07
+      3 | 266193bf-2a77-49cb-8c43-24d358b5931f |        1 |        3 |              1 | SUCCESS | 2026-06-29 20:55:09.64745+07  | 2026-06-29 20:55:09.648844+07 | 2026-06-29 20:55:09.653882+07 |            0.005 | DESKTOP-QANKH1R |                   |                 |               |         91.400 |            |               |               | {"looks": 1, "sigma": 0.9, "window_size": 7}                                                                 | 2026-06-29 20:55:09.64745+07  | 2026-06-29 20:55:09.653885+07
+      4 | 51a70ae4-f2e0-4c01-b4ae-931391a0abbe |        1 |        4 |              1 | SUCCESS | 2026-06-29 20:55:09.658846+07 | 2026-06-29 20:55:09.660332+07 | 2026-06-29 20:55:09.66501+07  |            0.005 | DESKTOP-QANKH1R |                   |                 |               |         82.200 |            |               |               | {"blocksize": 512, "compression": "LZW", "overview_levels": [2, 4, 8, 16]}                                   | 2026-06-29 20:55:09.658846+07 | 2026-06-29 20:55:09.665402+07                                                            
+      5 | 28db1fc1-5bdf-42b8-a5dd-b45f74ab7f02 |        1 |        6 |              1 | SUCCESS | 2026-06-29 20:55:09.669396+07 | 2026-06-29 20:55:09.670945+07 | 2026-06-29 20:55:09.67779+07  |            0.007 | DESKTOP-QANKH1R |                   |                 |               |                |            |               |               | {"cloud_threshold": 20.0}                                                                                    | 2026-06-29 20:55:09.669396+07 | 2026-06-29 20:55:09.677771+07                                                            
+(5 rows)                                                                                                                                        
+                                                                                                                                                
+                                                                                                                                                
+sentinel1_flood=# 
+sentinel1_flood=# 
+sentinel1_flood=# 
+sentinel1_flood=# 
+sentinel1_flood=# 
+sentinel1_flood=# 
+sentinel1_flood=# 
+sentinel1_flood=# 
+sentinel1_flood=# 
+sentinel1_flood=# 
+sentinel1_flood=# 
+sentinel1_flood=# 
+sentinel1_flood=# 
+sentinel1_flood=# 
+sentinel1_flood=# 
+sentinel1_flood=# 
+sentinel1_flood=# 
+sentinel1_flood=# SELECT * FROM data_products;
+ product_id |             product_uuid             | scene_id | job_id | product_tier | product_type  | band_name |        file_name         |                  file_path                   | file_size_mb | file_format |                         data_hash_sha256                         |    crs    | pixel_size_m | nodata_value | rows  | cols  | band_count | storage_location | is_valid | is_latest |          created_at           |          updated_at           
+------------+--------------------------------------+----------+--------+--------------+---------------+-----------+--------------------------+----------------------------------------------+--------------+-------------+------------------------------------------------------------------+-----------+--------------+--------------+-------+-------+------------+------------------+----------+-----------+-------------------------------+-------------------------------
+          1 | dd0d3764-8c12-4772-b2f3-0cbd291c62a6 |        1 |      1 | RAW          | ORIGINAL_TIFF | VV        | S1A_20240115_VV.tif      | /data/raw/S1A_20240115_VV.tif                |      423.600 | TIFF        | 856f780b5f5a429fd67dd8690d0522d61dc6de6f1f7729f170471292a1b956b2 | EPSG:4326 |              |              | 23000 | 16600 |          1 | LOCAL            | t        | t         | 2026-06-29 20:55:09.623073+07 | 2026-06-29 20:55:09.623073+07
+          2 | 21ca8d0f-b5bd-47d3-8042-c44e9074d97c |        1 |      1 | RAW          | ORIGINAL_TIFF | VH        | S1A_20240115_VH.tif      | /data/raw/S1A_20240115_VH.tif                |      423.700 | TIFF        | 61f9377a22ba0ca5a7c1da392e4da820d9cffefaf1a95d1b6f397c1fbbb1b706 | EPSG:4326 |              |              | 23000 | 16600 |          1 | LOCAL            | t        | t         | 2026-06-29 20:55:09.628657+07 | 2026-06-29 20:55:09.628657+07
+          3 | 3505e572-3439-4b5d-b9f3-1a1518843a3c |        1 |      2 | BRONZE       | CROPPED_TIFF  | VV        | S1A_20240115_VV_crop.tif | /processed/bronze/1/S1A_20240115_VV_crop.tif |       48.200 | TIFF        | 85d3af0f4d16211f39704fdc44ae05cbf83d8f642d42b5f64a314ecc2d619aa4 | EPSG:4326 |       10.000 |              |  5500 |  5800 |          1 | LOCAL            | t        | t         | 2026-06-29 20:55:09.634755+07 | 2026-06-29 20:55:09.634755+07
+          4 | 118f00c7-39d0-44ad-8a6e-be8ba1f23a2c |        1 |      2 | BRONZE       | CROPPED_TIFF  | VH        | S1A_20240115_VH_crop.tif | /processed/bronze/1/S1A_20240115_VH_crop.tif |       48.100 | TIFF        | c41057ab9ef967ccd6dd8265bd246c092186f46463a81d1aef471e7b373c3e78 | EPSG:4326 |       10.000 |              |  5500 |  5800 |          1 | LOCAL            | t        | t         | 2026-06-29 20:55:09.636554+07 | 2026-06-29 20:55:09.636554+07                                                                                                                       
+          5 | 76a65112-2aee-4af3-974f-0db5ec9d1728 |        1 |      3 | SILVER       | LEE_FILTERED  | VV        | S1A_20240115_VV_lee.tif  | /processed/silver/1/S1A_20240115_VV_lee.tif  |       45.800 | TIFF        | a82991f35b12e437b692a284394d4459388eda7de13846fb051457b0bedad77c | EPSG:4326 |              |              |  5500 |  5800 |          1 | LOCAL            | t        | t         | 2026-06-29 20:55:09.650396+07 | 2026-06-29 20:55:09.650396+07                                                                                                                       
+          6 | 5dd23faa-2af4-4bd8-b31e-7282534d5ca4 |        1 |      3 | SILVER       | LEE_FILTERED  | VH        | S1A_20240115_VH_lee.tif  | /processed/silver/1/S1A_20240115_VH_lee.tif  |       45.600 | TIFF        | 4515e88bab6688656bef2e9532e00bd3c04ace454ec63649d91453d5b66ad210 | EPSG:4326 |              |              |  5500 |  5800 |          1 | LOCAL            | t        | t         | 2026-06-29 20:55:09.652077+07 | 2026-06-29 20:55:09.652077+07                                                                                                                       
+          7 | f7f46dd3-7f92-410f-811c-619acce65239 |        1 |      4 | GOLD         | COG           | VV        | S1A_20240115_VV_cog.tif  | /processed/gold/1/S1A_20240115_VV_cog.tif    |       41.200 | COG         | 9a4f3e356485170e2bc62584ec7ebbd09cfda5b99c25d527695e92c8c5656806 | EPSG:4326 |       10.000 |              |  5500 |  5800 |          1 | LOCAL            | t        | t         | 2026-06-29 20:55:09.662177+07 | 2026-06-29 20:55:09.662177+07                                                                                                                       
+          8 | 969383fb-3898-477e-adb9-f662c90834b2 |        1 |      4 | GOLD         | COG           | VH        | S1A_20240115_VH_cog.tif  | /processed/gold/1/S1A_20240115_VH_cog.tif    |       41.000 | COG         | 5365e3f0a3ee6c3ab7fbfd7329d3e268a6b958b82c027fb57a82ae6797bb604a | EPSG:4326 |       10.000 |              |  5500 |  5800 |          1 | LOCAL            | t        | t         | 2026-06-29 20:55:09.663873+07 | 2026-06-29 20:55:09.663873+07                                                                                                                       
+(8 rows)                                                                                                                                        
+                                                                                                                                                
+                                                                                                                                                
+sentinel1_flood=# 
+sentinel1_flood=# 
+sentinel1_flood=# SELECT * FROM quality_metrics;
+ metric_id | scene_id | product_id | band_name |          assessed_at          | total_pixels | valid_pixels | nodata_pixels | nodata_percent | backscatter_mean_db | backscatter_std_db | backscatter_min_db | backscatter_max_db | cloud_threshold_percent | radiometric_consistency | speckle_index | quality_score | quality_flag |                                notes                                 |          created_at           
+-----------+----------+------------+-----------+-------------------------------+--------------+--------------+---------------+----------------+---------------------+--------------------+--------------------+--------------------+-------------------------+-------------------------+---------------+---------------+--------------+----------------------------------------------------------------------+-------------------------------
+         1 |        1 |          7 | VV        | 2026-06-29 20:55:09.673449+07 |     31900000 |     31580000 |        320000 |           1.00 |            -12.3700 |             2.8100 |           -28.4400 |             1.9200 |                   20.00 | t                       |        0.2270 |         82.40 | PASS         | Good quality acquisition. Low cloud cover. Normal backscatter range. | 2026-06-29 20:55:09.673449+07
+         2 |        1 |          8 | VH        | 2026-06-29 20:55:09.676844+07 |     31900000 |     31581500 |        318500 |           1.00 |            -19.8200 |             3.1400 |           -34.6100 |            -4.2300 |                   20.00 | t                       |        0.2580 |         81.10 | PASS         | Good quality. VH cross-pol within normal IW mode range.              | 2026-06-29 20:55:09.676844+07
+(2 rows)
+
+
+sentinel1_flood=# SELECT * FROM alert_events;
+ alert_id |              alert_uuid              |  event_type  | severity | scene_id | job_id | product_id |              title              |                                                            message                                                             |                          metadata_json                          | is_resolved | resolved_at | resolved_by | resolution_note |         triggered_at          |          created_at           
+----------+--------------------------------------+--------------+----------+----------+--------+------------+---------------------------------+--------------------------------------------------------------------------------------------------------------------------------+-----------------------------------------------------------------+-------------+-------------+-------------+-----------------+-------------------------------+-------------------------------
+        1 | d8171059-a3e3-41d0-af54-6c9e8513141e | DATA_ARRIVAL | INFO     |        1 |        |            | New scene processed: scene_id=1 | Scene S1A_IW_GRDH_1SDV_20240115T225041_20240115T225106_052186_064F3A_B5C2 completed full pipeline. QA PASS (VV=82.4, VH=81.1). | {"vh_score": 81.1, "vv_score": 82.4, "pipeline_complete": true} | f           |             |             |                 | 2026-06-29 20:55:09.679712+07 | 2026-06-29 20:55:09.679712+07
+(1 row)
+
+
+sentinel1_flood=# 

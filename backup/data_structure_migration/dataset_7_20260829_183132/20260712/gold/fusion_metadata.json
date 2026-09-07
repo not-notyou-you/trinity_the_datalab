@@ -1,0 +1,34 @@
+{
+  "fusion_id": 2,
+  "dataset_id": 7,
+  "region_id": 1,
+  "feature_date": "2026-07-12",
+  "acquisition_datetime": "2026-07-12T18:14:07.758269+07:00",
+  "processing_datetime": "2026-08-29T10:33:07.519427+00:00",
+  "aoi_bbox": [
+    106.74,
+    -6.65,
+    106.86,
+    -6.52
+  ],
+  "shape": {
+    "height": 1423,
+    "width": 1314
+  },
+  "layers": [
+    "s1_vv",
+    "s1_vh",
+    "modis_flood",
+    "gpm_rainfall_24h",
+    "gpm_rainfall_72h"
+  ],
+  "source_scenes": {
+    "s1_scene_id": 16,
+    "modis_date": null,
+    "gpm_24h_date": null,
+    "gpm_72h_date": null
+  },
+  "days_since_s1": 0,
+  "file_name": "fusion_20260712.h5",
+  "file_size_mb": 12.604
+}

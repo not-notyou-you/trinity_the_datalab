@@ -1,0 +1,59 @@
+# docker-compose.yml
+# Local development environment: PostgreSQL 14 + PostGIS + TimescaleDB
+#
+# Usage:
+#   docker-compose up -d        # start DB
+#   docker-compose down         # stop
+#   docker-compose down -v      # stop + delete volume
+#
+# Author: Julius Marselinus (BRONTO) - NIM 00000111989
+
+version: "3.9"
+
+services:
+  db:
+    image: timescale/timescaledb-ha:pg14-latest
+    container_name: sentinel1_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB:       sentinel1_flood
+      POSTGRES_USER:     postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./database/schema.sql:/docker-entrypoint-initdb.d/01_schema.sql
+      - ./database/seed_data.sql:/docker-entrypoint-initdb.d/02_seed.sql
+      - ./database/indexes.sql:/docker-entrypoint-initdb.d/03_indexes.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d sentinel1_flood"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build: .
+    container_name: sentinel1_api
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DB_HOST:     db
+      DB_PORT:     5432
+      DB_NAME:     sentinel1_flood
+      DB_USER:     postgres
+      DB_PASSWORD: postgres
+      API_HOST:    0.0.0.0
+      API_PORT:    8000
+    ports:
+      - "8000:8000"
+    volumes:
+      - .:/app
+      - ./processed:/app/processed
+    command: uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload
+
+volumes:
+  pgdata:
+    driver: local

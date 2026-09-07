@@ -1,0 +1,35 @@
+# requirements.txt
+SQLAlchemy==2.0.36
+psycopg2-binary==2.9.10
+GeoAlchemy2==0.15.2
+alembic==1.14.0
+fastapi==0.115.5
+uvicorn[standard]==0.32.1
+pydantic==2.10.3
+python-multipart==0.0.18
+apscheduler>=3.10.0
+requests==2.32.3
+rasterio==1.4.3
+shapely==2.0.6
+pyproj==3.7.0
+h5py==3.12.1
+numpy==2.1.3
+scipy==1.14.1
+xarray==2024.11.0
+dask[array]==2024.11.2
+pandas==2.2.3
+matplotlib==3.9.3
+seaborn==0.13.2
+# Pillow: penulisan PNG untuk tier PREVIEW (etl/module10_generate_preview.py)
+# dan thumbnail di api/routes/preview.py. Sebelumnya cuma tersedia karena
+# ikut terbawa dependensi lain -- dipin di sini supaya install bersih tidak
+# gagal di tahap PREVIEW. Dipin ke versi yang terpasang & teruji di venv
+# ini -- pin yang lebih rendah akan men-downgrade instalasi yang sudah jalan.
+Pillow==12.3.0
+python-dotenv==1.0.1
+tenacity==9.0.0
+psutil==6.1.0
+pytest==8.3.4
+pytest-asyncio==0.24.0
+pytest-cov==6.0.0
+httpx==0.28.1

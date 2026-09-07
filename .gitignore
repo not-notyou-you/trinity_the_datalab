@@ -1,0 +1,237 @@
+# =============================================================================
+# .gitignore — Sentinel-1 Flood Detection Data Pipeline
+# Author: Julius Marselinus (BRONTO) - NIM 00000111989
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# SECRETS & CREDENTIALS (NEVER COMMIT)
+# ---------------------------------------------------------------------------
+.env
+.env.*
+!.env.example
+config/database.env
+config/*.env
+*.pem
+*.key
+*.secret
+*_credentials.json
+service_account*.json
+
+# ---------------------------------------------------------------------------
+# SATELLITE DATA FILES (too large for git — use git-lfs or cloud storage)
+# ---------------------------------------------------------------------------
+# Raw downloads
+recovered_temp/*
+!recovered_temp/.gitkeep
+
+# Processed outputs (COG, filtered TIFFs)
+processed/bronze/*
+processed/silver/*
+processed/gold/*
+!processed/bronze/.gitkeep
+!processed/silver/.gitkeep
+!processed/gold/.gitkeep
+
+# GeoTIFF / raster formats
+*.tif
+*.tiff
+*.geotiff
+*.img
+*.vrt
+*.nc
+*.h5
+*.hdf5
+
+# Compressed archives (Sentinel-1 downloads)
+*.zip
+*.tar.gz
+*.tar.bz2
+*.SAFE/
+
+# ---------------------------------------------------------------------------
+# PIPELINE RUNTIME FILES
+# ---------------------------------------------------------------------------
+# Logs
+logs_pipeline/*
+!logs_pipeline/.gitkeep
+*.log
+
+# Checkpoints
+checkpoints_pipeline/*
+!checkpoints_pipeline/.gitkeep
+*.checkpoint
+*.pkl
+
+# Analytics outputs (auto-generated charts)
+analytics/*
+!analytics/.gitkeep
+*.png
+*.jpg
+*.jpeg
+*.svg
+*.pdf
+
+# ---------------------------------------------------------------------------
+# PYTHON
+# ---------------------------------------------------------------------------
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environments
+venv/
+.venv/
+env/
+.env/
+ENV/
+env.bak/
+venv.bak/
+
+# Distribution / packaging
+.Python
+build/
+dist/
+develop-eggs/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+htmlcov/
+pytest-results/
+
+# mypy / pyright / ruff
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pytype/
+.ruff_cache/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+*.ipynb
+
+# IPython
+profile_default/
+ipython_config.py
+
+# ---------------------------------------------------------------------------
+# DATABASE
+# ---------------------------------------------------------------------------
+# Local DB dumps (may contain sensitive data)
+*.sql.gz
+*.dump
+*.pgdump
+*.backup
+db_backup/
+db_dumps/
+
+# SQLite (for local dev fallback)
+*.db
+*.sqlite
+*.sqlite3
+
+# ---------------------------------------------------------------------------
+# DOCKER
+# ---------------------------------------------------------------------------
+# Don't ignore docker-compose.yml (it's tracked)
+# But ignore override files with local secrets
+docker-compose.override.yml
+docker-compose.local.yml
+
+# ---------------------------------------------------------------------------
+# IDE & EDITORS
+# ---------------------------------------------------------------------------
+# VSCode
+.vscode/
+!.vscode/extensions.json
+!.vscode/settings.json
+
+# PyCharm / JetBrains
+.idea/
+*.iml
+*.ipr
+*.iws
+.idea_modules/
+
+# Vim / Neovim
+*.swp
+*.swo
+*~
+.netrwhist
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# Emacs
+\#*\#
+.\#*
+
+# ---------------------------------------------------------------------------
+# OS
+# ---------------------------------------------------------------------------
+# macOS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.lnk
+
+# Linux
+*~
+
+# ---------------------------------------------------------------------------
+# MISC
+# ---------------------------------------------------------------------------
+# Temporary files
+*.tmp
+*.temp
+tmp/
+temp/
+
+# Node (if any tooling uses it)
+node_modules/
+npm-debug.log*
+
+# Alembic (keep alembic.ini but ignore migration temp)
+alembic/versions/__pycache__/

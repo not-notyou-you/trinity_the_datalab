@@ -1,0 +1,827 @@
+2026-09-03 08:09:58,445 INFO    [Thread-5 (_runner)] etl.pipeline_logger [PLOG-FILE] run log opened for dataset='1 saja' -> logs\1_saja.txt
+2026-09-03 08:09:58,445 INFO    [Thread-5 (_runner)] etl.module5_orchestrator [ORCH] job_id=10 start dataset='1 saja' scenes=2 tiers=['RAW', 'BRONZE', 'SILVER', 'GOLD', 'FUSION'] log=logs\1_saja.txt
+2026-09-03 08:09:58,461 INFO    [Thread-6 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 780, "dataset_id": 47, "scene_id": "S1D_IW_GRDH_1SDV_20260829T111410_20260829T111439_004339_008021_0BBF.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "STARTED", "message": "Downloading scene from ESA server", "expected_size_mb": 1930.8173789978027}
+2026-09-03 08:09:58,461 INFO    [Thread-6 (_download_worker)] etl.module1_download [M1] Downloading: S1D_IW_GRDH_1SDV_20260829T111410_20260829T111439_0 (1931 MB)
+2026-09-03 08:10:44,547 INFO    [Thread-6 (_download_worker)] etl.module1_download [M1] Download: 3%  (59 / 2025 MB)
+2026-09-03 08:10:44,550 ERROR   [Thread-6 (_download_worker)] etl.database_client Session rolled back due to error: (psycopg2.errors.ForeignKeyViolation) insert or update on table "processing_logs" violates foreign key constraint "processing_logs_dataset_id_fkey"
+DETAIL:  Key (dataset_id)=(47) is not present in table "datasets".
+
+[SQL: INSERT INTO processing_logs (dataset_id, scene_id, module, stage, status, message, details) VALUES (%(dataset_id)s, %(scene_id)s, %(module)s, %(stage)s, %(status)s, %(message)s, %(details)s::JSONB) RETURNING processing_logs.log_id, processing_logs.log_uuid, processing_logs.created_at]
+[parameters: {'dataset_id': 47, 'scene_id': 'S1D_IW_GRDH_1SDV_20260829T111410_20260829T111439_004339_008021_0BBF.SAFE', 'module': 'MODULE1_DOWNLOAD', 'stage': 'DOWNLOAD', 'status': 'RUNNING', 'message': 'Downloading: 59 / 2025 MB', 'details': '{"progress_percent": 2.9}'}]
+(Background on this error at: https://sqlalche.me/e/20/gkpj)
+2026-09-03 08:10:44,623 ERROR   [Thread-6 (_download_worker)] etl.database_client Session rolled back due to error: (psycopg2.errors.ForeignKeyViolation) insert or update on table "processing_logs" violates foreign key constraint "processing_logs_dataset_id_fkey"
+DETAIL:  Key (dataset_id)=(47) is not present in table "datasets".
+
+[SQL: INSERT INTO processing_logs (dataset_id, scene_id, module, stage, status, message, details) VALUES (%(dataset_id)s, %(scene_id)s, %(module)s, %(stage)s, %(status)s, %(message)s, %(details)s::JSONB) RETURNING processing_logs.log_id, processing_logs.log_uuid, processing_logs.created_at]
+[parameters: {'dataset_id': 47, 'scene_id': 'S1D_IW_GRDH_1SDV_20260829T111410_20260829T111439_004339_008021_0BBF.SAFE', 'module': 'MODULE1_DOWNLOAD', 'stage': 'DOWNLOAD', 'status': 'FAILED', 'message': 'DOWNLOAD failed: (psycopg2.errors.ForeignKeyViolation) insert or update on table "processing_logs" violates foreign key constraint "processing_logs_d ... (591 characters truncated) ... 'message\': \'Downloading: 59 / 2025 MB\', \'details\': \'{"progress_percent": 2.9}\'}]\n(Background on this error at: https://sqlalche.me/e/20/gkpj)', 'details': '{"expected_size_mb": 1930.8173789978027, "duration_seconds": 46.094, "memory_peak_mb": 170.03, "cpu_peak_percent": 12.5, "error_type": "IntegrityErro ... (5526 characters truncated) ... : \'Downloading: 59 / 2025 MB\', \'details\': \'{\\"progress_percent\\": 2.9}\'}]\\n(Background on this error at: https://sqlalche.me/e/20/gkpj)\\n"}'}]
+(Background on this error at: https://sqlalche.me/e/20/gkpj)
+2026-09-03 08:10:44,623 ERROR   [Thread-6 (_download_worker)] etl.module5_orchestrator [ORCH] download gagal pid=S1D_IW_GRDH_1SDV_20260829T111410_20260829T111439_004339_008021_0BBF.SAFE job_id=10
+Traceback (most recent call last):
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\sqlalchemy\engine\base.py", line 1967, in _exec_single_context
+    self.dialect.do_execute(
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\sqlalchemy\engine\default.py", line 941, in do_execute
+    cursor.execute(statement, parameters)
+psycopg2.errors.ForeignKeyViolation: insert or update on table "processing_logs" violates foreign key constraint "processing_logs_dataset_id_fkey"
+DETAIL:  Key (dataset_id)=(47) is not present in table "datasets".
+
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\etl\pipeline_logger.py", line 302, in stage
+    yield handle
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\etl\module5_orchestrator.py", line 509, in _download_worker
+    result = download_scene(
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\etl\module1_download.py", line 208, in download_scene
+    progress_cb(pct, f"{downloaded / 1e6:.0f} / {total / 1e6:.0f} MB")
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\etl\module5_orchestrator.py", line 499, in _download_progress
+    jc.plog.log_event(
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\etl\pipeline_logger.py", line 283, in log_event
+    return self._mgr.log_event(dataset_id, scene_id, module, stage, status, message, details)
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\etl\pipeline_logger.py", line 158, in log_event
+    sess.flush()
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\sqlalchemy\orm\session.py", line 4352, in flush
+    self._flush(objects)
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\sqlalchemy\orm\session.py", line 4487, in _flush
+    with util.safe_reraise():
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\sqlalchemy\util\langhelpers.py", line 146, in __exit__
+    raise exc_value.with_traceback(exc_tb)
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\sqlalchemy\orm\session.py", line 4448, in _flush
+    flush_context.execute()
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\sqlalchemy\orm\unitofwork.py", line 466, in execute
+    rec.execute(self)
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\sqlalchemy\orm\unitofwork.py", line 642, in execute
+    util.preloaded.orm_persistence.save_obj(
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\sqlalchemy\orm\persistence.py", line 93, in save_obj
+    _emit_insert_statements(
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\sqlalchemy\orm\persistence.py", line 1233, in _emit_insert_statements
+    result = connection.execute(
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\sqlalchemy\engine\base.py", line 1418, in execute
+    return meth(
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\sqlalchemy\sql\elements.py", line 515, in _execute_on_connection
+    return connection._execute_clauseelement(
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\sqlalchemy\engine\base.py", line 1640, in _execute_clauseelement
+    ret = self._execute_context(
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\sqlalchemy\engine\base.py", line 1846, in _execute_context
+    return self._exec_single_context(
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\sqlalchemy\engine\base.py", line 1986, in _exec_single_context
+    self._handle_dbapi_exception(
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\sqlalchemy\engine\base.py", line 2355, in _handle_dbapi_exception
+    raise sqlalchemy_exception.with_traceback(exc_info[2]) from e
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\sqlalchemy\engine\base.py", line 1967, in _exec_single_context
+    self.dialect.do_execute(
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\sqlalchemy\engine\default.py", line 941, in do_execute
+    cursor.execute(statement, parameters)
+sqlalchemy.exc.IntegrityError: (psycopg2.errors.ForeignKeyViolation) insert or update on table "processing_logs" violates foreign key constraint "processing_logs_dataset_id_fkey"
+DETAIL:  Key (dataset_id)=(47) is not present in table "datasets".
+
+[SQL: INSERT INTO processing_logs (dataset_id, scene_id, module, stage, status, message, details) VALUES (%(dataset_id)s, %(scene_id)s, %(module)s, %(stage)s, %(status)s, %(message)s, %(details)s::JSONB) RETURNING processing_logs.log_id, processing_logs.log_uuid, processing_logs.created_at]
+[parameters: {'dataset_id': 47, 'scene_id': 'S1D_IW_GRDH_1SDV_20260829T111410_20260829T111439_004339_008021_0BBF.SAFE', 'module': 'MODULE1_DOWNLOAD', 'stage': 'DOWNLOAD', 'status': 'RUNNING', 'message': 'Downloading: 59 / 2025 MB', 'details': '{"progress_percent": 2.9}'}]
+(Background on this error at: https://sqlalche.me/e/20/gkpj)
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\sqlalchemy\engine\base.py", line 1967, in _exec_single_context
+    self.dialect.do_execute(
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\sqlalchemy\engine\default.py", line 941, in do_execute
+    cursor.execute(statement, parameters)
+psycopg2.errors.ForeignKeyViolation: insert or update on table "processing_logs" violates foreign key constraint "processing_logs_dataset_id_fkey"
+DETAIL:  Key (dataset_id)=(47) is not present in table "datasets".
+
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\etl\module5_orchestrator.py", line 504, in _download_worker
+    with jc.plog.stage(
+  File "C:\Users\BigData\AppData\Local\Programs\Python\Python310\lib\contextlib.py", line 153, in __exit__
+    self.gen.throw(typ, value, traceback)
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\etl\pipeline_logger.py", line 306, in stage
+    self._mgr.log_event(
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\etl\pipeline_logger.py", line 158, in log_event
+    sess.flush()
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\sqlalchemy\orm\session.py", line 4352, in flush
+    self._flush(objects)
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\sqlalchemy\orm\session.py", line 4487, in _flush
+    with util.safe_reraise():
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\sqlalchemy\util\langhelpers.py", line 146, in __exit__
+    raise exc_value.with_traceback(exc_tb)
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\sqlalchemy\orm\session.py", line 4448, in _flush
+    flush_context.execute()
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\sqlalchemy\orm\unitofwork.py", line 466, in execute
+    rec.execute(self)
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\sqlalchemy\orm\unitofwork.py", line 642, in execute
+    util.preloaded.orm_persistence.save_obj(
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\sqlalchemy\orm\persistence.py", line 93, in save_obj
+    _emit_insert_statements(
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\sqlalchemy\orm\persistence.py", line 1233, in _emit_insert_statements
+    result = connection.execute(
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\sqlalchemy\engine\base.py", line 1418, in execute
+    return meth(
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\sqlalchemy\sql\elements.py", line 515, in _execute_on_connection
+    return connection._execute_clauseelement(
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\sqlalchemy\engine\base.py", line 1640, in _execute_clauseelement
+    ret = self._execute_context(
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\sqlalchemy\engine\base.py", line 1846, in _execute_context
+    return self._exec_single_context(
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\sqlalchemy\engine\base.py", line 1986, in _exec_single_context
+    self._handle_dbapi_exception(
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\sqlalchemy\engine\base.py", line 2355, in _handle_dbapi_exception
+    raise sqlalchemy_exception.with_traceback(exc_info[2]) from e
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\sqlalchemy\engine\base.py", line 1967, in _exec_single_context
+    self.dialect.do_execute(
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\sqlalchemy\engine\default.py", line 941, in do_execute
+    cursor.execute(statement, parameters)
+sqlalchemy.exc.IntegrityError: (psycopg2.errors.ForeignKeyViolation) insert or update on table "processing_logs" violates foreign key constraint "processing_logs_dataset_id_fkey"
+DETAIL:  Key (dataset_id)=(47) is not present in table "datasets".
+
+[SQL: INSERT INTO processing_logs (dataset_id, scene_id, module, stage, status, message, details) VALUES (%(dataset_id)s, %(scene_id)s, %(module)s, %(stage)s, %(status)s, %(message)s, %(details)s::JSONB) RETURNING processing_logs.log_id, processing_logs.log_uuid, processing_logs.created_at]
+[parameters: {'dataset_id': 47, 'scene_id': 'S1D_IW_GRDH_1SDV_20260829T111410_20260829T111439_004339_008021_0BBF.SAFE', 'module': 'MODULE1_DOWNLOAD', 'stage': 'DOWNLOAD', 'status': 'FAILED', 'message': 'DOWNLOAD failed: (psycopg2.errors.ForeignKeyViolation) insert or update on table "processing_logs" violates foreign key constraint "processing_logs_d ... (591 characters truncated) ... 'message\': \'Downloading: 59 / 2025 MB\', \'details\': \'{"progress_percent": 2.9}\'}]\n(Background on this error at: https://sqlalche.me/e/20/gkpj)', 'details': '{"expected_size_mb": 1930.8173789978027, "duration_seconds": 46.094, "memory_peak_mb": 170.03, "cpu_peak_percent": 12.5, "error_type": "IntegrityErro ... (5526 characters truncated) ... : \'Downloading: 59 / 2025 MB\', \'details\': \'{\\"progress_percent\\": 2.9}\'}]\\n(Background on this error at: https://sqlalche.me/e/20/gkpj)\\n"}'}]
+(Background on this error at: https://sqlalche.me/e/20/gkpj)
+2026-09-03 08:10:44,632 ERROR   [Thread-6 (_download_worker)] etl.database_client Session rolled back due to error: (psycopg2.errors.ForeignKeyViolation) insert or update on table "processing_logs" violates foreign key constraint "processing_logs_dataset_id_fkey"
+DETAIL:  Key (dataset_id)=(47) is not present in table "datasets".
+
+[SQL: INSERT INTO processing_logs (dataset_id, scene_id, module, stage, status, message, details) VALUES (%(dataset_id)s, %(scene_id)s, %(module)s, %(stage)s, %(status)s, %(message)s, %(details)s::JSONB) RETURNING processing_logs.log_id, processing_logs.log_uuid, processing_logs.created_at]
+[parameters: {'dataset_id': 47, 'scene_id': 'S1D_IW_GRDH_1SDV_20260829T111410_20260829T111439_004339_008021_0BBF.SAFE', 'module': 'ORCHESTRATOR', 'stage': 'DOWNLOAD', 'status': 'FAILED', 'message': 'DOWNLOAD failed: (psycopg2.errors.ForeignKeyViolation) insert or update on table "processing_logs" violates foreign key constraint "processing_logs_d ... (1245 characters truncated) ...  2.9}\\\'}]\\\\n(Background on this error at: https://sqlalche.me/e/20/gkpj)\\\\n"}\'}]\n(Background on this error at: https://sqlalche.me/e/20/gkpj)', 'details': '{"error_type": "IntegrityError", "error_message": "(psycopg2.errors.ForeignKeyViolation) insert or update on table \\"processing_logs\\" violates for ... (6102 characters truncated) ... \\\n(Background on this error at: https://sqlalche.me/e/20/gkpj)\\\\\\\\n\\"}\'}]\\n(Background on this error at: https://sqlalche.me/e/20/gkpj)\\n"}'}]
+(Background on this error at: https://sqlalche.me/e/20/gkpj)
+2026-09-03 08:10:44,632 ERROR   [Thread-6 (_download_worker)] etl.module5_orchestrator [ORCH] gagal mencatat kegagalan pid=S1D_IW_GRDH_1SDV_20260829T111410_20260829T111439_004339_008021_0BBF.SAFE stage=DOWNLOAD
+Traceback (most recent call last):
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\sqlalchemy\engine\base.py", line 1967, in _exec_single_context
+    self.dialect.do_execute(
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\sqlalchemy\engine\default.py", line 941, in do_execute
+    cursor.execute(statement, parameters)
+psycopg2.errors.ForeignKeyViolation: insert or update on table "processing_logs" violates foreign key constraint "processing_logs_dataset_id_fkey"
+DETAIL:  Key (dataset_id)=(47) is not present in table "datasets".
+
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\etl\pipeline_logger.py", line 302, in stage
+    yield handle
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\etl\module5_orchestrator.py", line 509, in _download_worker
+    result = download_scene(
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\etl\module1_download.py", line 208, in download_scene
+    progress_cb(pct, f"{downloaded / 1e6:.0f} / {total / 1e6:.0f} MB")
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\etl\module5_orchestrator.py", line 499, in _download_progress
+    jc.plog.log_event(
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\etl\pipeline_logger.py", line 283, in log_event
+    return self._mgr.log_event(dataset_id, scene_id, module, stage, status, message, details)
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\etl\pipeline_logger.py", line 158, in log_event
+    sess.flush()
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\sqlalchemy\orm\session.py", line 4352, in flush
+    self._flush(objects)
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\sqlalchemy\orm\session.py", line 4487, in _flush
+    with util.safe_reraise():
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\sqlalchemy\util\langhelpers.py", line 146, in __exit__
+    raise exc_value.with_traceback(exc_tb)
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\sqlalchemy\orm\session.py", line 4448, in _flush
+    flush_context.execute()
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\sqlalchemy\orm\unitofwork.py", line 466, in execute
+    rec.execute(self)
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\sqlalchemy\orm\unitofwork.py", line 642, in execute
+    util.preloaded.orm_persistence.save_obj(
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\sqlalchemy\orm\persistence.py", line 93, in save_obj
+    _emit_insert_statements(
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\sqlalchemy\orm\persistence.py", line 1233, in _emit_insert_statements
+    result = connection.execute(
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\sqlalchemy\engine\base.py", line 1418, in execute
+    return meth(
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\sqlalchemy\sql\elements.py", line 515, in _execute_on_connection
+    return connection._execute_clauseelement(
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\sqlalchemy\engine\base.py", line 1640, in _execute_clauseelement
+    ret = self._execute_context(
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\sqlalchemy\engine\base.py", line 1846, in _execute_context
+    return self._exec_single_context(
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\sqlalchemy\engine\base.py", line 1986, in _exec_single_context
+    self._handle_dbapi_exception(
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\sqlalchemy\engine\base.py", line 2355, in _handle_dbapi_exception
+    raise sqlalchemy_exception.with_traceback(exc_info[2]) from e
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\sqlalchemy\engine\base.py", line 1967, in _exec_single_context
+    self.dialect.do_execute(
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\sqlalchemy\engine\default.py", line 941, in do_execute
+    cursor.execute(statement, parameters)
+sqlalchemy.exc.IntegrityError: (psycopg2.errors.ForeignKeyViolation) insert or update on table "processing_logs" violates foreign key constraint "processing_logs_dataset_id_fkey"
+DETAIL:  Key (dataset_id)=(47) is not present in table "datasets".
+
+[SQL: INSERT INTO processing_logs (dataset_id, scene_id, module, stage, status, message, details) VALUES (%(dataset_id)s, %(scene_id)s, %(module)s, %(stage)s, %(status)s, %(message)s, %(details)s::JSONB) RETURNING processing_logs.log_id, processing_logs.log_uuid, processing_logs.created_at]
+[parameters: {'dataset_id': 47, 'scene_id': 'S1D_IW_GRDH_1SDV_20260829T111410_20260829T111439_004339_008021_0BBF.SAFE', 'module': 'MODULE1_DOWNLOAD', 'stage': 'DOWNLOAD', 'status': 'RUNNING', 'message': 'Downloading: 59 / 2025 MB', 'details': '{"progress_percent": 2.9}'}]
+(Background on this error at: https://sqlalche.me/e/20/gkpj)
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\sqlalchemy\engine\base.py", line 1967, in _exec_single_context
+    self.dialect.do_execute(
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\sqlalchemy\engine\default.py", line 941, in do_execute
+    cursor.execute(statement, parameters)
+psycopg2.errors.ForeignKeyViolation: insert or update on table "processing_logs" violates foreign key constraint "processing_logs_dataset_id_fkey"
+DETAIL:  Key (dataset_id)=(47) is not present in table "datasets".
+
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\etl\module5_orchestrator.py", line 504, in _download_worker
+    with jc.plog.stage(
+  File "C:\Users\BigData\AppData\Local\Programs\Python\Python310\lib\contextlib.py", line 153, in __exit__
+    self.gen.throw(typ, value, traceback)
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\etl\pipeline_logger.py", line 306, in stage
+    self._mgr.log_event(
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\etl\pipeline_logger.py", line 158, in log_event
+    sess.flush()
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\sqlalchemy\orm\session.py", line 4352, in flush
+    self._flush(objects)
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\sqlalchemy\orm\session.py", line 4487, in _flush
+    with util.safe_reraise():
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\sqlalchemy\util\langhelpers.py", line 146, in __exit__
+    raise exc_value.with_traceback(exc_tb)
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\sqlalchemy\orm\session.py", line 4448, in _flush
+    flush_context.execute()
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\sqlalchemy\orm\unitofwork.py", line 466, in execute
+    rec.execute(self)
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\sqlalchemy\orm\unitofwork.py", line 642, in execute
+    util.preloaded.orm_persistence.save_obj(
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\sqlalchemy\orm\persistence.py", line 93, in save_obj
+    _emit_insert_statements(
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\sqlalchemy\orm\persistence.py", line 1233, in _emit_insert_statements
+    result = connection.execute(
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\sqlalchemy\engine\base.py", line 1418, in execute
+    return meth(
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\sqlalchemy\sql\elements.py", line 515, in _execute_on_connection
+    return connection._execute_clauseelement(
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\sqlalchemy\engine\base.py", line 1640, in _execute_clauseelement
+    ret = self._execute_context(
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\sqlalchemy\engine\base.py", line 1846, in _execute_context
+    return self._exec_single_context(
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\sqlalchemy\engine\base.py", line 1986, in _exec_single_context
+    self._handle_dbapi_exception(
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\sqlalchemy\engine\base.py", line 2355, in _handle_dbapi_exception
+    raise sqlalchemy_exception.with_traceback(exc_info[2]) from e
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\sqlalchemy\engine\base.py", line 1967, in _exec_single_context
+    self.dialect.do_execute(
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\sqlalchemy\engine\default.py", line 941, in do_execute
+    cursor.execute(statement, parameters)
+sqlalchemy.exc.IntegrityError: (psycopg2.errors.ForeignKeyViolation) insert or update on table "processing_logs" violates foreign key constraint "processing_logs_dataset_id_fkey"
+DETAIL:  Key (dataset_id)=(47) is not present in table "datasets".
+
+[SQL: INSERT INTO processing_logs (dataset_id, scene_id, module, stage, status, message, details) VALUES (%(dataset_id)s, %(scene_id)s, %(module)s, %(stage)s, %(status)s, %(message)s, %(details)s::JSONB) RETURNING processing_logs.log_id, processing_logs.log_uuid, processing_logs.created_at]
+[parameters: {'dataset_id': 47, 'scene_id': 'S1D_IW_GRDH_1SDV_20260829T111410_20260829T111439_004339_008021_0BBF.SAFE', 'module': 'MODULE1_DOWNLOAD', 'stage': 'DOWNLOAD', 'status': 'FAILED', 'message': 'DOWNLOAD failed: (psycopg2.errors.ForeignKeyViolation) insert or update on table "processing_logs" violates foreign key constraint "processing_logs_d ... (591 characters truncated) ... 'message\': \'Downloading: 59 / 2025 MB\', \'details\': \'{"progress_percent": 2.9}\'}]\n(Background on this error at: https://sqlalche.me/e/20/gkpj)', 'details': '{"expected_size_mb": 1930.8173789978027, "duration_seconds": 46.094, "memory_peak_mb": 170.03, "cpu_peak_percent": 12.5, "error_type": "IntegrityErro ... (5526 characters truncated) ... : \'Downloading: 59 / 2025 MB\', \'details\': \'{\\"progress_percent\\": 2.9}\'}]\\n(Background on this error at: https://sqlalche.me/e/20/gkpj)\\n"}'}]
+(Background on this error at: https://sqlalche.me/e/20/gkpj)
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\sqlalchemy\engine\base.py", line 1967, in _exec_single_context
+    self.dialect.do_execute(
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\sqlalchemy\engine\default.py", line 941, in do_execute
+    cursor.execute(statement, parameters)
+psycopg2.errors.ForeignKeyViolation: insert or update on table "processing_logs" violates foreign key constraint "processing_logs_dataset_id_fkey"
+DETAIL:  Key (dataset_id)=(47) is not present in table "datasets".
+
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\etl\module5_orchestrator.py", line 466, in _record_worker_failure
+    jc.plog.log_event(
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\etl\pipeline_logger.py", line 283, in log_event
+    return self._mgr.log_event(dataset_id, scene_id, module, stage, status, message, details)
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\etl\pipeline_logger.py", line 158, in log_event
+    sess.flush()
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\sqlalchemy\orm\session.py", line 4352, in flush
+    self._flush(objects)
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\sqlalchemy\orm\session.py", line 4487, in _flush
+    with util.safe_reraise():
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\sqlalchemy\util\langhelpers.py", line 146, in __exit__
+    raise exc_value.with_traceback(exc_tb)
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\sqlalchemy\orm\session.py", line 4448, in _flush
+    flush_context.execute()
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\sqlalchemy\orm\unitofwork.py", line 466, in execute
+    rec.execute(self)
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\sqlalchemy\orm\unitofwork.py", line 642, in execute
+    util.preloaded.orm_persistence.save_obj(
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\sqlalchemy\orm\persistence.py", line 93, in save_obj
+    _emit_insert_statements(
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\sqlalchemy\orm\persistence.py", line 1233, in _emit_insert_statements
+    result = connection.execute(
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\sqlalchemy\engine\base.py", line 1418, in execute
+    return meth(
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\sqlalchemy\sql\elements.py", line 515, in _execute_on_connection
+    return connection._execute_clauseelement(
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\sqlalchemy\engine\base.py", line 1640, in _execute_clauseelement
+    ret = self._execute_context(
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\sqlalchemy\engine\base.py", line 1846, in _execute_context
+    return self._exec_single_context(
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\sqlalchemy\engine\base.py", line 1986, in _exec_single_context
+    self._handle_dbapi_exception(
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\sqlalchemy\engine\base.py", line 2355, in _handle_dbapi_exception
+    raise sqlalchemy_exception.with_traceback(exc_info[2]) from e
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\sqlalchemy\engine\base.py", line 1967, in _exec_single_context
+    self.dialect.do_execute(
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\sqlalchemy\engine\default.py", line 941, in do_execute
+    cursor.execute(statement, parameters)
+sqlalchemy.exc.IntegrityError: (psycopg2.errors.ForeignKeyViolation) insert or update on table "processing_logs" violates foreign key constraint "processing_logs_dataset_id_fkey"
+DETAIL:  Key (dataset_id)=(47) is not present in table "datasets".
+
+[SQL: INSERT INTO processing_logs (dataset_id, scene_id, module, stage, status, message, details) VALUES (%(dataset_id)s, %(scene_id)s, %(module)s, %(stage)s, %(status)s, %(message)s, %(details)s::JSONB) RETURNING processing_logs.log_id, processing_logs.log_uuid, processing_logs.created_at]
+[parameters: {'dataset_id': 47, 'scene_id': 'S1D_IW_GRDH_1SDV_20260829T111410_20260829T111439_004339_008021_0BBF.SAFE', 'module': 'ORCHESTRATOR', 'stage': 'DOWNLOAD', 'status': 'FAILED', 'message': 'DOWNLOAD failed: (psycopg2.errors.ForeignKeyViolation) insert or update on table "processing_logs" violates foreign key constraint "processing_logs_d ... (1245 characters truncated) ...  2.9}\\\'}]\\\\n(Background on this error at: https://sqlalche.me/e/20/gkpj)\\\\n"}\'}]\n(Background on this error at: https://sqlalche.me/e/20/gkpj)', 'details': '{"error_type": "IntegrityError", "error_message": "(psycopg2.errors.ForeignKeyViolation) insert or update on table \\"processing_logs\\" violates for ... (6102 characters truncated) ... \\\n(Background on this error at: https://sqlalche.me/e/20/gkpj)\\\\\\\\n\\"}\'}]\\n(Background on this error at: https://sqlalche.me/e/20/gkpj)\\n"}'}]
+(Background on this error at: https://sqlalche.me/e/20/gkpj)
+2026-09-03 08:10:44,635 ERROR   [Thread-6 (_download_worker)] etl.database_client Session rolled back due to error: (psycopg2.errors.ForeignKeyViolation) insert or update on table "scene_job_state" violates foreign key constraint "scene_job_state_job_id_fkey"
+DETAIL:  Key (job_id)=(10) is not present in table "dataset_jobs".
+
+[SQL: INSERT INTO scene_job_state (job_id, product_identifier, scene_id, current_stage, stage_status, produced_files, attempt_number, max_retries, last_error, started_at, completed_at) VALUES (%(job_id)s, %(product_identifier)s, %(scene_id)s, %(current_stage)s, %(stage_status)s, %(produced_files)s::JSONB, %(attempt_number)s, %(max_retries)s, %(last_error)s, %(started_at)s, %(completed_at)s) RETURNING scene_job_state.id, scene_job_state.created_at]
+[parameters: {'job_id': 10, 'product_identifier': 'S1D_IW_GRDH_1SDV_20260829T111410_20260829T111439_004339_008021_0BBF.SAFE', 'scene_id': None, 'current_stage': None, 'stage_status': 'PENDING', 'produced_files': '{}', 'attempt_number': 1, 'max_retries': 3, 'last_error': None, 'started_at': None, 'completed_at': None}]
+(Background on this error at: https://sqlalche.me/e/20/gkpj)
+2026-09-03 08:10:54,576 INFO    [Thread-11 (_runner)] etl.pipeline_logger [PLOG-FILE] run log opened for dataset='1 saja' -> logs\1_saja.txt
+2026-09-03 08:10:54,576 INFO    [Thread-11 (_runner)] etl.pipeline_logger [PLOG-FILE] run log opened for dataset='1 saja' -> logs\1_saja.txt
+2026-09-03 08:10:54,576 INFO    [Thread-11 (_runner)] etl.module5_orchestrator [ORCH] job_id=11 start dataset='1 saja' scenes=1 tiers=['RAW', 'BRONZE', 'SILVER', 'GOLD', 'FUSION'] log=logs\1_saja.txt
+2026-09-03 08:10:54,576 INFO    [Thread-11 (_runner)] etl.module5_orchestrator [ORCH] job_id=11 start dataset='1 saja' scenes=1 tiers=['RAW', 'BRONZE', 'SILVER', 'GOLD', 'FUSION'] log=logs\1_saja.txt
+2026-09-03 08:10:54,576 INFO    [Thread-12 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 784, "dataset_id": 48, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "STARTED", "message": "Downloading scene from ESA server", "expected_size_mb": 1930.5271501541138}
+2026-09-03 08:10:54,576 INFO    [Thread-12 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 784, "dataset_id": 48, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "STARTED", "message": "Downloading scene from ESA server", "expected_size_mb": 1930.5271501541138}
+2026-09-03 08:10:54,576 INFO    [Thread-12 (_download_worker)] etl.module1_download [M1] Downloading: S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_0 (1931 MB)
+2026-09-03 08:10:54,576 INFO    [Thread-12 (_download_worker)] etl.module1_download [M1] Downloading: S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_0 (1931 MB)
+2026-09-03 08:11:02,758 INFO    [Thread-12 (_download_worker)] etl.module1_download [M1] Download: 3%  (59 / 2024 MB)
+2026-09-03 08:11:02,758 INFO    [Thread-12 (_download_worker)] etl.module1_download [M1] Download: 3%  (59 / 2024 MB)
+2026-09-03 08:11:02,758 INFO    [Thread-12 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 785, "dataset_id": 48, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 59 / 2024 MB", "progress_percent": 2.9}
+2026-09-03 08:11:02,758 INFO    [Thread-12 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 785, "dataset_id": 48, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 59 / 2024 MB", "progress_percent": 2.9}
+2026-09-03 08:11:09,996 INFO    [Thread-12 (_download_worker)] etl.module1_download [M1] Download: 5%  (109 / 2024 MB)
+2026-09-03 08:11:09,996 INFO    [Thread-12 (_download_worker)] etl.module1_download [M1] Download: 5%  (109 / 2024 MB)
+2026-09-03 08:11:09,997 INFO    [Thread-12 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 786, "dataset_id": 48, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 109 / 2024 MB", "progress_percent": 5.4}
+2026-09-03 08:11:09,997 INFO    [Thread-12 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 786, "dataset_id": 48, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 109 / 2024 MB", "progress_percent": 5.4}
+2026-09-03 08:11:17,508 INFO    [Thread-12 (_download_worker)] etl.module1_download [M1] Download: 8%  (159 / 2024 MB)
+2026-09-03 08:11:17,508 INFO    [Thread-12 (_download_worker)] etl.module1_download [M1] Download: 8%  (159 / 2024 MB)
+2026-09-03 08:11:17,525 INFO    [Thread-12 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 787, "dataset_id": 48, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 159 / 2024 MB", "progress_percent": 7.9}
+2026-09-03 08:11:17,525 INFO    [Thread-12 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 787, "dataset_id": 48, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 159 / 2024 MB", "progress_percent": 7.9}
+2026-09-03 08:11:22,588 INFO    [Thread-12 (_download_worker)] etl.module1_download [M1] Download: 10%  (210 / 2024 MB)
+2026-09-03 08:11:22,588 INFO    [Thread-12 (_download_worker)] etl.module1_download [M1] Download: 10%  (210 / 2024 MB)
+2026-09-03 08:11:22,591 INFO    [Thread-12 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 788, "dataset_id": 48, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 210 / 2024 MB", "progress_percent": 10.4}
+2026-09-03 08:11:22,591 INFO    [Thread-12 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 788, "dataset_id": 48, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 210 / 2024 MB", "progress_percent": 10.4}
+2026-09-03 08:11:37,323 INFO    [Thread-12 (_download_worker)] etl.module1_download [M1] Download: 13%  (268 / 2024 MB)
+2026-09-03 08:11:37,323 INFO    [Thread-12 (_download_worker)] etl.module1_download [M1] Download: 13%  (268 / 2024 MB)
+2026-09-03 08:11:37,323 INFO    [Thread-12 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 789, "dataset_id": 48, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 268 / 2024 MB", "progress_percent": 13.3}
+2026-09-03 08:11:37,323 INFO    [Thread-12 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 789, "dataset_id": 48, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 268 / 2024 MB", "progress_percent": 13.3}
+2026-09-03 08:11:43,123 INFO    [Thread-12 (_download_worker)] etl.module1_download [M1] Download: 16%  (319 / 2024 MB)
+2026-09-03 08:11:43,123 INFO    [Thread-12 (_download_worker)] etl.module1_download [M1] Download: 16%  (319 / 2024 MB)
+2026-09-03 08:11:43,123 INFO    [Thread-12 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 790, "dataset_id": 48, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 319 / 2024 MB", "progress_percent": 15.7}
+2026-09-03 08:11:43,123 INFO    [Thread-12 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 790, "dataset_id": 48, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 319 / 2024 MB", "progress_percent": 15.7}
+2026-09-03 08:11:49,755 INFO    [Thread-12 (_download_worker)] etl.module1_download [M1] Download: 18%  (369 / 2024 MB)
+2026-09-03 08:11:49,755 INFO    [Thread-12 (_download_worker)] etl.module1_download [M1] Download: 18%  (369 / 2024 MB)
+2026-09-03 08:11:49,756 INFO    [Thread-12 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 791, "dataset_id": 48, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 369 / 2024 MB", "progress_percent": 18.2}
+2026-09-03 08:11:49,756 INFO    [Thread-12 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 791, "dataset_id": 48, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 369 / 2024 MB", "progress_percent": 18.2}
+2026-09-03 08:11:59,238 INFO    [Thread-12 (_download_worker)] etl.module1_download [M1] Download: 21%  (419 / 2024 MB)
+2026-09-03 08:11:59,238 INFO    [Thread-12 (_download_worker)] etl.module1_download [M1] Download: 21%  (419 / 2024 MB)
+2026-09-03 08:11:59,239 INFO    [Thread-12 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 792, "dataset_id": 48, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 419 / 2024 MB", "progress_percent": 20.7}
+2026-09-03 08:11:59,239 INFO    [Thread-12 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 792, "dataset_id": 48, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 419 / 2024 MB", "progress_percent": 20.7}
+2026-09-03 08:12:06,873 INFO    [Thread-12 (_download_worker)] etl.module1_download [M1] Download: 24%  (478 / 2024 MB)
+2026-09-03 08:12:06,873 INFO    [Thread-12 (_download_worker)] etl.module1_download [M1] Download: 24%  (478 / 2024 MB)
+2026-09-03 08:12:06,873 INFO    [Thread-12 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 793, "dataset_id": 48, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 478 / 2024 MB", "progress_percent": 23.6}
+2026-09-03 08:12:06,873 INFO    [Thread-12 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 793, "dataset_id": 48, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 478 / 2024 MB", "progress_percent": 23.6}
+2026-09-03 08:12:12,388 INFO    [Thread-12 (_download_worker)] etl.module1_download [M1] Download: 26%  (528 / 2024 MB)
+2026-09-03 08:12:12,388 INFO    [Thread-12 (_download_worker)] etl.module1_download [M1] Download: 26%  (528 / 2024 MB)
+2026-09-03 08:12:12,388 INFO    [Thread-12 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 794, "dataset_id": 48, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 528 / 2024 MB", "progress_percent": 26.1}
+2026-09-03 08:12:12,388 INFO    [Thread-12 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 794, "dataset_id": 48, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 528 / 2024 MB", "progress_percent": 26.1}
+2026-09-03 08:12:16,719 INFO    [Thread-12 (_download_worker)] etl.module1_download [M1] Download: 29%  (579 / 2024 MB)
+2026-09-03 08:12:16,719 INFO    [Thread-12 (_download_worker)] etl.module1_download [M1] Download: 29%  (579 / 2024 MB)
+2026-09-03 08:12:16,722 INFO    [Thread-12 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 795, "dataset_id": 48, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 579 / 2024 MB", "progress_percent": 28.6}
+2026-09-03 08:12:16,722 INFO    [Thread-12 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 795, "dataset_id": 48, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 579 / 2024 MB", "progress_percent": 28.6}
+2026-09-03 08:12:23,780 INFO    [Thread-12 (_download_worker)] etl.module1_download [M1] Download: 31%  (629 / 2024 MB)
+2026-09-03 08:12:23,780 INFO    [Thread-12 (_download_worker)] etl.module1_download [M1] Download: 31%  (629 / 2024 MB)
+2026-09-03 08:12:23,780 INFO    [Thread-12 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 796, "dataset_id": 48, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 629 / 2024 MB", "progress_percent": 31.1}
+2026-09-03 08:12:23,780 INFO    [Thread-12 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 796, "dataset_id": 48, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 629 / 2024 MB", "progress_percent": 31.1}
+2026-09-03 08:12:35,511 INFO    [Thread-12 (_download_worker)] etl.module1_download [M1] Download: 34%  (688 / 2024 MB)
+2026-09-03 08:12:35,511 INFO    [Thread-12 (_download_worker)] etl.module1_download [M1] Download: 34%  (688 / 2024 MB)
+2026-09-03 08:12:35,513 INFO    [Thread-12 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 797, "dataset_id": 48, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 688 / 2024 MB", "progress_percent": 34.0}
+2026-09-03 08:12:35,513 INFO    [Thread-12 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 797, "dataset_id": 48, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 688 / 2024 MB", "progress_percent": 34.0}
+2026-09-03 08:12:56,905 INFO    [Thread-12 (_download_worker)] etl.module1_download [M1] Download: 36%  (738 / 2024 MB)
+2026-09-03 08:12:56,905 INFO    [Thread-12 (_download_worker)] etl.module1_download [M1] Download: 36%  (738 / 2024 MB)
+2026-09-03 08:12:56,905 INFO    [Thread-12 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 798, "dataset_id": 48, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 738 / 2024 MB", "progress_percent": 36.5}
+2026-09-03 08:12:56,905 INFO    [Thread-12 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 798, "dataset_id": 48, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 738 / 2024 MB", "progress_percent": 36.5}
+2026-09-03 08:13:06,637 INFO    [Thread-12 (_download_worker)] etl.module1_download [M1] Download: 39%  (789 / 2024 MB)
+2026-09-03 08:13:06,637 INFO    [Thread-12 (_download_worker)] etl.module1_download [M1] Download: 39%  (789 / 2024 MB)
+2026-09-03 08:13:06,637 INFO    [Thread-12 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 799, "dataset_id": 48, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 789 / 2024 MB", "progress_percent": 39.0}
+2026-09-03 08:13:06,637 INFO    [Thread-12 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 799, "dataset_id": 48, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 789 / 2024 MB", "progress_percent": 39.0}
+2026-09-03 08:13:16,670 INFO    [Thread-12 (_download_worker)] etl.module1_download [M1] Download: 41%  (839 / 2024 MB)
+2026-09-03 08:13:16,670 INFO    [Thread-12 (_download_worker)] etl.module1_download [M1] Download: 41%  (839 / 2024 MB)
+2026-09-03 08:13:16,673 INFO    [Thread-12 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 800, "dataset_id": 48, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 839 / 2024 MB", "progress_percent": 41.4}
+2026-09-03 08:13:16,673 INFO    [Thread-12 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 800, "dataset_id": 48, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 839 / 2024 MB", "progress_percent": 41.4}
+2026-09-03 08:13:38,689 INFO    [Thread-12 (_download_worker)] etl.module1_download [M1] Download: 44%  (898 / 2024 MB)
+2026-09-03 08:13:38,689 INFO    [Thread-12 (_download_worker)] etl.module1_download [M1] Download: 44%  (898 / 2024 MB)
+2026-09-03 08:13:38,690 INFO    [Thread-12 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 801, "dataset_id": 48, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 898 / 2024 MB", "progress_percent": 44.3}
+2026-09-03 08:13:38,690 INFO    [Thread-12 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 801, "dataset_id": 48, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 898 / 2024 MB", "progress_percent": 44.3}
+2026-09-03 08:14:38,545 WARNING [Thread-12 (_download_worker)] etl.module1_download [M1] Download terputus (attempt 1/3): ('Connection broken: IncompleteRead(903299996 bytes read, 1121004441 more expected)', IncompleteRead(903299996 bytes read, 1121004441 more expected)). Retry...
+2026-09-03 08:14:38,545 WARNING [Thread-12 (_download_worker)] etl.module1_download [M1] Download terputus (attempt 1/3): ('Connection broken: IncompleteRead(903299996 bytes read, 1121004441 more expected)', IncompleteRead(903299996 bytes read, 1121004441 more expected)). Retry...
+2026-09-03 08:14:38,545 INFO    [Thread-12 (_download_worker)] etl.module1_download [M1] Akan resume dari 898 MB
+2026-09-03 08:14:38,545 INFO    [Thread-12 (_download_worker)] etl.module1_download [M1] Akan resume dari 898 MB
+2026-09-03 08:15:47,962 WARNING [Thread-12 (_download_worker)] etl.module1_download [M1] Download terputus (attempt 2/3): ('Connection broken: IncompleteRead(7997826 bytes read, 2016306611 more expected)', IncompleteRead(7997826 bytes read, 2016306611 more expected)). Retry...
+2026-09-03 08:15:47,962 WARNING [Thread-12 (_download_worker)] etl.module1_download [M1] Download terputus (attempt 2/3): ('Connection broken: IncompleteRead(7997826 bytes read, 2016306611 more expected)', IncompleteRead(7997826 bytes read, 2016306611 more expected)). Retry...
+2026-09-03 08:15:47,962 INFO    [Thread-12 (_download_worker)] etl.module1_download [M1] Akan resume dari 898 MB
+2026-09-03 08:15:47,962 INFO    [Thread-12 (_download_worker)] etl.module1_download [M1] Akan resume dari 898 MB
+2026-09-03 08:16:54,255 ERROR   [Thread-12 (_download_worker)] etl.module1_download [M1] Download gagal setelah 3 attempts: ('Connection broken: IncompleteRead(5282888 bytes read, 2019021549 more expected)', IncompleteRead(5282888 bytes read, 2019021549 more expected))
+2026-09-03 08:16:54,255 ERROR   [Thread-12 (_download_worker)] etl.module1_download [M1] Download gagal setelah 3 attempts: ('Connection broken: IncompleteRead(5282888 bytes read, 2019021549 more expected)', IncompleteRead(5282888 bytes read, 2019021549 more expected))
+2026-09-03 08:16:54,255 INFO    [Thread-12 (_download_worker)] etl.module1_download [M1] File .part tersimpan di: data\datasets\48_1_saja\raw\sentinel1\S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE\S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE.zip.part
+2026-09-03 08:16:54,255 INFO    [Thread-12 (_download_worker)] etl.module1_download [M1] File .part tersimpan di: data\datasets\48_1_saja\raw\sentinel1\S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE\S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE.zip.part
+2026-09-03 08:16:54,287 ERROR   [Thread-12 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 802, "dataset_id": 48, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "FAILED", "message": "DOWNLOAD failed: ('Connection broken: IncompleteRead(5282888 bytes read, 2019021549 more expected)', IncompleteRead(5282888 bytes read, 2019021549 more expected))", "expected_size_mb": 1930.5271501541138, "duration_seconds": 359.688, "memory_peak_mb": 177.0, "cpu_peak_percent": 15.6, "error_type": "ChunkedEncodingError", "error_message": "('Connection broken: IncompleteRead(5282888 bytes read, 2019021549 more expected)', IncompleteRead(5282888 bytes read, 2019021549 more expected))", "traceback": "Traceback (most recent call last):\n  File \"C:\\Users\\BigData\\Downloads\\sentinel-sentinel\\sentinel-metadata\\venv\\lib\\site-packages\\urllib3\\response.py\", line 905, in _error_catcher\n    yield\n  File \"C:\\Users\\BigData\\Downloads\\sentinel-sentinel\\sentinel-metadata\\venv\\lib\\site-packages\\urllib3\\response.py\", line 1043, in _raw_read\n    raise IncompleteRead(self._fp_bytes_read, self.length_remaining)\nurllib3.exceptions.IncompleteRead: IncompleteRead(5282888 bytes read, 2019021549 more expected)\n\nThe above exception was the direct cause of the following exception:\n\nTraceback (most recent call last):\n  File \"C:\\Users\\BigData\\Downloads\\sentinel-sentinel\\sentinel-metadata\\venv\\lib\\site-packages\\requests\\models.py\", line 820, in generate\n    yield from self.raw.stream(chunk_size, decode_content=True)\n  File \"C:\\Users\\BigData\\Downloads\\sentinel-sentinel\\sentinel-metadata\\venv\\lib\\site-packages\\urllib3\\response.py\", line 1267, in stream\n    data = self.read(amt=amt, decode_content=decode_content)\n  File \"C:\\Users\\BigData\\Downloads\\sentinel-sentinel\\sentinel-metadata\\venv\\lib\\site-packages\\urllib3\\response.py\", line 1155, in read\n    data = self._raw_read(amt)\n  File \"C:\\Users\\BigData\\Downloads\\sentinel-sentinel\\sentinel-metadata\\venv\\lib\\site-packages\\urllib3\\response.py\", line 1021, in _raw_read\n    with self._error_catcher():\n  File \"C:\\Users\\BigData\\AppData\\Local\\Programs\\Python\\Python310\\lib\\contextlib.py\", line 153, in __exit__\n    self.gen.throw(typ, value, traceback)\n  File \"C:\\Users\\BigData\\Downloads\\sentinel-sentinel\\sentinel-metadata\\venv\\lib\\site-packages\\urllib3\\response.py\", line 925, in _error_catcher\n    raise ProtocolError(arg, e) from e\nurllib3.exceptions.ProtocolError: ('Connection broken: IncompleteRead(5282888 bytes read, 2019021549 more expected)', IncompleteRead(5282888 bytes read, 2019021549 more expected))\n\nDuring handling of the above exception, another exception occurred:\n\nTraceback (most recent call last):\n  File \"C:\\Users\\BigData\\Downloads\\sentinel-sentinel\\sentinel-metadata\\etl\\pipeline_logger.py\", line 302, in stage\n    yield handle\n  File \"C:\\Users\\BigData\\Downloads\\sentinel-sentinel\\sentinel-metadata\\etl\\module5_orchestrator.py\", line 509, in _download_worker\n    result = download_scene(\n  File \"C:\\Users\\BigData\\Downloads\\sentinel-sentinel\\sentinel-metadata\\etl\\module1_download.py\", line 199, in download_scene\n    for chunk in resp.iter_content(chunk_size=8 * 1024 * 1024):\n  File \"C:\\Users\\BigData\\Downloads\\sentinel-sentinel\\sentinel-metadata\\venv\\lib\\site-packages\\requests\\models.py\", line 822, in generate\n    raise ChunkedEncodingError(e)\nrequests.exceptions.ChunkedEncodingError: ('Connection broken: IncompleteRead(5282888 bytes read, 2019021549 more expected)', IncompleteRead(5282888 bytes read, 2019021549 more expected))\n"}
+2026-09-03 08:16:54,287 ERROR   [Thread-12 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 802, "dataset_id": 48, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "FAILED", "message": "DOWNLOAD failed: ('Connection broken: IncompleteRead(5282888 bytes read, 2019021549 more expected)', IncompleteRead(5282888 bytes read, 2019021549 more expected))", "expected_size_mb": 1930.5271501541138, "duration_seconds": 359.688, "memory_peak_mb": 177.0, "cpu_peak_percent": 15.6, "error_type": "ChunkedEncodingError", "error_message": "('Connection broken: IncompleteRead(5282888 bytes read, 2019021549 more expected)', IncompleteRead(5282888 bytes read, 2019021549 more expected))", "traceback": "Traceback (most recent call last):\n  File \"C:\\Users\\BigData\\Downloads\\sentinel-sentinel\\sentinel-metadata\\venv\\lib\\site-packages\\urllib3\\response.py\", line 905, in _error_catcher\n    yield\n  File \"C:\\Users\\BigData\\Downloads\\sentinel-sentinel\\sentinel-metadata\\venv\\lib\\site-packages\\urllib3\\response.py\", line 1043, in _raw_read\n    raise IncompleteRead(self._fp_bytes_read, self.length_remaining)\nurllib3.exceptions.IncompleteRead: IncompleteRead(5282888 bytes read, 2019021549 more expected)\n\nThe above exception was the direct cause of the following exception:\n\nTraceback (most recent call last):\n  File \"C:\\Users\\BigData\\Downloads\\sentinel-sentinel\\sentinel-metadata\\venv\\lib\\site-packages\\requests\\models.py\", line 820, in generate\n    yield from self.raw.stream(chunk_size, decode_content=True)\n  File \"C:\\Users\\BigData\\Downloads\\sentinel-sentinel\\sentinel-metadata\\venv\\lib\\site-packages\\urllib3\\response.py\", line 1267, in stream\n    data = self.read(amt=amt, decode_content=decode_content)\n  File \"C:\\Users\\BigData\\Downloads\\sentinel-sentinel\\sentinel-metadata\\venv\\lib\\site-packages\\urllib3\\response.py\", line 1155, in read\n    data = self._raw_read(amt)\n  File \"C:\\Users\\BigData\\Downloads\\sentinel-sentinel\\sentinel-metadata\\venv\\lib\\site-packages\\urllib3\\response.py\", line 1021, in _raw_read\n    with self._error_catcher():\n  File \"C:\\Users\\BigData\\AppData\\Local\\Programs\\Python\\Python310\\lib\\contextlib.py\", line 153, in __exit__\n    self.gen.throw(typ, value, traceback)\n  File \"C:\\Users\\BigData\\Downloads\\sentinel-sentinel\\sentinel-metadata\\venv\\lib\\site-packages\\urllib3\\response.py\", line 925, in _error_catcher\n    raise ProtocolError(arg, e) from e\nurllib3.exceptions.ProtocolError: ('Connection broken: IncompleteRead(5282888 bytes read, 2019021549 more expected)', IncompleteRead(5282888 bytes read, 2019021549 more expected))\n\nDuring handling of the above exception, another exception occurred:\n\nTraceback (most recent call last):\n  File \"C:\\Users\\BigData\\Downloads\\sentinel-sentinel\\sentinel-metadata\\etl\\pipeline_logger.py\", line 302, in stage\n    yield handle\n  File \"C:\\Users\\BigData\\Downloads\\sentinel-sentinel\\sentinel-metadata\\etl\\module5_orchestrator.py\", line 509, in _download_worker\n    result = download_scene(\n  File \"C:\\Users\\BigData\\Downloads\\sentinel-sentinel\\sentinel-metadata\\etl\\module1_download.py\", line 199, in download_scene\n    for chunk in resp.iter_content(chunk_size=8 * 1024 * 1024):\n  File \"C:\\Users\\BigData\\Downloads\\sentinel-sentinel\\sentinel-metadata\\venv\\lib\\site-packages\\requests\\models.py\", line 822, in generate\n    raise ChunkedEncodingError(e)\nrequests.exceptions.ChunkedEncodingError: ('Connection broken: IncompleteRead(5282888 bytes read, 2019021549 more expected)', IncompleteRead(5282888 bytes read, 2019021549 more expected))\n"}
+2026-09-03 08:16:54,287 ERROR   [Thread-12 (_download_worker)] etl.module5_orchestrator [ORCH] download gagal pid=S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE job_id=11
+Traceback (most recent call last):
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\urllib3\response.py", line 905, in _error_catcher
+    yield
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\urllib3\response.py", line 1043, in _raw_read
+    raise IncompleteRead(self._fp_bytes_read, self.length_remaining)
+urllib3.exceptions.IncompleteRead: IncompleteRead(5282888 bytes read, 2019021549 more expected)
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\requests\models.py", line 820, in generate
+    yield from self.raw.stream(chunk_size, decode_content=True)
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\urllib3\response.py", line 1267, in stream
+    data = self.read(amt=amt, decode_content=decode_content)
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\urllib3\response.py", line 1155, in read
+    data = self._raw_read(amt)
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\urllib3\response.py", line 1021, in _raw_read
+    with self._error_catcher():
+  File "C:\Users\BigData\AppData\Local\Programs\Python\Python310\lib\contextlib.py", line 153, in __exit__
+    self.gen.throw(typ, value, traceback)
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\urllib3\response.py", line 925, in _error_catcher
+    raise ProtocolError(arg, e) from e
+urllib3.exceptions.ProtocolError: ('Connection broken: IncompleteRead(5282888 bytes read, 2019021549 more expected)', IncompleteRead(5282888 bytes read, 2019021549 more expected))
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\etl\module5_orchestrator.py", line 509, in _download_worker
+    result = download_scene(
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\etl\module1_download.py", line 199, in download_scene
+    for chunk in resp.iter_content(chunk_size=8 * 1024 * 1024):
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\requests\models.py", line 822, in generate
+    raise ChunkedEncodingError(e)
+requests.exceptions.ChunkedEncodingError: ('Connection broken: IncompleteRead(5282888 bytes read, 2019021549 more expected)', IncompleteRead(5282888 bytes read, 2019021549 more expected))
+2026-09-03 08:16:54,287 ERROR   [Thread-12 (_download_worker)] etl.module5_orchestrator [ORCH] download gagal pid=S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE job_id=11
+Traceback (most recent call last):
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\urllib3\response.py", line 905, in _error_catcher
+    yield
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\urllib3\response.py", line 1043, in _raw_read
+    raise IncompleteRead(self._fp_bytes_read, self.length_remaining)
+urllib3.exceptions.IncompleteRead: IncompleteRead(5282888 bytes read, 2019021549 more expected)
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\requests\models.py", line 820, in generate
+    yield from self.raw.stream(chunk_size, decode_content=True)
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\urllib3\response.py", line 1267, in stream
+    data = self.read(amt=amt, decode_content=decode_content)
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\urllib3\response.py", line 1155, in read
+    data = self._raw_read(amt)
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\urllib3\response.py", line 1021, in _raw_read
+    with self._error_catcher():
+  File "C:\Users\BigData\AppData\Local\Programs\Python\Python310\lib\contextlib.py", line 153, in __exit__
+    self.gen.throw(typ, value, traceback)
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\urllib3\response.py", line 925, in _error_catcher
+    raise ProtocolError(arg, e) from e
+urllib3.exceptions.ProtocolError: ('Connection broken: IncompleteRead(5282888 bytes read, 2019021549 more expected)', IncompleteRead(5282888 bytes read, 2019021549 more expected))
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\etl\module5_orchestrator.py", line 509, in _download_worker
+    result = download_scene(
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\etl\module1_download.py", line 199, in download_scene
+    for chunk in resp.iter_content(chunk_size=8 * 1024 * 1024):
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\requests\models.py", line 822, in generate
+    raise ChunkedEncodingError(e)
+requests.exceptions.ChunkedEncodingError: ('Connection broken: IncompleteRead(5282888 bytes read, 2019021549 more expected)', IncompleteRead(5282888 bytes read, 2019021549 more expected))
+2026-09-03 08:16:54,288 ERROR   [Thread-12 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 803, "dataset_id": 48, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "ORCHESTRATOR", "stage": "DOWNLOAD", "status": "FAILED", "message": "DOWNLOAD failed: ('Connection broken: IncompleteRead(5282888 bytes read, 2019021549 more expected)', IncompleteRead(5282888 bytes read, 2019021549 more expected))", "error_type": "ChunkedEncodingError", "error_message": "('Connection broken: IncompleteRead(5282888 bytes read, 2019021549 more expected)', IncompleteRead(5282888 bytes read, 2019021549 more expected))", "traceback": "Traceback (most recent call last):\n  File \"C:\\Users\\BigData\\Downloads\\sentinel-sentinel\\sentinel-metadata\\venv\\lib\\site-packages\\urllib3\\response.py\", line 905, in _error_catcher\n    yield\n  File \"C:\\Users\\BigData\\Downloads\\sentinel-sentinel\\sentinel-metadata\\venv\\lib\\site-packages\\urllib3\\response.py\", line 1043, in _raw_read\n    raise IncompleteRead(self._fp_bytes_read, self.length_remaining)\nurllib3.exceptions.IncompleteRead: IncompleteRead(5282888 bytes read, 2019021549 more expected)\n\nThe above exception was the direct cause of the following exception:\n\nTraceback (most recent call last):\n  File \"C:\\Users\\BigData\\Downloads\\sentinel-sentinel\\sentinel-metadata\\venv\\lib\\site-packages\\requests\\models.py\", line 820, in generate\n    yield from self.raw.stream(chunk_size, decode_content=True)\n  File \"C:\\Users\\BigData\\Downloads\\sentinel-sentinel\\sentinel-metadata\\venv\\lib\\site-packages\\urllib3\\response.py\", line 1267, in stream\n    data = self.read(amt=amt, decode_content=decode_content)\n  File \"C:\\Users\\BigData\\Downloads\\sentinel-sentinel\\sentinel-metadata\\venv\\lib\\site-packages\\urllib3\\response.py\", line 1155, in read\n    data = self._raw_read(amt)\n  File \"C:\\Users\\BigData\\Downloads\\sentinel-sentinel\\sentinel-metadata\\venv\\lib\\site-packages\\urllib3\\response.py\", line 1021, in _raw_read\n    with self._error_catcher():\n  File \"C:\\Users\\BigData\\AppData\\Local\\Programs\\Python\\Python310\\lib\\contextlib.py\", line 153, in __exit__\n    self.gen.throw(typ, value, traceback)\n  File \"C:\\Users\\BigData\\Downloads\\sentinel-sentinel\\sentinel-metadata\\venv\\lib\\site-packages\\urllib3\\response.py\", line 925, in _error_catcher\n    raise ProtocolError(arg, e) from e\nurllib3.exceptions.ProtocolError: ('Connection broken: IncompleteRead(5282888 bytes read, 2019021549 more expected)', IncompleteRead(5282888 bytes read, 2019021549 more expected))\n\nDuring handling of the above exception, another exception occurred:\n\nTraceback (most recent call last):\n  File \"C:\\Users\\BigData\\Downloads\\sentinel-sentinel\\sentinel-metadata\\etl\\module5_orchestrator.py\", line 509, in _download_worker\n    result = download_scene(\n  File \"C:\\Users\\BigData\\Downloads\\sentinel-sentinel\\sentinel-metadata\\etl\\module1_download.py\", line 199, in download_scene\n    for chunk in resp.iter_content(chunk_size=8 * 1024 * 1024):\n  File \"C:\\Users\\BigData\\Downloads\\sentinel-sentinel\\sentinel-metadata\\venv\\lib\\site-packages\\requests\\models.py\", line 822, in generate\n    raise ChunkedEncodingError(e)\nrequests.exceptions.ChunkedEncodingError: ('Connection broken: IncompleteRead(5282888 bytes read, 2019021549 more expected)', IncompleteRead(5282888 bytes read, 2019021549 more expected))\n"}
+2026-09-03 08:16:54,288 ERROR   [Thread-12 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 803, "dataset_id": 48, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "ORCHESTRATOR", "stage": "DOWNLOAD", "status": "FAILED", "message": "DOWNLOAD failed: ('Connection broken: IncompleteRead(5282888 bytes read, 2019021549 more expected)', IncompleteRead(5282888 bytes read, 2019021549 more expected))", "error_type": "ChunkedEncodingError", "error_message": "('Connection broken: IncompleteRead(5282888 bytes read, 2019021549 more expected)', IncompleteRead(5282888 bytes read, 2019021549 more expected))", "traceback": "Traceback (most recent call last):\n  File \"C:\\Users\\BigData\\Downloads\\sentinel-sentinel\\sentinel-metadata\\venv\\lib\\site-packages\\urllib3\\response.py\", line 905, in _error_catcher\n    yield\n  File \"C:\\Users\\BigData\\Downloads\\sentinel-sentinel\\sentinel-metadata\\venv\\lib\\site-packages\\urllib3\\response.py\", line 1043, in _raw_read\n    raise IncompleteRead(self._fp_bytes_read, self.length_remaining)\nurllib3.exceptions.IncompleteRead: IncompleteRead(5282888 bytes read, 2019021549 more expected)\n\nThe above exception was the direct cause of the following exception:\n\nTraceback (most recent call last):\n  File \"C:\\Users\\BigData\\Downloads\\sentinel-sentinel\\sentinel-metadata\\venv\\lib\\site-packages\\requests\\models.py\", line 820, in generate\n    yield from self.raw.stream(chunk_size, decode_content=True)\n  File \"C:\\Users\\BigData\\Downloads\\sentinel-sentinel\\sentinel-metadata\\venv\\lib\\site-packages\\urllib3\\response.py\", line 1267, in stream\n    data = self.read(amt=amt, decode_content=decode_content)\n  File \"C:\\Users\\BigData\\Downloads\\sentinel-sentinel\\sentinel-metadata\\venv\\lib\\site-packages\\urllib3\\response.py\", line 1155, in read\n    data = self._raw_read(amt)\n  File \"C:\\Users\\BigData\\Downloads\\sentinel-sentinel\\sentinel-metadata\\venv\\lib\\site-packages\\urllib3\\response.py\", line 1021, in _raw_read\n    with self._error_catcher():\n  File \"C:\\Users\\BigData\\AppData\\Local\\Programs\\Python\\Python310\\lib\\contextlib.py\", line 153, in __exit__\n    self.gen.throw(typ, value, traceback)\n  File \"C:\\Users\\BigData\\Downloads\\sentinel-sentinel\\sentinel-metadata\\venv\\lib\\site-packages\\urllib3\\response.py\", line 925, in _error_catcher\n    raise ProtocolError(arg, e) from e\nurllib3.exceptions.ProtocolError: ('Connection broken: IncompleteRead(5282888 bytes read, 2019021549 more expected)', IncompleteRead(5282888 bytes read, 2019021549 more expected))\n\nDuring handling of the above exception, another exception occurred:\n\nTraceback (most recent call last):\n  File \"C:\\Users\\BigData\\Downloads\\sentinel-sentinel\\sentinel-metadata\\etl\\module5_orchestrator.py\", line 509, in _download_worker\n    result = download_scene(\n  File \"C:\\Users\\BigData\\Downloads\\sentinel-sentinel\\sentinel-metadata\\etl\\module1_download.py\", line 199, in download_scene\n    for chunk in resp.iter_content(chunk_size=8 * 1024 * 1024):\n  File \"C:\\Users\\BigData\\Downloads\\sentinel-sentinel\\sentinel-metadata\\venv\\lib\\site-packages\\requests\\models.py\", line 822, in generate\n    raise ChunkedEncodingError(e)\nrequests.exceptions.ChunkedEncodingError: ('Connection broken: IncompleteRead(5282888 bytes read, 2019021549 more expected)', IncompleteRead(5282888 bytes read, 2019021549 more expected))\n"}
+2026-09-03 08:16:54,290 INFO    [Thread-11 (_runner)] etl.pipeline_logger [PLOG-FILE] run log closed for dataset='1 saja'
+2026-09-03 08:16:54,290 INFO    [Thread-11 (_runner)] etl.pipeline_logger [PLOG-FILE] run log closed for dataset='1 saja'
+2026-09-03 08:23:01,466 INFO    [Thread-16 (_runner)] etl.pipeline_logger [PLOG-FILE] run log opened for dataset='1 saja' -> logs\1_saja.txt
+2026-09-03 08:23:01,466 INFO    [Thread-16 (_runner)] etl.pipeline_logger [PLOG-FILE] run log opened for dataset='1 saja' -> logs\1_saja.txt
+2026-09-03 08:23:01,466 INFO    [Thread-16 (_runner)] etl.module5_orchestrator [ORCH] job_id=11 start dataset='1 saja' scenes=1 tiers=['RAW', 'BRONZE', 'SILVER', 'GOLD', 'FUSION'] log=logs\1_saja.txt
+2026-09-03 08:23:01,466 INFO    [Thread-16 (_runner)] etl.module5_orchestrator [ORCH] job_id=11 start dataset='1 saja' scenes=1 tiers=['RAW', 'BRONZE', 'SILVER', 'GOLD', 'FUSION'] log=logs\1_saja.txt
+2026-09-03 08:23:01,470 INFO    [Thread-17 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 804, "dataset_id": 48, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "STARTED", "message": "Downloading scene from ESA server", "expected_size_mb": 1930.5271501541138}
+2026-09-03 08:23:01,470 INFO    [Thread-17 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 804, "dataset_id": 48, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "STARTED", "message": "Downloading scene from ESA server", "expected_size_mb": 1930.5271501541138}
+2026-09-03 08:23:01,470 INFO    [Thread-17 (_download_worker)] etl.module1_download [M1] Downloading: S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_0 (1931 MB)
+2026-09-03 08:23:01,470 INFO    [Thread-17 (_download_worker)] etl.module1_download [M1] Downloading: S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_0 (1931 MB)
+2026-09-03 08:23:02,788 INFO    [Thread-17 (_download_worker)] etl.module1_download [M1] Melanjutkan download dari 898 MB...
+2026-09-03 08:23:02,788 INFO    [Thread-17 (_download_worker)] etl.module1_download [M1] Melanjutkan download dari 898 MB...
+2026-09-03 08:24:11,570 INFO    [Thread-17 (_download_worker)] etl.module1_download [M1] Download: 32%  (948 / 2922 MB)
+2026-09-03 08:24:11,570 INFO    [Thread-17 (_download_worker)] etl.module1_download [M1] Download: 32%  (948 / 2922 MB)
+2026-09-03 08:24:11,572 INFO    [Thread-17 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 805, "dataset_id": 48, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 948 / 2922 MB", "progress_percent": 32.4}
+2026-09-03 08:24:11,572 INFO    [Thread-17 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 805, "dataset_id": 48, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 948 / 2922 MB", "progress_percent": 32.4}
+2026-09-03 08:25:36,585 INFO    [Thread-17 (_download_worker)] etl.module1_download [M1] Download: 34%  (998 / 2922 MB)
+2026-09-03 08:25:36,585 INFO    [Thread-17 (_download_worker)] etl.module1_download [M1] Download: 34%  (998 / 2922 MB)
+2026-09-03 08:25:36,587 INFO    [Thread-17 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 806, "dataset_id": 48, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 998 / 2922 MB", "progress_percent": 34.2}
+2026-09-03 08:25:36,587 INFO    [Thread-17 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 806, "dataset_id": 48, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 998 / 2922 MB", "progress_percent": 34.2}
+2026-09-03 09:11:46,577 INFO    [Thread-1 (_runner)] etl.pipeline_logger [PLOG-FILE] run log opened for dataset='1 saja' -> logs\1_saja.txt
+2026-09-03 09:11:46,578 INFO    [Thread-1 (_runner)] etl.module5_orchestrator [ORCH] job_id=11 start dataset='1 saja' scenes=1 tiers=['RAW', 'BRONZE', 'SILVER', 'GOLD', 'FUSION'] log=logs\1_saja.txt
+2026-09-03 09:11:46,595 INFO    [Thread-2 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 807, "dataset_id": 48, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "STARTED", "message": "Downloading scene from ESA server", "expected_size_mb": 1930.5271501541138}
+2026-09-03 09:11:46,595 INFO    [Thread-2 (_download_worker)] etl.module1_download [M1] Downloading: S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_0 (1931 MB)
+2026-09-03 09:11:48,259 INFO    [Thread-2 (_download_worker)] etl.module1_download [M1] Melanjutkan download dari 1040 MB...
+2026-09-03 09:11:50,108 WARNING [Thread-2 (_download_worker)] etl.module1_download [M1] Server mengabaikan Range (HTTP 200), download diulang dari awal.
+2026-09-03 09:12:57,114 INFO    [Thread-2 (_download_worker)] etl.module1_download [M1] Download: 3%  (59 / 2024 MB)
+2026-09-03 09:12:57,122 INFO    [Thread-2 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 808, "dataset_id": 48, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 59 / 2024 MB", "progress_percent": 2.9}
+2026-09-03 09:13:57,128 INFO    [Thread-2 (_download_worker)] etl.module1_download [M1] Download: 5%  (109 / 2024 MB)
+2026-09-03 09:13:57,268 INFO    [Thread-2 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 809, "dataset_id": 48, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 109 / 2024 MB", "progress_percent": 5.4}
+2026-09-03 09:14:58,922 INFO    [Thread-2 (_download_worker)] etl.module1_download [M1] Download: 8%  (159 / 2024 MB)
+2026-09-03 09:14:58,924 INFO    [Thread-2 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 810, "dataset_id": 48, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 159 / 2024 MB", "progress_percent": 7.9}
+2026-09-03 09:16:00,468 INFO    [Thread-2 (_download_worker)] etl.module1_download [M1] Download: 10%  (210 / 2024 MB)
+2026-09-03 09:16:00,471 INFO    [Thread-2 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 811, "dataset_id": 48, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 210 / 2024 MB", "progress_percent": 10.4}
+2026-09-03 09:17:11,133 INFO    [Thread-2 (_download_worker)] etl.module1_download [M1] Download: 13%  (268 / 2024 MB)
+2026-09-03 09:17:11,136 INFO    [Thread-2 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 812, "dataset_id": 48, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 268 / 2024 MB", "progress_percent": 13.3}
+2026-09-03 09:18:12,695 INFO    [Thread-2 (_download_worker)] etl.module1_download [M1] Download: 16%  (319 / 2024 MB)
+2026-09-03 09:18:12,698 INFO    [Thread-2 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 813, "dataset_id": 48, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 319 / 2024 MB", "progress_percent": 15.7}
+2026-09-03 09:19:12,272 INFO    [Thread-2 (_download_worker)] etl.module1_download [M1] Download: 18%  (369 / 2024 MB)
+2026-09-03 09:19:12,276 INFO    [Thread-2 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 814, "dataset_id": 48, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 369 / 2024 MB", "progress_percent": 18.2}
+2026-09-03 09:20:11,848 INFO    [Thread-2 (_download_worker)] etl.module1_download [M1] Download: 21%  (419 / 2024 MB)
+2026-09-03 09:20:11,855 INFO    [Thread-2 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 815, "dataset_id": 48, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 419 / 2024 MB", "progress_percent": 20.7}
+2026-09-03 09:21:36,261 INFO    [Thread-2 (_download_worker)] etl.module1_download [M1] Download: 24%  (478 / 2024 MB)
+2026-09-03 09:21:36,264 INFO    [Thread-2 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 816, "dataset_id": 48, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 478 / 2024 MB", "progress_percent": 23.6}
+2026-09-03 09:22:44,420 INFO    [Thread-2 (_download_worker)] etl.module1_download [M1] Download: 26%  (528 / 2024 MB)
+2026-09-03 09:22:44,423 INFO    [Thread-2 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 817, "dataset_id": 48, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 528 / 2024 MB", "progress_percent": 26.1}
+2026-09-03 09:23:46,472 INFO    [Thread-2 (_download_worker)] etl.module1_download [M1] Download: 29%  (579 / 2024 MB)
+2026-09-03 09:23:46,474 INFO    [Thread-2 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 818, "dataset_id": 48, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 579 / 2024 MB", "progress_percent": 28.6}
+2026-09-03 09:25:02,447 INFO    [Thread-2 (_download_worker)] etl.module1_download [M1] Download: 31%  (629 / 2024 MB)
+2026-09-03 09:25:02,450 INFO    [Thread-2 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 819, "dataset_id": 48, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 629 / 2024 MB", "progress_percent": 31.1}
+2026-09-03 09:26:13,920 INFO    [Thread-2 (_download_worker)] etl.module1_download [M1] Download: 34%  (688 / 2024 MB)
+2026-09-03 09:26:13,923 INFO    [Thread-2 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 820, "dataset_id": 48, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 688 / 2024 MB", "progress_percent": 34.0}
+2026-09-03 09:27:15,606 INFO    [Thread-2 (_download_worker)] etl.module1_download [M1] Download: 36%  (738 / 2024 MB)
+2026-09-03 09:27:15,609 INFO    [Thread-2 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 821, "dataset_id": 48, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 738 / 2024 MB", "progress_percent": 36.5}
+2026-09-03 09:28:16,804 INFO    [Thread-2 (_download_worker)] etl.module1_download [M1] Download: 39%  (789 / 2024 MB)
+2026-09-03 09:28:16,806 INFO    [Thread-2 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 822, "dataset_id": 48, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 789 / 2024 MB", "progress_percent": 39.0}
+2026-09-03 09:29:19,465 INFO    [Thread-2 (_download_worker)] etl.module1_download [M1] Download: 41%  (839 / 2024 MB)
+2026-09-03 09:29:19,468 INFO    [Thread-2 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 823, "dataset_id": 48, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 839 / 2024 MB", "progress_percent": 41.4}
+2026-09-03 09:30:32,195 INFO    [Thread-2 (_download_worker)] etl.module1_download [M1] Download: 44%  (898 / 2024 MB)
+2026-09-03 09:30:32,197 INFO    [Thread-2 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 824, "dataset_id": 48, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 898 / 2024 MB", "progress_percent": 44.3}
+2026-09-03 09:31:42,744 INFO    [Thread-2 (_download_worker)] etl.module1_download [M1] Download: 47%  (948 / 2024 MB)
+2026-09-03 09:31:42,746 INFO    [Thread-2 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 825, "dataset_id": 48, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 948 / 2024 MB", "progress_percent": 46.8}
+2026-09-03 09:32:44,362 INFO    [Thread-2 (_download_worker)] etl.module1_download [M1] Download: 49%  (998 / 2024 MB)
+2026-09-03 09:32:44,365 INFO    [Thread-2 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 826, "dataset_id": 48, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 998 / 2024 MB", "progress_percent": 49.3}
+2026-09-03 09:33:50,204 INFO    [Thread-2 (_download_worker)] etl.module1_download [M1] Download: 52%  (1049 / 2024 MB)
+2026-09-03 09:33:50,207 INFO    [Thread-2 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 827, "dataset_id": 48, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 1049 / 2024 MB", "progress_percent": 51.8}
+2026-09-03 09:35:09,971 INFO    [Thread-2 (_download_worker)] etl.module1_download [M1] Download: 55%  (1107 / 2024 MB)
+2026-09-03 09:35:09,974 INFO    [Thread-2 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 828, "dataset_id": 48, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 1107 / 2024 MB", "progress_percent": 54.7}
+2026-09-03 09:36:16,119 INFO    [Thread-2 (_download_worker)] etl.module1_download [M1] Download: 57%  (1158 / 2024 MB)
+2026-09-03 09:36:16,122 INFO    [Thread-2 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 829, "dataset_id": 48, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 1158 / 2024 MB", "progress_percent": 57.2}
+2026-09-03 09:37:19,017 INFO    [Thread-2 (_download_worker)] etl.module1_download [M1] Download: 60%  (1208 / 2024 MB)
+2026-09-03 09:37:19,019 INFO    [Thread-2 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 830, "dataset_id": 48, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 1208 / 2024 MB", "progress_percent": 59.7}
+2026-09-03 09:38:24,548 INFO    [Thread-2 (_download_worker)] etl.module1_download [M1] Download: 62%  (1258 / 2024 MB)
+2026-09-03 09:38:24,550 INFO    [Thread-2 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 831, "dataset_id": 48, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 1258 / 2024 MB", "progress_percent": 62.2}
+2026-09-03 09:39:34,770 INFO    [Thread-2 (_download_worker)] etl.module1_download [M1] Download: 65%  (1317 / 2024 MB)
+2026-09-03 09:39:34,772 INFO    [Thread-2 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 832, "dataset_id": 48, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 1317 / 2024 MB", "progress_percent": 65.1}
+2026-09-03 09:40:35,185 INFO    [Thread-2 (_download_worker)] etl.module1_download [M1] Download: 68%  (1367 / 2024 MB)
+2026-09-03 09:40:35,187 INFO    [Thread-2 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 833, "dataset_id": 48, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 1367 / 2024 MB", "progress_percent": 67.5}
+2026-09-03 09:41:35,598 INFO    [Thread-2 (_download_worker)] etl.module1_download [M1] Download: 70%  (1418 / 2024 MB)
+2026-09-03 09:41:35,602 INFO    [Thread-2 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 834, "dataset_id": 48, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 1418 / 2024 MB", "progress_percent": 70.0}
+2026-09-03 09:42:42,773 INFO    [Thread-2 (_download_worker)] etl.module1_download [M1] Download: 73%  (1468 / 2024 MB)
+2026-09-03 09:42:42,776 INFO    [Thread-2 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 835, "dataset_id": 48, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 1468 / 2024 MB", "progress_percent": 72.5}
+2026-09-03 09:43:54,783 INFO    [Thread-2 (_download_worker)] etl.module1_download [M1] Download: 75%  (1527 / 2024 MB)
+2026-09-03 09:43:54,786 INFO    [Thread-2 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 836, "dataset_id": 48, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 1527 / 2024 MB", "progress_percent": 75.4}
+2026-09-03 09:44:55,888 INFO    [Thread-2 (_download_worker)] etl.module1_download [M1] Download: 78%  (1577 / 2024 MB)
+2026-09-03 09:44:55,891 INFO    [Thread-2 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 837, "dataset_id": 48, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 1577 / 2024 MB", "progress_percent": 77.9}
+2026-09-03 09:45:56,835 INFO    [Thread-2 (_download_worker)] etl.module1_download [M1] Download: 80%  (1627 / 2024 MB)
+2026-09-03 09:45:56,838 INFO    [Thread-2 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 838, "dataset_id": 48, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 1627 / 2024 MB", "progress_percent": 80.4}
+2026-09-03 09:46:57,741 INFO    [Thread-2 (_download_worker)] etl.module1_download [M1] Download: 83%  (1678 / 2024 MB)
+2026-09-03 09:46:57,743 INFO    [Thread-2 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 839, "dataset_id": 48, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 1678 / 2024 MB", "progress_percent": 82.9}
+2026-09-03 09:48:11,193 INFO    [Thread-2 (_download_worker)] etl.module1_download [M1] Download: 86%  (1736 / 2024 MB)
+2026-09-03 09:48:11,196 INFO    [Thread-2 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 840, "dataset_id": 48, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 1736 / 2024 MB", "progress_percent": 85.8}
+2026-09-03 09:49:15,875 INFO    [Thread-2 (_download_worker)] etl.module1_download [M1] Download: 88%  (1787 / 2024 MB)
+2026-09-03 09:49:15,878 INFO    [Thread-2 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 841, "dataset_id": 48, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 1787 / 2024 MB", "progress_percent": 88.3}
+2026-09-03 09:50:18,848 WARNING [Thread-2 (_download_worker)] etl.module1_download [M1] Download terputus (attempt 1/3): ('Connection broken: IncompleteRead(1835311473 bytes read, 188992964 more expected)', IncompleteRead(1835311473 bytes read, 188992964 more expected)). Retry...
+2026-09-03 09:50:18,848 INFO    [Thread-2 (_download_worker)] etl.module1_download [M1] Akan resume dari 1829 MB
+2026-09-03 09:50:20,383 WARNING [Thread-2 (_download_worker)] etl.module1_download [M1] Download terputus (attempt 2/3): HTTPSConnectionPool(host='download.dataspace.copernicus.eu', port=443): Max retries exceeded with url: /odata/v1/Products(cbee0d10-a09c-433b-875d-400f945eb156)/$value (Caused by SSLError(SSLEOFError(8, 'EOF occurred in violation of protocol (_ssl.c:1007)'))). Retry...
+2026-09-03 09:50:20,383 INFO    [Thread-2 (_download_worker)] etl.module1_download [M1] Akan resume dari 1829 MB
+2026-09-03 09:50:21,509 ERROR   [Thread-2 (_download_worker)] etl.module1_download [M1] Download gagal setelah 3 attempts: HTTPSConnectionPool(host='download.dataspace.copernicus.eu', port=443): Max retries exceeded with url: /odata/v1/Products(cbee0d10-a09c-433b-875d-400f945eb156)/$value (Caused by SSLError(SSLEOFError(8, 'EOF occurred in violation of protocol (_ssl.c:1007)')))
+2026-09-03 09:50:21,509 INFO    [Thread-2 (_download_worker)] etl.module1_download [M1] File .part tersimpan di: data\datasets\48_1_saja\raw\sentinel1\S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE\S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE.zip.part
+2026-09-03 09:50:21,524 ERROR   [Thread-2 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 842, "dataset_id": 48, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "FAILED", "message": "DOWNLOAD failed: HTTPSConnectionPool(host='download.dataspace.copernicus.eu', port=443): Max retries exceeded with url: /odata/v1/Products(cbee0d10-a09c-433b-875d-400f945eb156)/$value (Caused by SSLError(SSLEOFError(8, 'EOF occurred in violation of protocol (_ssl.c:1007)')))", "expected_size_mb": 1930.5271501541138, "duration_seconds": 2314.922, "memory_peak_mb": 169.49, "cpu_peak_percent": 18.2, "error_type": "SSLError", "error_message": "HTTPSConnectionPool(host='download.dataspace.copernicus.eu', port=443): Max retries exceeded with url: /odata/v1/Products(cbee0d10-a09c-433b-875d-400f945eb156)/$value (Caused by SSLError(SSLEOFError(8, 'EOF occurred in violation of protocol (_ssl.c:1007)')))", "traceback": "ownloads\\sentinel-sentinel\\sentinel-metadata\\venv\\lib\\site-packages\\urllib3\\util\\ssl_.py\", line 433, in ssl_wrap_socket\n    ssl_sock = _ssl_wrap_socket_impl(sock, context, tls_in_tls, server_hostname)\n  File \"C:\\Users\\BigData\\Downloads\\sentinel-sentinel\\sentinel-metadata\\venv\\lib\\site-packages\\urllib3\\util\\ssl_.py\", line 477, in _ssl_wrap_socket_impl\n    return ssl_context.wrap_socket(sock, server_hostname=server_hostname)\n  File \"C:\\Users\\BigData\\AppData\\Local\\Programs\\Python\\Python310\\lib\\ssl.py\", line 513, in wrap_socket\n    return self.sslsocket_class._create(\n  File \"C:\\Users\\BigData\\AppData\\Local\\Programs\\Python\\Python310\\lib\\ssl.py\", line 1071, in _create\n    self.do_handshake()\n  File \"C:\\Users\\BigData\\AppData\\Local\\Programs\\Python\\Python310\\lib\\ssl.py\", line 1342, in do_handshake\n    self._sslobj.do_handshake()\nssl.SSLEOFError: EOF occurred in violation of protocol (_ssl.c:1007)\n\nDuring handling of the above exception, another exception occurred:\n\nTraceback (most recent call last):\n  File \"C:\\Users\\BigData\\Downloads\\sentinel-sentinel\\sentinel-metadata\\venv\\lib\\site-packages\\urllib3\\connectionpool.py\", line 788, in urlopen\n    response = self._make_request(\n  File \"C:\\Users\\BigData\\Downloads\\sentinel-sentinel\\sentinel-metadata\\venv\\lib\\site-packages\\urllib3\\connectionpool.py\", line 488, in _make_request\n    raise new_e\nurllib3.exceptions.SSLError: EOF occurred in violation of protocol (_ssl.c:1007)\n\nThe above exception was the direct cause of the following exception:\n\nTraceback (most recent call last):\n  File \"C:\\Users\\BigData\\Downloads\\sentinel-sentinel\\sentinel-metadata\\venv\\lib\\site-packages\\requests\\adapters.py\", line 667, in send\n    resp = conn.urlopen(\n  File \"C:\\Users\\BigData\\Downloads\\sentinel-sentinel\\sentinel-metadata\\venv\\lib\\site-packages\\urllib3\\connectionpool.py\", line 842, in urlopen\n    retries = retries.increment(\n  File \"C:\\Users\\BigData\\Downloads\\sentinel-sentinel\\sentinel-metadata\\venv\\lib\\site-packages\\urllib3\\util\\retry.py\", line 543, in increment\n    raise MaxRetryError(_pool, url, reason) from reason  # type: ignore[arg-type]\nurllib3.exceptions.MaxRetryError: HTTPSConnectionPool(host='download.dataspace.copernicus.eu', port=443): Max retries exceeded with url: /odata/v1/Products(cbee0d10-a09c-433b-875d-400f945eb156)/$value (Caused by SSLError(SSLEOFError(8, 'EOF occurred in violation of protocol (_ssl.c:1007)')))\n\nDuring handling of the above exception, another exception occurred:\n\nTraceback (most recent call last):\n  File \"C:\\Users\\BigData\\Downloads\\sentinel-sentinel\\sentinel-metadata\\etl\\pipeline_logger.py\", line 335, in stage\n    yield handle\n  File \"C:\\Users\\BigData\\Downloads\\sentinel-sentinel\\sentinel-metadata\\etl\\module5_orchestrator.py\", line 574, in _download_worker\n    result = download_scene(\n  File \"C:\\Users\\BigData\\Downloads\\sentinel-sentinel\\sentinel-metadata\\etl\\module1_download.py\", line 180, in download_scene\n    with session.get(download_url, stream=True, timeout=600, allow_redirects=True) as resp:\n  File \"C:\\Users\\BigData\\Downloads\\sentinel-sentinel\\sentinel-metadata\\venv\\lib\\site-packages\\requests\\sessions.py\", line 602, in get\n    return self.request(\"GET\", url, **kwargs)\n  File \"C:\\Users\\BigData\\Downloads\\sentinel-sentinel\\sentinel-metadata\\venv\\lib\\site-packages\\requests\\sessions.py\", line 589, in request\n    resp = self.send(prep, **send_kwargs)\n  File \"C:\\Users\\BigData\\Downloads\\sentinel-sentinel\\sentinel-metadata\\venv\\lib\\site-packages\\requests\\sessions.py\", line 703, in send\n    r = adapter.send(request, **kwargs)\n  File \"C:\\Users\\BigData\\Downloads\\sentinel-sentinel\\sentinel-metadata\\venv\\lib\\site-packages\\requests\\adapters.py\", line 698, in send\n    raise SSLError(e, request=request)\nrequests.exceptions.SSLError: HTTPSConnectionPool(host='download.dataspace.copernicus.eu', port=443): Max retries exceeded with url: /odata/v1/Products(cbee0d10-a09c-433b-875d-400f945eb156)/$value (Caused by SSLError(SSLEOFError(8, 'EOF occurred in violation of protocol (_ssl.c:1007)')))\n"}
+2026-09-03 09:50:21,526 ERROR   [Thread-2 (_download_worker)] etl.module5_orchestrator [ORCH] download gagal pid=S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE job_id=11
+Traceback (most recent call last):
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\urllib3\connectionpool.py", line 464, in _make_request
+    self._validate_conn(conn)
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\urllib3\connectionpool.py", line 1106, in _validate_conn
+    conn.connect()
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\urllib3\connection.py", line 796, in connect
+    sock_and_verified = _ssl_wrap_socket_and_match_hostname(
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\urllib3\connection.py", line 975, in _ssl_wrap_socket_and_match_hostname
+    ssl_sock = ssl_wrap_socket(
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\urllib3\util\ssl_.py", line 433, in ssl_wrap_socket
+    ssl_sock = _ssl_wrap_socket_impl(sock, context, tls_in_tls, server_hostname)
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\urllib3\util\ssl_.py", line 477, in _ssl_wrap_socket_impl
+    return ssl_context.wrap_socket(sock, server_hostname=server_hostname)
+  File "C:\Users\BigData\AppData\Local\Programs\Python\Python310\lib\ssl.py", line 513, in wrap_socket
+    return self.sslsocket_class._create(
+  File "C:\Users\BigData\AppData\Local\Programs\Python\Python310\lib\ssl.py", line 1071, in _create
+    self.do_handshake()
+  File "C:\Users\BigData\AppData\Local\Programs\Python\Python310\lib\ssl.py", line 1342, in do_handshake
+    self._sslobj.do_handshake()
+ssl.SSLEOFError: EOF occurred in violation of protocol (_ssl.c:1007)
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\urllib3\connectionpool.py", line 788, in urlopen
+    response = self._make_request(
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\urllib3\connectionpool.py", line 488, in _make_request
+    raise new_e
+urllib3.exceptions.SSLError: EOF occurred in violation of protocol (_ssl.c:1007)
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\requests\adapters.py", line 667, in send
+    resp = conn.urlopen(
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\urllib3\connectionpool.py", line 842, in urlopen
+    retries = retries.increment(
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\urllib3\util\retry.py", line 543, in increment
+    raise MaxRetryError(_pool, url, reason) from reason  # type: ignore[arg-type]
+urllib3.exceptions.MaxRetryError: HTTPSConnectionPool(host='download.dataspace.copernicus.eu', port=443): Max retries exceeded with url: /odata/v1/Products(cbee0d10-a09c-433b-875d-400f945eb156)/$value (Caused by SSLError(SSLEOFError(8, 'EOF occurred in violation of protocol (_ssl.c:1007)')))
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\etl\module5_orchestrator.py", line 574, in _download_worker
+    result = download_scene(
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\etl\module1_download.py", line 180, in download_scene
+    with session.get(download_url, stream=True, timeout=600, allow_redirects=True) as resp:
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\requests\sessions.py", line 602, in get
+    return self.request("GET", url, **kwargs)
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\requests\sessions.py", line 589, in request
+    resp = self.send(prep, **send_kwargs)
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\requests\sessions.py", line 703, in send
+    r = adapter.send(request, **kwargs)
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\requests\adapters.py", line 698, in send
+    raise SSLError(e, request=request)
+requests.exceptions.SSLError: HTTPSConnectionPool(host='download.dataspace.copernicus.eu', port=443): Max retries exceeded with url: /odata/v1/Products(cbee0d10-a09c-433b-875d-400f945eb156)/$value (Caused by SSLError(SSLEOFError(8, 'EOF occurred in violation of protocol (_ssl.c:1007)')))
+2026-09-03 09:50:21,528 ERROR   [Thread-2 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 843, "dataset_id": 48, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "ORCHESTRATOR", "stage": "DOWNLOAD", "status": "FAILED", "message": "DOWNLOAD failed: HTTPSConnectionPool(host='download.dataspace.copernicus.eu', port=443): Max retries exceeded with url: /odata/v1/Products(cbee0d10-a09c-433b-875d-400f945eb156)/$value (Caused by SSLError(SSLEOFError(8, 'EOF occurred in violation of protocol (_ssl.c:1007)')))", "error_type": "SSLError", "error_message": "HTTPSConnectionPool(host='download.dataspace.copernicus.eu', port=443): Max retries exceeded with url: /odata/v1/Products(cbee0d10-a09c-433b-875d-400f945eb156)/$value (Caused by SSLError(SSLEOFError(8, 'EOF occurred in violation of protocol (_ssl.c:1007)')))", "traceback": "\\urllib3\\connection.py\", line 975, in _ssl_wrap_socket_and_match_hostname\n    ssl_sock = ssl_wrap_socket(\n  File \"C:\\Users\\BigData\\Downloads\\sentinel-sentinel\\sentinel-metadata\\venv\\lib\\site-packages\\urllib3\\util\\ssl_.py\", line 433, in ssl_wrap_socket\n    ssl_sock = _ssl_wrap_socket_impl(sock, context, tls_in_tls, server_hostname)\n  File \"C:\\Users\\BigData\\Downloads\\sentinel-sentinel\\sentinel-metadata\\venv\\lib\\site-packages\\urllib3\\util\\ssl_.py\", line 477, in _ssl_wrap_socket_impl\n    return ssl_context.wrap_socket(sock, server_hostname=server_hostname)\n  File \"C:\\Users\\BigData\\AppData\\Local\\Programs\\Python\\Python310\\lib\\ssl.py\", line 513, in wrap_socket\n    return self.sslsocket_class._create(\n  File \"C:\\Users\\BigData\\AppData\\Local\\Programs\\Python\\Python310\\lib\\ssl.py\", line 1071, in _create\n    self.do_handshake()\n  File \"C:\\Users\\BigData\\AppData\\Local\\Programs\\Python\\Python310\\lib\\ssl.py\", line 1342, in do_handshake\n    self._sslobj.do_handshake()\nssl.SSLEOFError: EOF occurred in violation of protocol (_ssl.c:1007)\n\nDuring handling of the above exception, another exception occurred:\n\nTraceback (most recent call last):\n  File \"C:\\Users\\BigData\\Downloads\\sentinel-sentinel\\sentinel-metadata\\venv\\lib\\site-packages\\urllib3\\connectionpool.py\", line 788, in urlopen\n    response = self._make_request(\n  File \"C:\\Users\\BigData\\Downloads\\sentinel-sentinel\\sentinel-metadata\\venv\\lib\\site-packages\\urllib3\\connectionpool.py\", line 488, in _make_request\n    raise new_e\nurllib3.exceptions.SSLError: EOF occurred in violation of protocol (_ssl.c:1007)\n\nThe above exception was the direct cause of the following exception:\n\nTraceback (most recent call last):\n  File \"C:\\Users\\BigData\\Downloads\\sentinel-sentinel\\sentinel-metadata\\venv\\lib\\site-packages\\requests\\adapters.py\", line 667, in send\n    resp = conn.urlopen(\n  File \"C:\\Users\\BigData\\Downloads\\sentinel-sentinel\\sentinel-metadata\\venv\\lib\\site-packages\\urllib3\\connectionpool.py\", line 842, in urlopen\n    retries = retries.increment(\n  File \"C:\\Users\\BigData\\Downloads\\sentinel-sentinel\\sentinel-metadata\\venv\\lib\\site-packages\\urllib3\\util\\retry.py\", line 543, in increment\n    raise MaxRetryError(_pool, url, reason) from reason  # type: ignore[arg-type]\nurllib3.exceptions.MaxRetryError: HTTPSConnectionPool(host='download.dataspace.copernicus.eu', port=443): Max retries exceeded with url: /odata/v1/Products(cbee0d10-a09c-433b-875d-400f945eb156)/$value (Caused by SSLError(SSLEOFError(8, 'EOF occurred in violation of protocol (_ssl.c:1007)')))\n\nDuring handling of the above exception, another exception occurred:\n\nTraceback (most recent call last):\n  File \"C:\\Users\\BigData\\Downloads\\sentinel-sentinel\\sentinel-metadata\\etl\\module5_orchestrator.py\", line 574, in _download_worker\n    result = download_scene(\n  File \"C:\\Users\\BigData\\Downloads\\sentinel-sentinel\\sentinel-metadata\\etl\\module1_download.py\", line 180, in download_scene\n    with session.get(download_url, stream=True, timeout=600, allow_redirects=True) as resp:\n  File \"C:\\Users\\BigData\\Downloads\\sentinel-sentinel\\sentinel-metadata\\venv\\lib\\site-packages\\requests\\sessions.py\", line 602, in get\n    return self.request(\"GET\", url, **kwargs)\n  File \"C:\\Users\\BigData\\Downloads\\sentinel-sentinel\\sentinel-metadata\\venv\\lib\\site-packages\\requests\\sessions.py\", line 589, in request\n    resp = self.send(prep, **send_kwargs)\n  File \"C:\\Users\\BigData\\Downloads\\sentinel-sentinel\\sentinel-metadata\\venv\\lib\\site-packages\\requests\\sessions.py\", line 703, in send\n    r = adapter.send(request, **kwargs)\n  File \"C:\\Users\\BigData\\Downloads\\sentinel-sentinel\\sentinel-metadata\\venv\\lib\\site-packages\\requests\\adapters.py\", line 698, in send\n    raise SSLError(e, request=request)\nrequests.exceptions.SSLError: HTTPSConnectionPool(host='download.dataspace.copernicus.eu', port=443): Max retries exceeded with url: /odata/v1/Products(cbee0d10-a09c-433b-875d-400f945eb156)/$value (Caused by SSLError(SSLEOFError(8, 'EOF occurred in violation of protocol (_ssl.c:1007)')))\n"}
+2026-09-03 09:50:21,542 INFO    [Thread-1 (_runner)] etl.pipeline_logger [PLOG-FILE] run log closed for dataset='1 saja'
+2026-09-03 10:05:13,090 INFO    [Thread-2 (_runner)] etl.pipeline_logger [PLOG-FILE] run log opened for dataset='1 saja' -> logs\1_saja.txt
+2026-09-03 10:05:13,090 INFO    [Thread-2 (_runner)] etl.module5_orchestrator [ORCH] job_id=12 start dataset='1 saja' scenes=1 tiers=['RAW', 'BRONZE', 'SILVER', 'GOLD', 'FUSION'] log=logs\1_saja.txt
+2026-09-03 10:05:13,099 INFO    [Thread-3 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 844, "dataset_id": 49, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "STARTED", "message": "Downloading scene from ESA server", "expected_size_mb": 1930.5271501541138}
+2026-09-03 10:05:13,099 INFO    [Thread-3 (_download_worker)] etl.module1_download [M1] Downloading: S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_0 (1931 MB)
+2026-09-03 10:06:41,453 INFO    [Thread-3 (_download_worker)] etl.module1_download [M1] Download: 3%  (59 / 2024 MB)
+2026-09-03 10:06:41,456 INFO    [Thread-3 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 845, "dataset_id": 49, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 59 / 2024 MB", "progress_percent": 2.9}
+2026-09-03 10:07:44,018 INFO    [Thread-3 (_download_worker)] etl.module1_download [M1] Download: 5%  (109 / 2024 MB)
+2026-09-03 10:07:44,021 INFO    [Thread-3 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 846, "dataset_id": 49, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 109 / 2024 MB", "progress_percent": 5.4}
+2026-09-03 10:08:46,992 INFO    [Thread-3 (_download_worker)] etl.module1_download [M1] Download: 8%  (159 / 2024 MB)
+2026-09-03 10:08:46,995 INFO    [Thread-3 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 847, "dataset_id": 49, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 159 / 2024 MB", "progress_percent": 7.9}
+2026-09-03 10:09:49,363 INFO    [Thread-3 (_download_worker)] etl.module1_download [M1] Download: 10%  (210 / 2024 MB)
+2026-09-03 10:09:49,366 INFO    [Thread-3 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 848, "dataset_id": 49, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 210 / 2024 MB", "progress_percent": 10.4}
+2026-09-03 10:11:02,771 INFO    [Thread-3 (_download_worker)] etl.module1_download [M1] Download: 13%  (268 / 2024 MB)
+2026-09-03 10:11:02,774 INFO    [Thread-3 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 849, "dataset_id": 49, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 268 / 2024 MB", "progress_percent": 13.3}
+2026-09-03 10:12:05,541 INFO    [Thread-3 (_download_worker)] etl.module1_download [M1] Download: 16%  (319 / 2024 MB)
+2026-09-03 10:12:05,543 INFO    [Thread-3 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 850, "dataset_id": 49, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 319 / 2024 MB", "progress_percent": 15.7}
+2026-09-03 10:13:08,827 INFO    [Thread-3 (_download_worker)] etl.module1_download [M1] Download: 18%  (369 / 2024 MB)
+2026-09-03 10:13:08,830 INFO    [Thread-3 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 851, "dataset_id": 49, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 369 / 2024 MB", "progress_percent": 18.2}
+2026-09-03 10:14:11,796 INFO    [Thread-3 (_download_worker)] etl.module1_download [M1] Download: 21%  (419 / 2024 MB)
+2026-09-03 10:14:11,798 INFO    [Thread-3 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 852, "dataset_id": 49, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 419 / 2024 MB", "progress_percent": 20.7}
+2026-09-03 10:15:25,030 INFO    [Thread-3 (_download_worker)] etl.module1_download [M1] Download: 24%  (478 / 2024 MB)
+2026-09-03 10:15:25,033 INFO    [Thread-3 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 853, "dataset_id": 49, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 478 / 2024 MB", "progress_percent": 23.6}
+2026-09-03 10:16:27,988 INFO    [Thread-3 (_download_worker)] etl.module1_download [M1] Download: 26%  (528 / 2024 MB)
+2026-09-03 10:16:27,991 INFO    [Thread-3 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 854, "dataset_id": 49, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 528 / 2024 MB", "progress_percent": 26.1}
+2026-09-03 10:17:30,550 INFO    [Thread-3 (_download_worker)] etl.module1_download [M1] Download: 29%  (579 / 2024 MB)
+2026-09-03 10:17:30,552 INFO    [Thread-3 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 855, "dataset_id": 49, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 579 / 2024 MB", "progress_percent": 28.6}
+2026-09-03 10:18:34,884 INFO    [Thread-3 (_download_worker)] etl.module1_download [M1] Download: 31%  (629 / 2024 MB)
+2026-09-03 10:18:34,886 INFO    [Thread-3 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 856, "dataset_id": 49, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 629 / 2024 MB", "progress_percent": 31.1}
+2026-09-03 10:19:47,340 INFO    [Thread-3 (_download_worker)] etl.module1_download [M1] Download: 34%  (688 / 2024 MB)
+2026-09-03 10:19:47,343 INFO    [Thread-3 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 857, "dataset_id": 49, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 688 / 2024 MB", "progress_percent": 34.0}
+2026-09-03 10:20:50,725 INFO    [Thread-3 (_download_worker)] etl.module1_download [M1] Download: 36%  (738 / 2024 MB)
+2026-09-03 10:20:50,727 INFO    [Thread-3 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 858, "dataset_id": 49, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 738 / 2024 MB", "progress_percent": 36.5}
+2026-09-03 10:21:54,633 INFO    [Thread-3 (_download_worker)] etl.module1_download [M1] Download: 39%  (789 / 2024 MB)
+2026-09-03 10:21:54,635 INFO    [Thread-3 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 859, "dataset_id": 49, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 789 / 2024 MB", "progress_percent": 39.0}
+2026-09-03 10:22:57,287 INFO    [Thread-3 (_download_worker)] etl.module1_download [M1] Download: 41%  (839 / 2024 MB)
+2026-09-03 10:22:57,291 INFO    [Thread-3 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 860, "dataset_id": 49, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 839 / 2024 MB", "progress_percent": 41.4}
+2026-09-03 10:24:09,715 INFO    [Thread-3 (_download_worker)] etl.module1_download [M1] Download: 44%  (898 / 2024 MB)
+2026-09-03 10:24:09,718 INFO    [Thread-3 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 861, "dataset_id": 49, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 898 / 2024 MB", "progress_percent": 44.3}
+2026-09-03 10:25:13,195 INFO    [Thread-3 (_download_worker)] etl.module1_download [M1] Download: 47%  (948 / 2024 MB)
+2026-09-03 10:25:13,198 INFO    [Thread-3 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 862, "dataset_id": 49, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 948 / 2024 MB", "progress_percent": 46.8}
+2026-09-03 10:26:15,426 INFO    [Thread-3 (_download_worker)] etl.module1_download [M1] Download: 49%  (998 / 2024 MB)
+2026-09-03 10:26:15,429 INFO    [Thread-3 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 863, "dataset_id": 49, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 998 / 2024 MB", "progress_percent": 49.3}
+2026-09-03 10:27:18,503 INFO    [Thread-3 (_download_worker)] etl.module1_download [M1] Download: 52%  (1049 / 2024 MB)
+2026-09-03 10:27:18,506 INFO    [Thread-3 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 864, "dataset_id": 49, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 1049 / 2024 MB", "progress_percent": 51.8}
+2026-09-03 10:28:31,922 INFO    [Thread-3 (_download_worker)] etl.module1_download [M1] Download: 55%  (1107 / 2024 MB)
+2026-09-03 10:28:31,924 INFO    [Thread-3 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 865, "dataset_id": 49, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 1107 / 2024 MB", "progress_percent": 54.7}
+2026-09-03 10:29:34,815 INFO    [Thread-3 (_download_worker)] etl.module1_download [M1] Download: 57%  (1158 / 2024 MB)
+2026-09-03 10:29:34,819 INFO    [Thread-3 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 866, "dataset_id": 49, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 1158 / 2024 MB", "progress_percent": 57.2}
+2026-09-03 10:30:37,461 INFO    [Thread-3 (_download_worker)] etl.module1_download [M1] Download: 60%  (1208 / 2024 MB)
+2026-09-03 10:30:37,464 INFO    [Thread-3 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 867, "dataset_id": 49, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 1208 / 2024 MB", "progress_percent": 59.7}
+2026-09-03 10:31:40,128 INFO    [Thread-3 (_download_worker)] etl.module1_download [M1] Download: 62%  (1258 / 2024 MB)
+2026-09-03 10:31:40,131 INFO    [Thread-3 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 868, "dataset_id": 49, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 1258 / 2024 MB", "progress_percent": 62.2}
+2026-09-03 10:32:53,792 INFO    [Thread-3 (_download_worker)] etl.module1_download [M1] Download: 65%  (1317 / 2024 MB)
+2026-09-03 10:32:53,795 INFO    [Thread-3 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 869, "dataset_id": 49, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 1317 / 2024 MB", "progress_percent": 65.1}
+2026-09-03 10:33:57,237 INFO    [Thread-3 (_download_worker)] etl.module1_download [M1] Download: 68%  (1367 / 2024 MB)
+2026-09-03 10:33:57,241 INFO    [Thread-3 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 870, "dataset_id": 49, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 1367 / 2024 MB", "progress_percent": 67.5}
+2026-09-03 10:35:00,622 INFO    [Thread-3 (_download_worker)] etl.module1_download [M1] Download: 70%  (1418 / 2024 MB)
+2026-09-03 10:35:00,624 INFO    [Thread-3 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 871, "dataset_id": 49, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 1418 / 2024 MB", "progress_percent": 70.0}
+2026-09-03 10:36:03,214 INFO    [Thread-3 (_download_worker)] etl.module1_download [M1] Download: 73%  (1468 / 2024 MB)
+2026-09-03 10:36:03,217 INFO    [Thread-3 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 872, "dataset_id": 49, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 1468 / 2024 MB", "progress_percent": 72.5}
+2026-09-03 10:37:16,709 INFO    [Thread-3 (_download_worker)] etl.module1_download [M1] Download: 75%  (1527 / 2024 MB)
+2026-09-03 10:37:16,712 INFO    [Thread-3 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 873, "dataset_id": 49, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 1527 / 2024 MB", "progress_percent": 75.4}
+2026-09-03 10:38:19,302 INFO    [Thread-3 (_download_worker)] etl.module1_download [M1] Download: 78%  (1577 / 2024 MB)
+2026-09-03 10:38:19,304 INFO    [Thread-3 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 874, "dataset_id": 49, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 1577 / 2024 MB", "progress_percent": 77.9}
+2026-09-03 10:39:22,051 INFO    [Thread-3 (_download_worker)] etl.module1_download [M1] Download: 80%  (1627 / 2024 MB)
+2026-09-03 10:39:22,054 INFO    [Thread-3 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 875, "dataset_id": 49, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 1627 / 2024 MB", "progress_percent": 80.4}
+2026-09-03 10:40:25,221 INFO    [Thread-3 (_download_worker)] etl.module1_download [M1] Download: 83%  (1678 / 2024 MB)
+2026-09-03 10:40:25,224 INFO    [Thread-3 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 876, "dataset_id": 49, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 1678 / 2024 MB", "progress_percent": 82.9}
+2026-09-03 10:41:38,025 INFO    [Thread-3 (_download_worker)] etl.module1_download [M1] Download: 86%  (1736 / 2024 MB)
+2026-09-03 10:41:38,035 INFO    [Thread-3 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 877, "dataset_id": 49, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 1736 / 2024 MB", "progress_percent": 85.8}
+2026-09-03 10:42:41,614 INFO    [Thread-3 (_download_worker)] etl.module1_download [M1] Download: 88%  (1787 / 2024 MB)
+2026-09-03 10:42:41,618 INFO    [Thread-3 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 878, "dataset_id": 49, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 1787 / 2024 MB", "progress_percent": 88.3}
+2026-09-03 10:43:44,727 INFO    [Thread-3 (_download_worker)] etl.module1_download [M1] Download: 91%  (1837 / 2024 MB)
+2026-09-03 10:43:44,734 INFO    [Thread-3 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 879, "dataset_id": 49, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 1837 / 2024 MB", "progress_percent": 90.8}
+2026-09-03 10:44:47,870 INFO    [Thread-3 (_download_worker)] etl.module1_download [M1] Download: 93%  (1887 / 2024 MB)
+2026-09-03 10:44:47,873 INFO    [Thread-3 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 880, "dataset_id": 49, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 1887 / 2024 MB", "progress_percent": 93.2}
+2026-09-03 10:46:01,596 INFO    [Thread-3 (_download_worker)] etl.module1_download [M1] Download: 96%  (1946 / 2024 MB)
+2026-09-03 10:46:01,598 INFO    [Thread-3 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 881, "dataset_id": 49, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 1946 / 2024 MB", "progress_percent": 96.1}
+2026-09-03 10:47:04,500 INFO    [Thread-3 (_download_worker)] etl.module1_download [M1] Download: 99%  (1996 / 2024 MB)
+2026-09-03 10:47:04,503 INFO    [Thread-3 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 882, "dataset_id": 49, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "RUNNING", "message": "Downloading: 1996 / 2024 MB", "progress_percent": 98.6}
+2026-09-03 10:47:39,188 INFO    [Thread-3 (_download_worker)] etl.module1_download [M1] Download selesai.
+2026-09-03 10:47:39,188 INFO    [Thread-3 (_download_worker)] etl.module1_download [M1] Download selesai: 1930.5 MB
+2026-09-03 10:47:41,539 INFO    [Thread-3 (_download_worker)] etl.module1_download [M1] Mengekstrak band dari S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE.zip
+2026-09-03 10:47:42,971 INFO    [Thread-3 (_download_worker)] etl.module1_download [M1] Ekstraksi selesai: VV=S1D_IW_GRDH_1SDV_20260805T111409_20_VV.tif | VH=S1D_IW_GRDH_1SDV_20260805T111409_20_VH.tif
+2026-09-03 10:47:42,971 INFO    [Thread-3 (_download_worker)] etl.module1_download [M1] ZIP disimpan (keep_raw=True): data\datasets\49_1_saja\raw\sentinel1\S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE\S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE.zip
+2026-09-03 10:47:42,975 INFO    [Thread-3 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 883, "dataset_id": 49, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "COMPLETED", "message": "Scene downloaded successfully", "expected_size_mb": 1930.5271501541138, "output_vv": "data\\datasets\\49_1_saja\\raw\\sentinel1\\S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE\\S1D_IW_GRDH_1SDV_20260805T111409_20_VV.tif", "output_vh": "data\\datasets\\49_1_saja\\raw\\sentinel1\\S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE\\S1D_IW_GRDH_1SDV_20260805T111409_20_VH.tif", "file_size_mb": 1930.5271501541138, "checksum_md5": "e18c3f85c1eb3cbaa96ff74c1938e3a0", "duration_seconds": 2549.86, "memory_peak_mb": 170.54, "cpu_peak_percent": 103.1}
+2026-09-03 10:47:42,978 WARNING [Thread-4 (_pipeline_worker)] etl.metadata_manager [SCENE] Duplicate scene skipped: S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE (scene_id=10)
+2026-09-03 10:47:42,989 WARNING [Thread-4 (_pipeline_worker)] etl.metadata_manager [JOB] Duplicate job skipped: scene=10 stage=DOWNLOAD attempt=1 (job_id=45)
+2026-09-03 10:47:42,995 INFO    [Thread-4 (_pipeline_worker)] etl.metadata_manager [JOB] job_id=45 -> RUNNING
+2026-09-03 10:47:43,649 INFO    [Thread-4 (_pipeline_worker)] etl.metadata_manager [PRODUCT] Registered product_id=155 scene=10 band=VV tier=RAW source=SENTINEL1 dataset=49 file=S1D_IW_GRDH_1SDV_20260805T111409_20_VV.tif
+2026-09-03 10:47:44,284 INFO    [Thread-4 (_pipeline_worker)] etl.metadata_manager [PRODUCT] Registered product_id=156 scene=10 band=VH tier=RAW source=SENTINEL1 dataset=49 file=S1D_IW_GRDH_1SDV_20260805T111409_20_VH.tif
+2026-09-03 10:47:44,288 INFO    [Thread-4 (_pipeline_worker)] etl.metadata_manager [JOB] job_id=45 -> SUCCESS
+2026-09-03 10:47:44,291 WARNING [Thread-4 (_pipeline_worker)] etl.metadata_manager [JOB] Duplicate job skipped: scene=10 stage=CROP attempt=1 (job_id=46)
+2026-09-03 10:47:44,296 INFO    [Thread-4 (_pipeline_worker)] etl.metadata_manager [JOB] job_id=46 -> RUNNING
+2026-09-03 10:47:44,298 INFO    [Thread-4 (_pipeline_worker)] etl.pipeline_logger [PLOG] {"log_id": 884, "dataset_id": 49, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1B_CALIBRATE", "stage": "CALIBRATE", "status": "STARTED", "message": "Applying radiometric calibration", "input_vv": "data\\datasets\\49_1_saja\\raw\\sentinel1\\S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE\\S1D_IW_GRDH_1SDV_20260805T111409_20_VV.tif", "input_vh": "data\\datasets\\49_1_saja\\raw\\sentinel1\\S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE\\S1D_IW_GRDH_1SDV_20260805T111409_20_VH.tif"}
+2026-09-03 10:47:44,301 INFO    [Thread-4 (_pipeline_worker)] etl.module1b_calibrate [M1b] calibrating VV: S1D_IW_GRDH_1SDV_20260805T111409_20_VV.tif
+2026-09-03 10:49:06,220 INFO    [Thread-4 (_pipeline_worker)] etl.module1b_calibrate [M1b] reprojected -> S1D_IW_GRDH_1SDV_20260805T111409_20_VV_calibrated.tif (29071x24892)
+2026-09-03 10:49:06,283 INFO    [Thread-4 (_pipeline_worker)] etl.module1b_calibrate [M1b] calibrating VH: S1D_IW_GRDH_1SDV_20260805T111409_20_VH.tif
+2026-09-03 10:49:19,033 ERROR   [Thread-4 (_pipeline_worker)] etl.pipeline_logger [PLOG] {"log_id": 885, "dataset_id": 49, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1B_CALIBRATE", "stage": "CALIBRATE", "status": "FAILED", "message": "CALIBRATE failed: Unable to allocate 7.51 GiB for an array with shape (2, 503805280) and data type float64", "input_vv": "data\\datasets\\49_1_saja\\raw\\sentinel1\\S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE\\S1D_IW_GRDH_1SDV_20260805T111409_20_VV.tif", "input_vh": "data\\datasets\\49_1_saja\\raw\\sentinel1\\S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE\\S1D_IW_GRDH_1SDV_20260805T111409_20_VH.tif", "duration_seconds": 94.687, "memory_peak_mb": 44366.49, "cpu_peak_percent": 106.3, "error_type": "MemoryError", "error_message": "Unable to allocate 7.51 GiB for an array with shape (2, 503805280) and data type float64", "traceback": "Traceback (most recent call last):\n  File \"C:\\Users\\BigData\\Downloads\\sentinel-sentinel\\sentinel-metadata\\etl\\pipeline_logger.py\", line 335, in stage\n    yield handle\n  File \"C:\\Users\\BigData\\Downloads\\sentinel-sentinel\\sentinel-metadata\\etl\\module5_orchestrator.py\", line 183, in _process_scene\n    calib_vv, calib_vh = calibrate_run(dl_result.zip_path, dl_result.vv_tif_path, dl_result.vh_tif_path, str(calib_dir))\n  File \"C:\\Users\\BigData\\Downloads\\sentinel-sentinel\\sentinel-metadata\\etl\\module1b_calibrate.py\", line 131, in run\n    calibrate_and_reproject(vh_tif_path, vh_xml, vh_out)\n  File \"C:\\Users\\BigData\\Downloads\\sentinel-sentinel\\sentinel-metadata\\etl\\module1b_calibrate.py\", line 109, in calibrate_and_reproject\n    sigma0 = apply_calibration(dn, lines, pixels, sigma_lut)\n  File \"C:\\Users\\BigData\\Downloads\\sentinel-sentinel\\sentinel-metadata\\etl\\module1b_calibrate.py\", line 62, in apply_calibration\n    sigma_full = interp(points).reshape(rows, cols)\n  File \"C:\\Users\\BigData\\Downloads\\sentinel-sentinel\\sentinel-metadata\\venv\\lib\\site-packages\\scipy\\interpolate\\_rgi.py\", line 415, in __call__\n    indices, norm_distances = self._find_indices(xi.T)\n  File \"C:\\Users\\BigData\\Downloads\\sentinel-sentinel\\sentinel-metadata\\venv\\lib\\site-packages\\scipy\\interpolate\\_rgi.py\", line 590, in _find_indices\n    return find_indices(self.grid, xi)\n  File \"_rgi_cython.pyx\", line 93, in scipy.interpolate._rgi_cython.find_indices\n  File \"C:\\Users\\BigData\\Downloads\\sentinel-sentinel\\sentinel-metadata\\venv\\lib\\site-packages\\numpy\\_core\\numeric.py\", line 135, in zeros_like\n    res = empty_like(\nnumpy._core._exceptions._ArrayMemoryError: Unable to allocate 7.51 GiB for an array with shape (2, 503805280) and data type float64\n"}
+2026-09-03 10:49:19,033 ERROR   [Thread-4 (_pipeline_worker)] etl.module5_orchestrator [ORCH] pipeline gagal pid=S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE job_id=12
+Traceback (most recent call last):
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\etl\module5_orchestrator.py", line 615, in _pipeline_worker
+    scene_id, produced_tiers, produced_files = _process_scene(jc, scene_meta, dl_result)
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\etl\module5_orchestrator.py", line 183, in _process_scene
+    calib_vv, calib_vh = calibrate_run(dl_result.zip_path, dl_result.vv_tif_path, dl_result.vh_tif_path, str(calib_dir))
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\etl\module1b_calibrate.py", line 131, in run
+    calibrate_and_reproject(vh_tif_path, vh_xml, vh_out)
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\etl\module1b_calibrate.py", line 109, in calibrate_and_reproject
+    sigma0 = apply_calibration(dn, lines, pixels, sigma_lut)
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\etl\module1b_calibrate.py", line 62, in apply_calibration
+    sigma_full = interp(points).reshape(rows, cols)
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\scipy\interpolate\_rgi.py", line 415, in __call__
+    indices, norm_distances = self._find_indices(xi.T)
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\scipy\interpolate\_rgi.py", line 590, in _find_indices
+    return find_indices(self.grid, xi)
+  File "_rgi_cython.pyx", line 93, in scipy.interpolate._rgi_cython.find_indices
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\numpy\_core\numeric.py", line 135, in zeros_like
+    res = empty_like(
+numpy._core._exceptions._ArrayMemoryError: Unable to allocate 7.51 GiB for an array with shape (2, 503805280) and data type float64
+2026-09-03 10:49:19,074 ERROR   [Thread-4 (_pipeline_worker)] etl.pipeline_logger [PLOG] {"log_id": 886, "dataset_id": 49, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "ORCHESTRATOR", "stage": "SCENE_PIPELINE", "status": "FAILED", "message": "SCENE_PIPELINE failed: Unable to allocate 7.51 GiB for an array with shape (2, 503805280) and data type float64", "error_type": "MemoryError", "error_message": "Unable to allocate 7.51 GiB for an array with shape (2, 503805280) and data type float64", "traceback": "Traceback (most recent call last):\n  File \"C:\\Users\\BigData\\Downloads\\sentinel-sentinel\\sentinel-metadata\\etl\\module5_orchestrator.py\", line 615, in _pipeline_worker\n    scene_id, produced_tiers, produced_files = _process_scene(jc, scene_meta, dl_result)\n  File \"C:\\Users\\BigData\\Downloads\\sentinel-sentinel\\sentinel-metadata\\etl\\module5_orchestrator.py\", line 183, in _process_scene\n    calib_vv, calib_vh = calibrate_run(dl_result.zip_path, dl_result.vv_tif_path, dl_result.vh_tif_path, str(calib_dir))\n  File \"C:\\Users\\BigData\\Downloads\\sentinel-sentinel\\sentinel-metadata\\etl\\module1b_calibrate.py\", line 131, in run\n    calibrate_and_reproject(vh_tif_path, vh_xml, vh_out)\n  File \"C:\\Users\\BigData\\Downloads\\sentinel-sentinel\\sentinel-metadata\\etl\\module1b_calibrate.py\", line 109, in calibrate_and_reproject\n    sigma0 = apply_calibration(dn, lines, pixels, sigma_lut)\n  File \"C:\\Users\\BigData\\Downloads\\sentinel-sentinel\\sentinel-metadata\\etl\\module1b_calibrate.py\", line 62, in apply_calibration\n    sigma_full = interp(points).reshape(rows, cols)\n  File \"C:\\Users\\BigData\\Downloads\\sentinel-sentinel\\sentinel-metadata\\venv\\lib\\site-packages\\scipy\\interpolate\\_rgi.py\", line 415, in __call__\n    indices, norm_distances = self._find_indices(xi.T)\n  File \"C:\\Users\\BigData\\Downloads\\sentinel-sentinel\\sentinel-metadata\\venv\\lib\\site-packages\\scipy\\interpolate\\_rgi.py\", line 590, in _find_indices\n    return find_indices(self.grid, xi)\n  File \"_rgi_cython.pyx\", line 93, in scipy.interpolate._rgi_cython.find_indices\n  File \"C:\\Users\\BigData\\Downloads\\sentinel-sentinel\\sentinel-metadata\\venv\\lib\\site-packages\\numpy\\_core\\numeric.py\", line 135, in zeros_like\n    res = empty_like(\nnumpy._core._exceptions._ArrayMemoryError: Unable to allocate 7.51 GiB for an array with shape (2, 503805280) and data type float64\n"}
+2026-09-03 10:49:19,858 INFO    [Thread-2 (_runner)] etl.pipeline_logger [PLOG-FILE] run log closed for dataset='1 saja'
+2026-09-03 10:52:49,651 INFO    [Thread-8 (_runner)] etl.pipeline_logger [PLOG-FILE] run log opened for dataset='1 saja' -> logs\1_saja.txt
+2026-09-03 10:52:49,651 INFO    [Thread-8 (_runner)] etl.module5_orchestrator [ORCH] job_id=12 start dataset='1 saja' scenes=1 tiers=['RAW', 'BRONZE', 'SILVER', 'GOLD', 'FUSION'] log=logs\1_saja.txt
+2026-09-03 10:52:49,658 INFO    [Thread-9 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 887, "dataset_id": 49, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "STARTED", "message": "Downloading scene from ESA server", "expected_size_mb": 1930.5271501541138}
+2026-09-03 10:52:49,658 INFO    [Thread-9 (_download_worker)] etl.module1_download [M1] ZIP sudah ada di disk, lewati download: S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE.zip
+2026-09-03 10:52:53,728 INFO    [Thread-9 (_download_worker)] etl.module1_download [M1] Mengekstrak band dari S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE.zip
+2026-09-03 10:52:55,340 INFO    [Thread-9 (_download_worker)] etl.module1_download [M1] Ekstraksi selesai: VV=S1D_IW_GRDH_1SDV_20260805T111409_20_VV.tif | VH=S1D_IW_GRDH_1SDV_20260805T111409_20_VH.tif
+2026-09-03 10:52:55,340 INFO    [Thread-9 (_download_worker)] etl.module1_download [M1] ZIP disimpan (keep_raw=True): data\datasets\49_1_saja\raw\sentinel1\S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE\S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE.zip
+2026-09-03 10:52:55,343 INFO    [Thread-9 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 888, "dataset_id": 49, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "COMPLETED", "message": "Scene downloaded successfully", "expected_size_mb": 1930.5271501541138, "output_vv": "data\\datasets\\49_1_saja\\raw\\sentinel1\\S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE\\S1D_IW_GRDH_1SDV_20260805T111409_20_VV.tif", "output_vh": "data\\datasets\\49_1_saja\\raw\\sentinel1\\S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE\\S1D_IW_GRDH_1SDV_20260805T111409_20_VH.tif", "file_size_mb": 1930.5271501541138, "checksum_md5": "e18c3f85c1eb3cbaa96ff74c1938e3a0", "duration_seconds": 5.688, "memory_peak_mb": 187.46, "cpu_peak_percent": 109.4}
+2026-09-03 10:52:55,348 WARNING [Thread-10 (_pipeline_worker)] etl.metadata_manager [SCENE] Duplicate scene skipped: S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE (scene_id=10)
+2026-09-03 10:52:55,353 WARNING [Thread-10 (_pipeline_worker)] etl.metadata_manager [JOB] Duplicate job skipped: scene=10 stage=DOWNLOAD attempt=1 (job_id=45)
+2026-09-03 10:52:55,365 INFO    [Thread-10 (_pipeline_worker)] etl.metadata_manager [JOB] job_id=45 -> RUNNING
+2026-09-03 10:52:57,402 INFO    [Thread-10 (_pipeline_worker)] etl.metadata_manager [PRODUCT] Registered product_id=157 scene=10 band=VV tier=RAW source=SENTINEL1 dataset=49 file=S1D_IW_GRDH_1SDV_20260805T111409_20_VV.tif
+2026-09-03 10:52:58,821 INFO    [Thread-10 (_pipeline_worker)] etl.metadata_manager [PRODUCT] Registered product_id=158 scene=10 band=VH tier=RAW source=SENTINEL1 dataset=49 file=S1D_IW_GRDH_1SDV_20260805T111409_20_VH.tif
+2026-09-03 10:52:58,961 INFO    [Thread-10 (_pipeline_worker)] etl.metadata_manager [JOB] job_id=45 -> SUCCESS
+2026-09-03 10:52:59,000 WARNING [Thread-10 (_pipeline_worker)] etl.metadata_manager [JOB] Duplicate job skipped: scene=10 stage=CROP attempt=1 (job_id=46)
+2026-09-03 10:52:59,023 INFO    [Thread-10 (_pipeline_worker)] etl.metadata_manager [JOB] job_id=46 -> RUNNING
+2026-09-03 10:52:59,039 INFO    [Thread-10 (_pipeline_worker)] etl.pipeline_logger [PLOG] {"log_id": 889, "dataset_id": 49, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1B_CALIBRATE", "stage": "CALIBRATE", "status": "STARTED", "message": "Applying radiometric calibration", "input_vv": "data\\datasets\\49_1_saja\\raw\\sentinel1\\S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE\\S1D_IW_GRDH_1SDV_20260805T111409_20_VV.tif", "input_vh": "data\\datasets\\49_1_saja\\raw\\sentinel1\\S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE\\S1D_IW_GRDH_1SDV_20260805T111409_20_VH.tif"}
+2026-09-03 10:52:59,041 INFO    [Thread-10 (_pipeline_worker)] etl.module1b_calibrate [M1b] calibrating VV: S1D_IW_GRDH_1SDV_20260805T111409_20_VV.tif
+2026-09-03 10:53:20,473 ERROR   [Thread-10 (_pipeline_worker)] etl.pipeline_logger [PLOG] {"log_id": 890, "dataset_id": 49, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "MODULE1B_CALIBRATE", "stage": "CALIBRATE", "status": "FAILED", "message": "CALIBRATE failed: data\\datasets\\49_1_saja\\raw\\sentinel1\\S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE\\S1D_IW_GRDH_1SDV_20260805T111409_20_VV.tif: No such file or directory", "input_vv": "data\\datasets\\49_1_saja\\raw\\sentinel1\\S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE\\S1D_IW_GRDH_1SDV_20260805T111409_20_VV.tif", "input_vh": "data\\datasets\\49_1_saja\\raw\\sentinel1\\S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE\\S1D_IW_GRDH_1SDV_20260805T111409_20_VH.tif", "duration_seconds": 21.422, "memory_peak_mb": 44375.99, "cpu_peak_percent": 203.1, "error_type": "RasterioIOError", "error_message": "data\\datasets\\49_1_saja\\raw\\sentinel1\\S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE\\S1D_IW_GRDH_1SDV_20260805T111409_20_VV.tif: No such file or directory", "traceback": "Traceback (most recent call last):\n  File \"rasterio\\\\_base.pyx\", line 310, in rasterio._base.DatasetBase.__init__\n  File \"rasterio\\\\_base.pyx\", line 221, in rasterio._base.open_dataset\n  File \"rasterio\\\\_err.pyx\", line 359, in rasterio._err.exc_wrap_pointer\nrasterio._err.CPLE_OpenFailedError: data\\datasets\\49_1_saja\\raw\\sentinel1\\S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE\\S1D_IW_GRDH_1SDV_20260805T111409_20_VV.tif: No such file or directory\n\nDuring handling of the above exception, another exception occurred:\n\nTraceback (most recent call last):\n  File \"C:\\Users\\BigData\\Downloads\\sentinel-sentinel\\sentinel-metadata\\etl\\pipeline_logger.py\", line 335, in stage\n    yield handle\n  File \"C:\\Users\\BigData\\Downloads\\sentinel-sentinel\\sentinel-metadata\\etl\\module5_orchestrator.py\", line 183, in _process_scene\n    calib_vv, calib_vh = calibrate_run(dl_result.zip_path, dl_result.vv_tif_path, dl_result.vh_tif_path, str(calib_dir))\n  File \"C:\\Users\\BigData\\Downloads\\sentinel-sentinel\\sentinel-metadata\\etl\\module1b_calibrate.py\", line 129, in run\n    calibrate_and_reproject(vv_tif_path, vv_xml, vv_out)\n  File \"C:\\Users\\BigData\\Downloads\\sentinel-sentinel\\sentinel-metadata\\etl\\module1b_calibrate.py\", line 110, in calibrate_and_reproject\n    _reproject_with_gcps(sigma0, tif_path, output_path)\n  File \"C:\\Users\\BigData\\Downloads\\sentinel-sentinel\\sentinel-metadata\\etl\\module1b_calibrate.py\", line 70, in _reproject_with_gcps\n    with rasterio.open(src_path) as src:\n  File \"C:\\Users\\BigData\\Downloads\\sentinel-sentinel\\sentinel-metadata\\venv\\lib\\site-packages\\rasterio\\env.py\", line 463, in wrapper\n    return f(*args, **kwds)\n  File \"C:\\Users\\BigData\\Downloads\\sentinel-sentinel\\sentinel-metadata\\venv\\lib\\site-packages\\rasterio\\__init__.py\", line 368, in open\n    dataset = DatasetReader(path, driver=driver, sharing=sharing, **kwargs)\n  File \"rasterio\\\\_base.pyx\", line 312, in rasterio._base.DatasetBase.__init__\nrasterio.errors.RasterioIOError: data\\datasets\\49_1_saja\\raw\\sentinel1\\S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE\\S1D_IW_GRDH_1SDV_20260805T111409_20_VV.tif: No such file or directory\n"}
+2026-09-03 10:53:20,473 ERROR   [Thread-10 (_pipeline_worker)] etl.module5_orchestrator [ORCH] pipeline gagal pid=S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE job_id=12
+Traceback (most recent call last):
+  File "rasterio\\_base.pyx", line 310, in rasterio._base.DatasetBase.__init__
+  File "rasterio\\_base.pyx", line 221, in rasterio._base.open_dataset
+  File "rasterio\\_err.pyx", line 359, in rasterio._err.exc_wrap_pointer
+rasterio._err.CPLE_OpenFailedError: data\datasets\49_1_saja\raw\sentinel1\S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE\S1D_IW_GRDH_1SDV_20260805T111409_20_VV.tif: No such file or directory
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\etl\module5_orchestrator.py", line 615, in _pipeline_worker
+    scene_id, produced_tiers, produced_files = _process_scene(jc, scene_meta, dl_result)
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\etl\module5_orchestrator.py", line 183, in _process_scene
+    calib_vv, calib_vh = calibrate_run(dl_result.zip_path, dl_result.vv_tif_path, dl_result.vh_tif_path, str(calib_dir))
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\etl\module1b_calibrate.py", line 129, in run
+    calibrate_and_reproject(vv_tif_path, vv_xml, vv_out)
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\etl\module1b_calibrate.py", line 110, in calibrate_and_reproject
+    _reproject_with_gcps(sigma0, tif_path, output_path)
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\etl\module1b_calibrate.py", line 70, in _reproject_with_gcps
+    with rasterio.open(src_path) as src:
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\rasterio\env.py", line 463, in wrapper
+    return f(*args, **kwds)
+  File "C:\Users\BigData\Downloads\sentinel-sentinel\sentinel-metadata\venv\lib\site-packages\rasterio\__init__.py", line 368, in open
+    dataset = DatasetReader(path, driver=driver, sharing=sharing, **kwargs)
+  File "rasterio\\_base.pyx", line 312, in rasterio._base.DatasetBase.__init__
+rasterio.errors.RasterioIOError: data\datasets\49_1_saja\raw\sentinel1\S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE\S1D_IW_GRDH_1SDV_20260805T111409_20_VV.tif: No such file or directory
+2026-09-03 10:53:20,476 ERROR   [Thread-10 (_pipeline_worker)] etl.pipeline_logger [PLOG] {"log_id": 891, "dataset_id": 49, "scene_id": "S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE", "module": "ORCHESTRATOR", "stage": "SCENE_PIPELINE", "status": "FAILED", "message": "SCENE_PIPELINE failed: data\\datasets\\49_1_saja\\raw\\sentinel1\\S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE\\S1D_IW_GRDH_1SDV_20260805T111409_20_VV.tif: No such file or directory", "error_type": "RasterioIOError", "error_message": "data\\datasets\\49_1_saja\\raw\\sentinel1\\S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE\\S1D_IW_GRDH_1SDV_20260805T111409_20_VV.tif: No such file or directory", "traceback": "Traceback (most recent call last):\n  File \"rasterio\\\\_base.pyx\", line 310, in rasterio._base.DatasetBase.__init__\n  File \"rasterio\\\\_base.pyx\", line 221, in rasterio._base.open_dataset\n  File \"rasterio\\\\_err.pyx\", line 359, in rasterio._err.exc_wrap_pointer\nrasterio._err.CPLE_OpenFailedError: data\\datasets\\49_1_saja\\raw\\sentinel1\\S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE\\S1D_IW_GRDH_1SDV_20260805T111409_20_VV.tif: No such file or directory\n\nDuring handling of the above exception, another exception occurred:\n\nTraceback (most recent call last):\n  File \"C:\\Users\\BigData\\Downloads\\sentinel-sentinel\\sentinel-metadata\\etl\\module5_orchestrator.py\", line 615, in _pipeline_worker\n    scene_id, produced_tiers, produced_files = _process_scene(jc, scene_meta, dl_result)\n  File \"C:\\Users\\BigData\\Downloads\\sentinel-sentinel\\sentinel-metadata\\etl\\module5_orchestrator.py\", line 183, in _process_scene\n    calib_vv, calib_vh = calibrate_run(dl_result.zip_path, dl_result.vv_tif_path, dl_result.vh_tif_path, str(calib_dir))\n  File \"C:\\Users\\BigData\\Downloads\\sentinel-sentinel\\sentinel-metadata\\etl\\module1b_calibrate.py\", line 129, in run\n    calibrate_and_reproject(vv_tif_path, vv_xml, vv_out)\n  File \"C:\\Users\\BigData\\Downloads\\sentinel-sentinel\\sentinel-metadata\\etl\\module1b_calibrate.py\", line 110, in calibrate_and_reproject\n    _reproject_with_gcps(sigma0, tif_path, output_path)\n  File \"C:\\Users\\BigData\\Downloads\\sentinel-sentinel\\sentinel-metadata\\etl\\module1b_calibrate.py\", line 70, in _reproject_with_gcps\n    with rasterio.open(src_path) as src:\n  File \"C:\\Users\\BigData\\Downloads\\sentinel-sentinel\\sentinel-metadata\\venv\\lib\\site-packages\\rasterio\\env.py\", line 463, in wrapper\n    return f(*args, **kwds)\n  File \"C:\\Users\\BigData\\Downloads\\sentinel-sentinel\\sentinel-metadata\\venv\\lib\\site-packages\\rasterio\\__init__.py\", line 368, in open\n    dataset = DatasetReader(path, driver=driver, sharing=sharing, **kwargs)\n  File \"rasterio\\\\_base.pyx\", line 312, in rasterio._base.DatasetBase.__init__\nrasterio.errors.RasterioIOError: data\\datasets\\49_1_saja\\raw\\sentinel1\\S1D_IW_GRDH_1SDV_20260805T111409_20260805T111438_003989_0073F4_862B.SAFE\\S1D_IW_GRDH_1SDV_20260805T111409_20_VV.tif: No such file or directory\n"}
+2026-09-03 10:53:20,597 INFO    [Thread-8 (_runner)] etl.pipeline_logger [PLOG-FILE] run log closed for dataset='1 saja'

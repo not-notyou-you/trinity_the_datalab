@@ -1,0 +1,313 @@
+<!-- web/index.html -->
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The Trinity</title>
+<link rel="icon" type="image/webp" href="logo.webp">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div id="bgMap"></div>
+<div id="bgOverlay"></div>
+
+<!-- Penutup peta: satu path SVG "layar penuh dikurangi persegi panjang rounded".
+     Karena fill-rule=evenodd, lubangnya tidak ikut ter-hit-test, jadi path ini
+     sekaligus memblokir drag/zoom peta di luar jendela dengan sudut yang membulat
+     persis mengikuti border jendela. -->
+<svg id="mapMask" class="hidden" aria-hidden="true"><path id="mapMaskPath" fill-rule="evenodd"></path></svg>
+
+<div class="map-ui hidden" id="mapUI">
+  <div class="map-hint-chip" id="mapHintChip">
+    <span class="map-hint-title">Peta Wilayah</span>
+    <span class="map-hint-sub" id="mapBboxReadout">Pilih lokasi atau seret peta untuk mengubah area</span>
+  </div>
+  <!-- Dipos oleh JS tepat di atas jendela peta; overflow:hidden + radius yang sama
+       membuat kotak seleksi terpotong rapi di sudut membulat. -->
+  <div class="map-clip" id="mapClip">
+    <div class="map-selection-box" id="mapSelectionBox"></div>
+    <button type="button" class="map-zoom-btn" id="mapZoomOut" title="Perkecil" aria-label="Perkecil">&minus;</button>
+    <button type="button" class="map-zoom-btn" id="mapZoomIn" title="Perbesar" aria-label="Perbesar">+</button>
+  </div>
+</div>
+
+<div class="floatnav-zone" id="floatNavZone">
+  <nav class="floatnav" id="floatNav" tabindex="0">
+    <div class="floatnav-brand">
+      <img class="brand-mark" src="logo.webp" alt="The Trinity">
+      <div class="brand-text">
+        <span class="brand-name">THE TRINITY</span>
+        <span class="brand-sub">SENTINEL / MODIS / GPM</span>
+      </div>
+    </div>
+    <div class="floatnav-tabs">
+      <button class="tab active" data-tab="create">Buat Dataset</button>
+      <button class="tab" data-tab="datasets">Dataset Saya</button>
+      <button class="tab" data-tab="live">Live</button>
+    </div>
+    <div class="status">
+      <span class="status-dot" id="statusDot"></span>
+      <span id="statusLabel" class="status-label-text">Menghubungkan...</span>
+    </div>
+  </nav>
+</div>
+
+<main>
+
+  <section class="view" id="view-create">
+    <div class="create-grid">
+
+      <section class="loc-section">
+        <!-- Border/latar ada di .loc-section (tidak ikut menggulung); hanya .panel-scroll
+             yang menggulung, sehingga bingkai tetap membingkai panel, bukan kontennya. -->
+        <div class="panel-scroll">
+          <p class="section-title">Pilih Lokasi</p>
+          <button type="button" class="btn btn-add-loc" id="addLocationBtn">
+            <span class="btn-icon" id="addLocationIcon"></span>Tambah Lokasi
+          </button>
+          <div class="loc-search">
+            <span class="loc-search-icon" id="locSearchIcon"></span>
+            <input type="search" id="locSearch" autocomplete="off" placeholder="Cari lokasi tersimpan...">
+          </div>
+          <div class="region-grid" id="regionGrid"></div>
+        </div>
+      </section>
+
+      <div class="map-gap" id="mapGap"></div>
+
+      <section class="config-section">
+        <div class="panel-scroll">
+          <p class="section-title">Konfigurasi</p>
+          <form id="createForm">
+            <div class="field-row">
+              <div class="field">
+                <label for="fDateStart">Dari tanggal</label>
+                <input type="date" id="fDateStart" required>
+              </div>
+              <div class="field">
+                <label for="fDateEnd">Sampai tanggal</label>
+                <input type="date" id="fDateEnd" required>
+              </div>
+            </div>
+            <details class="advanced">
+              <summary>Pengaturan lanjutan (opsional)</summary>
+              <div class="field-row-3">
+                <div class="field">
+                  <label for="fMinCloud">Maks. tutupan awan (%)</label>
+                  <input type="number" id="fMinCloud" min="0" max="100" step="1">
+                </div>
+                <div class="field">
+                  <label for="fMinQuality">Skor kualitas minimum</label>
+                  <input type="number" id="fMinQuality" min="0" max="100" step="1">
+                </div>
+                <div class="field">
+                  <label for="fResolution">Resolusi (m)</label>
+                  <input type="number" id="fResolution" min="1" step="1">
+                </div>
+              </div>
+            </details>
+            <p class="panel-title" style="margin-bottom:10px">Tier yang disimpan</p>
+            <div class="tier-group" id="tierGroup">
+              <label class="tier-pill"><input type="checkbox" class="tier-check" value="RAW"> RAW</label>
+              <label class="tier-pill"><input type="checkbox" class="tier-check" value="BRONZE"> BRONZE</label>
+              <label class="tier-pill"><input type="checkbox" class="tier-check" value="SILVER"> SILVER</label>
+              <label class="tier-pill"><input type="checkbox" class="tier-check" value="GOLD"> GOLD</label>
+              <label class="tier-pill"><input type="checkbox" class="tier-check" value="FUSION" checked> FUSION</label>
+              <label class="tier-pill"><input type="checkbox" id="tierAll"> Semua</label>
+            </div>
+
+            <!-- Opsi PREVIEW. Sengaja di luar .tier-group: PREVIEW bukan tier
+                 lineage yang bisa diminta lewat required_tiers (lihat migrasi
+                 015) -- dia turunan yang dirender dari GOLD -- jadi menaruhnya
+                 sebagai pill keenam akan menyiratkan dia sejajar dengan RAW..
+                 FUSION dan ikut aturan retensi yang sama. Nilainya dikirim
+                 sebagai field `generate_preview` tersendiri. -->
+            <label class="option-row" for="fGeneratePreview">
+              <input type="checkbox" id="fGeneratePreview" checked>
+              <span class="option-icon" id="previewOptIcon"></span>
+              <span class="option-text">
+                <span class="option-label">Buat Preview (Grayscale + Berwarna)</span>
+                <span class="option-desc">Menghasilkan PNG dari tier GOLD untuk publikasi dan pembacaan ilmiah. Matikan untuk mempercepat proses.</span>
+              </span>
+            </label>
+
+            <div class="field">
+              <label for="fName">Nama dataset</label>
+              <input type="text" id="fName" placeholder="dataset nov ke feb" required>
+            </div>
+            <div class="field">
+              <label for="fDescription">Deskripsi (opsional)</label>
+              <textarea id="fDescription" placeholder="Catatan tambahan tentang dataset ini"></textarea>
+            </div>
+            <button type="submit" class="btn btn-primary btn-block" id="createSubmit">Buat Dataset</button>
+          </form>
+        </div>
+      </section>
+
+    </div>
+  </section>
+
+  <section class="view hidden" id="view-datasets">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:18px;">
+      <p class="panel-title" style="margin:0">Dataset Saya</p>
+      <button class="btn btn-ghost" id="refreshDatasets">Segarkan</button>
+    </div>
+    <div class="card-list" id="datasetList"></div>
+  </section>
+
+  <section class="view hidden" id="view-live">
+    <div class="live-grid">
+      <div class="panel">
+        <p class="panel-title">Status Live</p>
+        <div class="live-toggle-row">
+          <div>
+            <div style="font-weight:600" id="liveStatusText">-</div>
+            <div style="font-size:12px; color:var(--text-dim)">Pemantauan 24/7</div>
+          </div>
+          <label class="switch">
+            <input type="checkbox" id="liveToggle">
+            <span class="switch-track"></span>
+          </label>
+        </div>
+        <div class="live-meta-row"><span>Ukuran saat ini</span><span id="liveSize">-</span></div>
+        <div class="live-meta-row"><span>Terakhir dicek</span><span id="liveChecked">-</span></div>
+        <div style="display:flex; gap:8px; margin-top:18px; flex-wrap:wrap;">
+          <a class="btn btn-accent" id="liveDownload" href="#">Unduh Terbaru</a>
+          <button class="btn btn-danger" id="liveClearBtn">Kosongkan</button>
+        </div>
+
+        <p class="panel-title" style="margin-top:26px">Sumber Data</p>
+        <div id="sourceList"></div>
+
+        <p class="panel-title" style="margin-top:26px">Isi Data Lampau (Backfill)</p>
+        <form id="backfillForm">
+          <div class="field-row">
+            <div class="field">
+              <label for="bfStart">Dari tanggal</label>
+              <input type="date" id="bfStart" required>
+            </div>
+            <div class="field">
+              <label for="bfEnd">Sampai tanggal</label>
+              <input type="date" id="bfEnd" required>
+            </div>
+          </div>
+          <button type="submit" class="btn btn-primary btn-block">Mulai Backfill</button>
+        </form>
+      </div>
+
+      <div class="panel">
+        <p class="panel-title">Scene Terbaru</p>
+        <div id="liveScenes"></div>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<div class="modal-overlay hidden" id="addLocationModal">
+  <div class="modal modal-wide">
+    <h3>Tambah Lokasi Baru</h3>
+    <div class="modal-tabs" role="tablist">
+      <button type="button" class="modal-tab active" data-loctab="search" role="tab">Cari Nama</button>
+      <button type="button" class="modal-tab" data-loctab="manual" role="tab">Koordinat Manual</button>
+    </div>
+
+    <!-- Bagian A: cari nama lewat OpenStreetMap. Memilih hasil akan mengisi
+         bagian koordinat, jadi pengguna selalu sempat memeriksa bbox sebelum simpan. -->
+    <div class="loctab-panel" id="loctabSearch">
+      <label class="mini-label" for="geoSearchInput">Cari nama lokasi (OpenStreetMap)</label>
+      <input type="search" id="geoSearchInput" autocomplete="off" placeholder="mis. Lampung, Semarang, Cikarang">
+      <div class="geo-results" id="geoResults">
+        <p class="geo-hint">Ketik minimal 2 huruf lalu pilih salah satu hasil.</p>
+      </div>
+    </div>
+
+    <!-- Bagian B: input koordinat manual, sekaligus tahap konfirmasi hasil pencarian. -->
+    <div class="loctab-panel hidden" id="loctabManual">
+      <div class="field">
+        <label for="alName">Nama lokasi</label>
+        <input type="text" id="alName" placeholder="mis. Cikarang Utara" maxlength="100">
+      </div>
+      <div class="field">
+        <label for="alPaste">Tempel bbox (opsional)</label>
+        <input type="text" id="alPaste" placeholder="min_lon, min_lat, max_lon, max_lat">
+      </div>
+      <div class="coord-grid">
+        <div class="field"><label for="alMinLon">Longitude min</label><input type="number" id="alMinLon" step="any" placeholder="106.78"></div>
+        <div class="field"><label for="alMinLat">Latitude min</label><input type="number" id="alMinLat" step="any" placeholder="-6.22"></div>
+        <div class="field"><label for="alMaxLon">Longitude maks</label><input type="number" id="alMaxLon" step="any" placeholder="106.87"></div>
+        <div class="field"><label for="alMaxLat">Latitude maks</label><input type="number" id="alMaxLat" step="any" placeholder="-6.07"></div>
+      </div>
+      <div class="field">
+        <label for="alDesc">Deskripsi (opsional)</label>
+        <input type="text" id="alDesc" placeholder="Catatan singkat tentang area ini">
+      </div>
+    </div>
+
+    <p class="modal-error hidden" id="alError"></p>
+    <div class="modal-actions">
+      <button type="button" class="btn btn-ghost" id="alCancel">Batal</button>
+      <button type="button" class="btn btn-primary" id="alSave">Simpan Lokasi</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay hidden" id="deleteLocationModal">
+  <div class="modal">
+    <h3>Hapus lokasi ini?</h3>
+    <p id="deleteLocationText">Lokasi akan dihilangkan dari daftar pilihan.</p>
+    <p class="modal-note">Dataset yang sudah pernah dibuat dengan lokasi ini tetap bisa dibuka.</p>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="deleteLocationCancel">Batal</button>
+      <button class="btn btn-danger" id="deleteLocationConfirm">Ya, Hapus</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay hidden" id="deleteModal">
+  <div class="modal">
+    <h3>Hapus dataset ini?</h3>
+    <p>Semua file yang tersimpan untuk dataset ini akan dihapus total dan tidak bisa dikembalikan.</p>
+    <label class="modal-check"><input type="checkbox" id="deleteForce"> Paksa hentikan proses yang sedang berjalan</label>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="deleteCancel">Batal</button>
+      <button class="btn btn-danger" id="deleteConfirm">Ya, Hapus</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay hidden" id="cancelModal">
+  <div class="modal">
+    <h3>Batalkan dataset ini?</h3>
+    <p>Proses akan dihentikan dan data sementara (RAW, BRONZE, SILVER) akan dihapus. Data GOLD yang sudah selesai tetap disimpan.</p>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="cancelModalCancel">Batal</button>
+      <button class="btn btn-danger" id="cancelModalConfirm">Ya, Batalkan</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay hidden" id="clearModal">
+  <div class="modal">
+    <h3>Kosongkan dataset live?</h3>
+    <p>Semua data yang sudah terkumpul di dataset live akan dihapus. Pemantauan tetap berjalan seperti biasa setelahnya.</p>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="clearCancel">Batal</button>
+      <button class="btn btn-danger" id="clearConfirm">Ya, Kosongkan</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast-stack" id="toastStack"></div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="icons.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

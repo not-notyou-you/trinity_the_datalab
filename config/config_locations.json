@@ -1,0 +1,65 @@
+{
+  "_DEPRECATED": "TIDAK DIPAKAI LAGI sejak migrasi 012. Daftar lokasi sekarang ada di tabel regions_of_interest dan dikelola lewat UI (Pilih Lokasi) / API /api/regions. Berkas ini disimpan hanya sebagai rujukan koordinat asal.",
+  "regions": [
+    {
+      "region_code": "JABODTK",
+      "name": "Jabodetabek",
+      "description": "Jakarta-Bogor-Depok-Tangerang-Bekasi metropolitan area",
+      "bbox_wgs84": {
+        "min_lon": 106.4,
+        "min_lat": -6.7,
+        "max_lon": 107.2,
+        "max_lat": -5.9
+      },
+      "bbox_wkt": "POLYGON((106.4 -6.7, 107.2 -6.7, 107.2 -5.9, 106.4 -5.9, 106.4 -6.7))",
+      "area_km2": 6392.0,
+      "admin_level": 2,
+      "is_primary": true
+    },
+    {
+      "region_code": "JKT",
+      "name": "DKI Jakarta",
+      "description": "Special Capital Region of Jakarta",
+      "bbox_wgs84": {
+        "min_lon": 106.68,
+        "min_lat": -6.37,
+        "max_lon": 106.97,
+        "max_lat": -6.07
+      },
+      "bbox_wkt": "POLYGON((106.68 -6.37, 106.97 -6.37, 106.97 -6.07, 106.68 -6.07, 106.68 -6.37))",
+      "area_km2": 661.5,
+      "admin_level": 3,
+      "is_primary": false
+    },
+    {
+      "region_code": "JKT_TEST",
+      "name": "DKI Jakarta - Dummy Test Area",
+      "description": "One sixth subdivision of the DKI Jakarta bbox, central-north tile, used for fast pipeline smoke tests before running the full DKI Jakarta area",
+      "bbox_wgs84": {
+        "min_lon": 106.78,
+        "min_lat": -6.22,
+        "max_lon": 106.87,
+        "max_lat": -6.07
+      },
+      "bbox_wkt": "POLYGON((106.78 -6.22, 106.87 -6.22, 106.87 -6.07, 106.78 -6.07, 106.78 -6.22))",
+      "area_km2": 110.25,
+      "admin_level": 3,
+      "is_primary": false
+    },
+    {
+      "region_code": "BGR",
+      "name": "Bogor",
+      "description": "Bogor city and regency — upstream flood source area",
+      "bbox_wgs84": {
+        "min_lon": 106.6,
+        "min_lat": -6.7,
+        "max_lon": 107.0,
+        "max_lat": -6.4
+      },
+      "bbox_wkt": "POLYGON((106.6 -6.7, 107.0 -6.7, 107.0 -6.4, 106.6 -6.4, 106.6 -6.7))",
+      "area_km2": 2710.6,
+      "admin_level": 3,
+      "is_primary": false
+    }
+  ]
+}

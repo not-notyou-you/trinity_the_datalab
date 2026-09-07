@@ -1,0 +1,68 @@
+{
+  "dataset_id": 50,
+  "name": "juli1",
+  "location_label": "DKI Jakarta - Area Uji",
+  "bbox_wkt": "POLYGON ((106.78 -6.22, 106.87 -6.22, 106.87 -6.07, 106.78 -6.07, 106.78 -6.22))",
+  "date_range": {
+    "start": "2026-07-06",
+    "end": "2026-07-11"
+  },
+  "date_start": "2026-07-06",
+  "date_end": "2026-07-11",
+  "mode": "STANDARD",
+  "quality_threshold": null,
+  "required_tiers": [
+    "RAW",
+    "BRONZE",
+    "SILVER",
+    "GOLD",
+    "FUSION"
+  ],
+  "sources": [],
+  "status": "COMPLETED",
+  "total_scenes": 0,
+  "completed_scenes": 0,
+  "failed_scenes": 0,
+  "total_size_bytes": 0,
+  "storage_usage": {
+    "raw": {
+      "size_bytes": 0,
+      "file_count": 0,
+      "scene_count": 0,
+      "sources": {}
+    },
+    "bronze": {
+      "size_bytes": 0,
+      "file_count": 0,
+      "scene_count": 0,
+      "sources": {}
+    },
+    "silver": {
+      "size_bytes": 0,
+      "file_count": 0,
+      "scene_count": 0,
+      "sources": {}
+    },
+    "gold": {
+      "size_bytes": 0,
+      "file_count": 0,
+      "scene_count": 0,
+      "sources": {}
+    },
+    "preview": {
+      "size_bytes": 0,
+      "file_count": 0,
+      "scene_count": 0,
+      "sources": {}
+    },
+    "fusion": {
+      "size_bytes": 0,
+      "file_count": 0,
+      "scene_count": 0,
+      "sources": {}
+    }
+  },
+  "storage_by_source": {},
+  "acquisition_dates": [],
+  "updated_at": "2026-09-03 03:55:03.415909+00:00"
+}

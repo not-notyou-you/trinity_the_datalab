@@ -1,0 +1,37 @@
+{
+  "scene_id": 13,
+  "product_identifier": "S1D_IW_GRDH_1SDV_20260720T223313_20260720T223340_003763_006C12_C2A8.SAFE",
+  "acquisition_date": "2026-07-20T22:33:13.054747+00:00",
+  "bands": {
+    "VV": {
+      "band_name": "VV",
+      "total_pixels": 1898616,
+      "valid_pixels": 1887600,
+      "nodata_pixels": 11016,
+      "nodata_percent": 0.58,
+      "backscatter_mean_db": 0.3834,
+      "backscatter_std_db": 1.8431,
+      "backscatter_min_db": 0.0078,
+      "backscatter_max_db": 505.4257,
+      "speckle_index": 4.807,
+      "radiometric_consistency": true,
+      "quality_score": 69.71,
+      "quality_flag": "PASS"
+    },
+    "VH": {
+      "band_name": "VH",
+      "total_pixels": 1898616,
+      "valid_pixels": 1887600,
+      "nodata_pixels": 11016,
+      "nodata_percent": 0.58,
+      "backscatter_mean_db": 0.0675,
+      "backscatter_std_db": 0.6618,
+      "backscatter_min_db": 0.0045,
+      "backscatter_max_db": 420.3094,
+      "speckle_index": 9.8031,
+      "radiometric_consistency": true,
+      "quality_score": 69.71,
+      "quality_flag": "PASS"
+    }
+  }
+}
