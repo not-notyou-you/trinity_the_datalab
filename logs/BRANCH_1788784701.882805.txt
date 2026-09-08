@@ -1,0 +1,12 @@
+2026-09-07 19:38:21,925 INFO    [MainThread] etl.pipeline_logger [PLOG-FILE] run log opened for dataset='BRANCH_1788784701.882805' -> logs\BRANCH_1788784701.882805.txt
+2026-09-07 19:38:21,925 INFO    [MainThread] etl.module9_fusion [M9] MODIS tidak dikonfigurasi dataset=27, tidak diunduh
+2026-09-07 19:38:21,925 INFO    [MainThread] etl.module8_gpm_download [M8] dataset_id=27 level=['RAW'] window=['24h'] granule_hari=1
+2026-09-07 19:38:21,945 INFO    [MainThread] etl.pipeline_logger [PLOG] {"log_id": 60, "dataset_id": 27, "scene_id": "GPM_20240305", "module": "MODULE8_GPM_DOWNLOAD", "stage": "DOWNLOAD", "status": "COMPLETED", "message": "GPM 24h: selesai (1 hari)", "window": "24h", "days_aggregated": 1}
+2026-09-07 19:38:21,950 INFO    [MainThread] etl.pipeline_logger [PLOG] {"log_id": 61, "dataset_id": 27, "scene_id": "GPM_20240305", "module": "MODULE8_GPM_DOWNLOAD", "stage": "DOWNLOAD_SUMMARY", "status": "COMPLETED", "message": "GPM selesai: 1/1 produk", "windows_ok": ["24h"], "windows_failed": [], "quality": "GOOD"}
+2026-09-07 19:38:21,950 INFO    [MainThread] etl.module8_gpm_download [M8] selesai: 1/1 produk rainfall dibuat untuk dataset_id=27 tanggal=2024-03-05
+2026-09-07 19:38:21,959 INFO    [MainThread] etl.metadata_manager [SCENE] Registered scene_id=26 pid=NASA_AUX_GPM_27_20240305 acq=2024-03-05T00:00:00+00:00
+2026-09-07 19:38:21,966 INFO    [MainThread] etl.metadata_manager [JOB] Created job_id=43 scene=26 stage=DOWNLOAD attempt=1
+2026-09-07 19:38:21,975 INFO    [MainThread] etl.metadata_manager [NASA] Registered nasa_scene_id=2 source=GPM tile=GLOBAL date=2024-03-05
+2026-09-07 19:38:21,990 INFO    [MainThread] etl.metadata_manager [PRODUCT] Registered product_id=90 scene=26 band=RAIN_24H tier=BRONZE level=RAW source=GPM dataset=27 file=gpm_rain_24h_20240305.tif
+2026-09-07 19:38:22,006 INFO    [MainThread] etl.pipeline_logger [PLOG] {"log_id": 62, "dataset_id": 27, "scene_id": "20240305", "module": "ORCHESTRATOR", "stage": "SCENE_PIPELINE", "status": "COMPLETED", "message": "Aux 20240305: 1 berkas ditulis", "date": "2024-03-05", "files_written": 1, "tiers": {"BRONZE": 1, "SILVER": 0, "GOLD": 0}}
+2026-09-07 19:38:22,006 INFO    [MainThread] etl.pipeline_logger [PLOG-FILE] run log closed for dataset='BRANCH_1788784701.882805'

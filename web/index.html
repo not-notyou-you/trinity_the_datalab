@@ -84,68 +84,109 @@
       <section class="config-section">
         <div class="panel-scroll">
           <p class="section-title">Konfigurasi</p>
-          <form id="createForm">
-            <div class="field-row">
-              <div class="field">
-                <label for="fDateStart">Dari tanggal</label>
-                <input type="date" id="fDateStart" required>
-              </div>
-              <div class="field">
-                <label for="fDateEnd">Sampai tanggal</label>
-                <input type="date" id="fDateEnd" required>
-              </div>
-            </div>
-            <details class="advanced">
-              <summary>Pengaturan lanjutan (opsional)</summary>
-              <div class="field-row-3">
-                <div class="field">
-                  <label for="fMinCloud">Maks. tutupan awan (%)</label>
-                  <input type="number" id="fMinCloud" min="0" max="100" step="1">
-                </div>
-                <div class="field">
-                  <label for="fMinQuality">Skor kualitas minimum</label>
-                  <input type="number" id="fMinQuality" min="0" max="100" step="1">
-                </div>
-                <div class="field">
-                  <label for="fResolution">Resolusi (m)</label>
-                  <input type="number" id="fResolution" min="1" step="1">
-                </div>
-              </div>
-            </details>
-            <p class="panel-title" style="margin-bottom:10px">Tier yang disimpan</p>
-            <div class="tier-group" id="tierGroup">
-              <label class="tier-pill"><input type="checkbox" class="tier-check" value="RAW"> RAW</label>
-              <label class="tier-pill"><input type="checkbox" class="tier-check" value="BRONZE"> BRONZE</label>
-              <label class="tier-pill"><input type="checkbox" class="tier-check" value="SILVER"> SILVER</label>
-              <label class="tier-pill"><input type="checkbox" class="tier-check" value="GOLD"> GOLD</label>
-              <label class="tier-pill"><input type="checkbox" class="tier-check" value="FUSION" checked> FUSION</label>
-              <label class="tier-pill"><input type="checkbox" id="tierAll"> Semua</label>
+          <!-- novalidate: validasi bawaan browser berjalan SEBELUM event submit dan
+               ikut memeriksa field di langkah yang sedang disembunyikan. Field wajib
+               yang tak terlihat akan memblokir submit tanpa pesan yang bisa dilihat
+               user ("not focusable"), jadi aturan wajibnya ditegakkan per langkah oleh
+               validateWizardStep() yang pesannya menunjuk langkah yang benar. Atribut
+               `required` dibiarkan sebagai penanda semantik untuk pembaca layar. -->
+          <form id="createForm" novalidate>
+
+            <!-- Pra-wisaya: klon konfigurasi dataset terakhir (DOCS/DECISIONS.md D13).
+                 Disembunyikan sampai diketahui ada dataset sebelumnya -- tombol yang
+                 selalu tampil lalu selalu gagal untuk pengguna baru hanya jadi jebakan. -->
+            <div class="clone-block hidden" id="cloneBlock">
+              <button type="button" class="btn btn-clone" id="cloneConfigBtn">
+                <span class="btn-icon" id="cloneConfigIcon"></span>Pakai Config Sebelumnya
+              </button>
+              <div class="clone-preview hidden" id="clonePreview"></div>
+              <p class="clone-error hidden" id="cloneError" role="alert"></p>
             </div>
 
-            <!-- Opsi PREVIEW. Sengaja di luar .tier-group: PREVIEW bukan tier
-                 lineage yang bisa diminta lewat required_tiers (lihat migrasi
-                 015) -- dia turunan yang dirender dari GOLD -- jadi menaruhnya
-                 sebagai pill keenam akan menyiratkan dia sejajar dengan RAW..
-                 FUSION dan ikut aturan retensi yang sama. Nilainya dikirim
-                 sebagai field `generate_preview` tersendiri. -->
-            <label class="option-row" for="fGeneratePreview">
-              <input type="checkbox" id="fGeneratePreview" checked>
-              <span class="option-icon" id="previewOptIcon"></span>
-              <span class="option-text">
-                <span class="option-label">Buat Preview (Grayscale + Berwarna)</span>
-                <span class="option-desc">Menghasilkan PNG dari tier GOLD untuk publikasi dan pembacaan ilmiah. Matikan untuk mempercepat proses.</span>
-              </span>
-            </label>
+            <ol class="wizard-steps" id="wizardSteps">
+              <li class="wizard-step-pip active" data-pip="1"><span>1</span>Wilayah</li>
+              <li class="wizard-step-pip" data-pip="2"><span>2</span>Satelit</li>
+              <li class="wizard-step-pip" data-pip="3"><span>3</span>Fusi</li>
+              <li class="wizard-step-pip" data-pip="4"><span>4</span>Selesai</li>
+            </ol>
 
-            <div class="field">
-              <label for="fName">Nama dataset</label>
-              <input type="text" id="fName" placeholder="dataset nov ke feb" required>
+            <!-- Langkah 1: wilayah (dipilih di panel kiri) + rentang tanggal -->
+            <section class="wizard-panel" data-step="1">
+              <p class="wizard-title">Wilayah &amp; Tanggal</p>
+              <div class="wizard-region" id="wizardRegion">Belum ada lokasi dipilih</div>
+              <div class="field-row">
+                <div class="field">
+                  <label for="fDateStart">Dari tanggal</label>
+                  <input type="date" id="fDateStart" required>
+                </div>
+                <div class="field">
+                  <label for="fDateEnd">Sampai tanggal</label>
+                  <input type="date" id="fDateEnd" required>
+                </div>
+              </div>
+              <details class="advanced">
+                <summary>Pengaturan lanjutan (opsional)</summary>
+                <div class="field-row-3">
+                  <div class="field">
+                    <label for="fMinCloud">Maks. tutupan awan (%)</label>
+                    <input type="number" id="fMinCloud" min="0" max="100" step="1">
+                  </div>
+                  <div class="field">
+                    <label for="fMinQuality">Skor kualitas minimum</label>
+                    <input type="number" id="fMinQuality" min="0" max="100" step="1">
+                  </div>
+                  <div class="field">
+                    <label for="fResolution">Resolusi (m)</label>
+                    <input type="number" id="fResolution" min="1" step="1">
+                  </div>
+                </div>
+              </details>
+            </section>
+
+            <!-- Langkah 2: sumber satelit + level pemrosesan PER satelit.
+                 Kartunya dirender app.js dari SATELLITE_SOURCES supaya label,
+                 deskripsi, dan arti RAW/PROCESSED tiap sensor hidup di satu tempat. -->
+            <section class="wizard-panel hidden" data-step="2">
+              <div class="wizard-title-row">
+                <p class="wizard-title">Sumber Data Satelit</p>
+                <label class="master-toggle" for="masterAll">
+                  <input type="checkbox" id="masterAll">Pilih Semua
+                </label>
+              </div>
+              <div class="satellite-list" id="satelliteList"></div>
+            </section>
+
+            <!-- Langkah 3: strategi fusi (hanya kalau >1 sumber) + opsi preview -->
+            <section class="wizard-panel hidden" data-step="3">
+              <div id="fusionGroup">
+                <p class="wizard-title">Strategi Fusi</p>
+                <div class="fusion-list" id="fusionList"></div>
+              </div>
+              <p class="wizard-title">Opsi Preview (opsional)</p>
+              <div class="preview-opts" id="previewOptions"></div>
+            </section>
+
+            <!-- Langkah 4: nama + ringkasan sebelum dikirim -->
+            <section class="wizard-panel hidden" data-step="4">
+              <p class="wizard-title">Tinjau &amp; Buat</p>
+              <div class="field">
+                <label for="fName">Nama dataset</label>
+                <input type="text" id="fName" placeholder="dataset nov ke feb" required>
+              </div>
+              <div class="field">
+                <label for="fDescription">Deskripsi (opsional)</label>
+                <textarea id="fDescription" placeholder="Catatan tambahan tentang dataset ini"></textarea>
+              </div>
+              <div class="wizard-review" id="wizardReview"></div>
+            </section>
+
+            <p class="wizard-error hidden" id="wizardError" role="alert"></p>
+
+            <div class="wizard-nav">
+              <button type="button" class="btn btn-ghost hidden" id="wizardBack">Kembali</button>
+              <button type="button" class="btn btn-primary btn-block" id="wizardNext">Lanjut</button>
+              <button type="submit" class="btn btn-primary btn-block hidden" id="createSubmit">Buat Dataset</button>
             </div>
-            <div class="field">
-              <label for="fDescription">Deskripsi (opsional)</label>
-              <textarea id="fDescription" placeholder="Catatan tambahan tentang dataset ini"></textarea>
-            </div>
-            <button type="submit" class="btn btn-primary btn-block" id="createSubmit">Buat Dataset</button>
           </form>
         </div>
       </section>

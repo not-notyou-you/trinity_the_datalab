@@ -12,6 +12,9 @@ from etl.database_client import (
     DatasetJob,
     SatelliteScene,
     SceneJobState,
+    SOURCE_NAME_ORDER,
+    SOURCE_NAME_TO_API_KEY,
+    normalize_source_configs,
 )
 from etl import folder_manager as fm
 from etl.location_resolver import resolve_location, resolve_region_id
@@ -115,15 +118,30 @@ class DatasetManager:
         self,
         date_start: date,
         date_end: date,
-        tiers: list[str],
         name: str,
+        sources: dict | None = None,
+        tiers: list[str] | None = None,
+        fusion_strategy: str | None = None,
+        preview_options: list[str] | None = None,
         location: str | None = None,
         region_id: int | None = None,
         description: str | None = None,
         quality_settings: dict | None = None,
         generate_preview: bool = True,
     ) -> dict:
-        normalized_tiers = _normalize_tiers(tiers)
+        """Buat dataset + job pertamanya.
+
+        Jalur utama sekarang lewat `sources` (konfigurasi per-satelit).
+        `tiers` dipertahankan sebagai jalur lama untuk pemanggil yang belum
+        pindah; kalau `sources` diisi, `required_tiers` diturunkan darinya dan
+        `tiers` diabaikan (DOCS/PROTOTYPE_CHANGELOG.md: "`tiers` is no longer
+        user-facing -- derived internally").
+
+        Returns:
+            dict berisi dataset_id, job_id, status, dan source_configs.
+        """
+        if sources is None and not tiers:
+            raise ValueError("Isi sources (konfigurasi per-satelit) atau tiers")
         # region_id = lokasi dipilih dari tabel (jalur UI). location = nama bebas
         # (pemanggil lama/CLI), di-resolve lewat nama lalu geocoding.
         if region_id is not None:
@@ -132,25 +150,47 @@ class DatasetManager:
             bbox_wkt, region_id, location_label = resolve_location(self._db, location)
         else:
             raise ValueError("Lokasi belum dipilih: isi region_id atau location")
-        with self._db.session() as sess:
-            dataset = Dataset(
-                name=name,
-                description=description,
-                location_label=location_label,
-                region_id=region_id,
-                bbox=f"SRID=4326;{bbox_wkt}",
-                bbox_wkt=bbox_wkt,
-                date_start=date_start,
-                date_end=date_end,
-                required_tiers=normalized_tiers,
-                quality_settings=quality_settings or {},
-                generate_preview=generate_preview,
-                dataset_kind="STANDARD",
-                status="QUEUED",
-            )
-            sess.add(dataset)
-            sess.flush()
+
+        dataset_fields = dict(
+            name=name,
+            description=description,
+            location_label=location_label,
+            region_id=region_id,
+            bbox=f"SRID=4326;{bbox_wkt}",
+            bbox_wkt=bbox_wkt,
+            date_start=date_start,
+            date_end=date_end,
+            quality_settings=quality_settings or {},
+            generate_preview=generate_preview,
+            dataset_kind="STANDARD",
+            status="QUEUED",
+        )
+
+        if sources is not None:
+            # Dataset + baris dataset_source_config ditulis dalam SATU
+            # transaksi oleh database_client: dataset tanpa config adalah
+            # dataset yang tidak bisa diproses ETL, jadi keduanya harus jadi
+            # atau tidak sama sekali.
+            configs = normalize_source_configs(sources)
+            dataset_fields["fusion_strategy"] = fusion_strategy
+            dataset_fields["preview_options"] = preview_options
+            dataset = self._db.create_dataset_with_sources(dataset_fields, sources)
             dataset_id = dataset.dataset_id
+            normalized_tiers = list(dataset.required_tiers or [])
+            source_configs = [
+                {"source": SOURCE_NAME_TO_API_KEY[name_], "processing": levels}
+                for name_, levels in configs.items()
+            ]
+        else:
+            normalized_tiers = _normalize_tiers(tiers)
+            source_configs = []
+            with self._db.session() as sess:
+                dataset = Dataset(required_tiers=normalized_tiers, **dataset_fields)
+                sess.add(dataset)
+                sess.flush()
+                dataset_id = dataset.dataset_id
+
+        with self._db.session() as sess:
             job = DatasetJob(
                 dataset_id=dataset_id,
                 job_type="CREATE",
@@ -162,8 +202,8 @@ class DatasetManager:
             sess.flush()
             job_id = job.job_id
         logger.info(
-            "[DATASET] created dataset_id=%d job_id=%d name=%s tiers=%s",
-            dataset_id, job_id, name, normalized_tiers,
+            "[DATASET] created dataset_id=%d job_id=%d name=%s tiers=%s sources=%s",
+            dataset_id, job_id, name, normalized_tiers, source_configs,
         )
         # metadata.json ditulis sejak dataset dibuat, bukan menunggu job
         # pertama selesai: sebuah dataset yang masih mengunduh (berjam-jam
@@ -177,7 +217,12 @@ class DatasetManager:
         with self._db.session() as sess:
             job = sess.get(DatasetJob, job_id)
             status = job.status if job else "QUEUED"
-        return {"dataset_id": dataset_id, "job_id": job_id, "status": status}
+        return {
+            "dataset_id": dataset_id,
+            "job_id": job_id,
+            "status": status,
+            "source_configs": source_configs,
+        }
 
     def list_datasets(
         self,
@@ -743,6 +788,22 @@ class DatasetManager:
             # sempat dibuat", dan daftar kartu tidak mengambil detail.
             "generate_preview": d.generate_preview,
             "live_enabled": d.live_enabled,
+            # Ikut di `base`: kartu dataset (Tab 2) menampilkan satelit,
+            # level pemrosesan, dan strategi fusi, dan kartu itu dirender
+            # dari listing tanpa menarik detail per dataset. Dimuat lewat
+            # relasi lazy="selectin", jadi tetap satu query tambahan untuk
+            # seluruh halaman, bukan satu per baris.
+            "source_configs": [
+                {"source": SOURCE_NAME_TO_API_KEY.get(c.source_name, c.source_name.lower()),
+                 "processing": list(c.processing_levels or [])}
+                for c in sorted(
+                    d.source_configs,
+                    key=lambda c: SOURCE_NAME_ORDER.index(c.source_name)
+                    if c.source_name in SOURCE_NAME_ORDER else len(SOURCE_NAME_ORDER),
+                )
+            ],
+            "fusion_strategy": d.fusion_strategy,
+            "preview_options": list(d.preview_options or []),
             "created_at": d.created_at,
             "updated_at": d.updated_at,
         }
@@ -753,6 +814,14 @@ class DatasetManager:
                 "quality_settings": d.quality_settings or {},
                 "live_last_checked_at": d.live_last_checked_at,
                 "deleted_at": d.deleted_at,
+                # Konfigurasi per-satelit + strategi fusi ikut di detail karena
+                # orchestrator memutuskan cabang pipeline dari keduanya
+                # (DOCS/ETL.md, "Pipeline Branching Logic"). Dimuat lewat
+                # relasi lazy="selectin", jadi tidak menambah query per baris.
+                "sources": {
+                    c.source_name: list(c.processing_levels or [])
+                    for c in d.source_configs
+                },
             })
         return base
 

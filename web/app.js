@@ -153,10 +153,6 @@ function setStatus(kind, label) {
 checkHealth();
 setInterval(checkHealth, 15000);
 
-document.getElementById('tierAll').addEventListener('change', (e) => {
-  document.querySelectorAll('.tier-check').forEach(c => c.checked = e.target.checked);
-});
-
 const COLOR_TILE_URL = 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}';
 const COLOR_TILE_ATTR = 'Tiles &copy; Esri &mdash; Esri, HERE, Garmin, USGS, Intermap, NRCan, METI, OpenStreetMap contributors, GIS User Community';
 
@@ -423,12 +419,14 @@ function selectRegion(id) {
     c.classList.toggle('selected', Number(c.dataset.regionId) === id));
   const region = state.regions.find(r => r.region_id === id);
   if (region) updateMapPreview(region.bbox);
+  updateWizardRegion();
 }
 
 function clearRegionSelection() {
   state.selectedRegionId = null;
   document.querySelectorAll('.region-card').forEach(c => c.classList.remove('selected'));
   clearMapPreview();
+  updateWizardRegion();
 }
 
 async function loadRegions(options) {
@@ -438,6 +436,7 @@ async function loadRegions(options) {
     const q = state.locationQuery.trim();
     const result = await api('/api/regions' + (q ? '?q=' + encodeURIComponent(q) : ''));
     state.regions = result.items;
+    updateWizardRegion();
     // Lokasi terpilih bisa hilang dari hasil filter; itu tidak membatalkan pilihan,
     // hanya menyembunyikan kartunya sampai filter dikosongkan lagi.
     renderRegionCards();
@@ -657,53 +656,546 @@ document.addEventListener('keydown', (e) => {
 
 document.getElementById('addLocationIcon').innerHTML = ICONS.plus;
 document.getElementById('locSearchIcon').innerHTML = ICONS.search;
-document.getElementById('previewOptIcon').innerHTML = ICONS.image;
+document.getElementById('cloneConfigIcon').innerHTML = ICONS.gear;
 loadRegions();
 
-document.getElementById('createForm').addEventListener('submit', async (e) => {
+/* ===========================================================================
+   Wisaya "Buat Dataset" (4 langkah) -- DOCS/INTERFACE.md, "User Journey".
+
+   Sumber dan level pemrosesan dipilih PER satelit: satu kartu per sensor
+   dengan kotak centang RAW/PROCESSED-nya sendiri. Model lama (satu daftar tier
+   global) dihapus karena arti RAW/PROCESSED berbeda tiap sensor
+   (DOCS/ETL.md) -- "RAW" untuk GPM adalah curah hujan harian, untuk S1 adalah
+   citra terkalibrasi -- jadi satu sakelar global tidak pernah bisa berarti
+   hal yang sama untuk ketiganya.
+   =========================================================================== */
+
+const SATELLITE_SOURCES = [
+  {
+    key: 'sentinel1',
+    label: 'Sentinel-1 SAR (ESA)',
+    desc: 'radar, tembus awan, ~10 m, revisit ~7-8 hari',
+    processing: [
+      { value: 'RAW', desc: 'kalibrasi + crop (tanpa Lee filter, tanpa QA)' },
+      { value: 'PROCESSED', desc: '+ Lee filter 7x7 + QA analytics + COG' },
+    ],
+  },
+  {
+    key: 'modis',
+    label: 'MODIS Optical (NASA)',
+    desc: 'banjir/vegetasi, 250 m, harian',
+    processing: [
+      { value: 'RAW', desc: 'peta banjir saja (tanpa indeks turunan)' },
+      { value: 'PROCESSED', desc: '+ hitung NDVI + NDWI dari reflectance' },
+    ],
+  },
+  {
+    key: 'gpm',
+    label: 'GPM IMERG Rainfall (NASA/JAXA)',
+    desc: 'curah hujan, ~10 km, harian',
+    processing: [
+      { value: 'RAW', desc: 'curah hujan harian (hari itu saja)' },
+      { value: 'PROCESSED', desc: '+ akumulasi 24 jam / 72 jam / 7 hari' },
+    ],
+  },
+];
+
+const FUSION_STRATEGIES = [
+  { value: 'CO_OCCURRENCE', label: 'CO-OCCURRENCE', desc: 'hanya tanggal yang semua sumber punya data' },
+  { value: 'FULL_COVERAGE', label: 'FULL COVERAGE', desc: 'setiap hari, offset 1-2 hari ditoleransi' },
+  { value: 'HYBRID', label: 'HYBRID', desc: 'auxiliary harian, Sentinel-1 jadi jangkar' },
+];
+
+const PREVIEW_OPTION_DEFS = [
+  { value: 'GRAYSCALE', desc: 'peregangan persentil 2-98' },
+  { value: 'COLORED', desc: 'colormap per sumber' },
+  { value: 'COMPOSITE', desc: 'false color RGB (khusus Sentinel-1)' },
+];
+
+const SOURCE_SHORT = { sentinel1: 'S1', modis: 'MODIS', gpm: 'GPM' };
+
+// Cache klon config: dipakai HANYA untuk memutuskan tombol "Pakai Config
+// Sebelumnya" boleh tampil sebelum jaringan menjawab. Nilai yang benar-benar
+// diterapkan selalu diambil ulang dari API saat diklik (DOCS/DECISIONS.md D13:
+// database yang jadi sumber kebenaran, localStorage cuma penghapus kedipan).
+const LAST_CONFIG_KEY = 'trinity.lastDatasetConfig';
+const WIZARD_LAST_STEP = 4;
+let wizardStep = 1;
+
+function $id(id) { return document.getElementById(id); }
+
+/* ---- Langkah 2: render kartu satelit ------------------------------------ */
+
+function renderSatelliteCards() {
+  $id('satelliteList').innerHTML = SATELLITE_SOURCES.map(s =>
+    '<div class="satellite-card is-off" data-source="' + s.key + '">' +
+      '<label class="sat-head">' +
+        '<input type="checkbox" class="sat-enable" data-source="' + s.key + '">' +
+        '<span class="option-text">' +
+          '<span class="option-label">' + escapeHTML(s.label) + '</span>' +
+          '<span class="option-desc">' + escapeHTML(s.desc) + '</span>' +
+        '</span>' +
+      '</label>' +
+      '<div class="sat-body">' +
+        '<div class="sat-body-head">' +
+          '<span class="mini-label">Tingkat Pemrosesan</span>' +
+          '<label class="mini-toggle">' +
+            '<input type="checkbox" class="sat-all" data-source="' + s.key + '">Semua' +
+          '</label>' +
+        '</div>' +
+        s.processing.map(p =>
+          '<label class="processing-option">' +
+            '<input type="checkbox" class="proc-check" data-source="' + s.key + '" value="' + p.value + '">' +
+            '<span class="option-text">' +
+              '<span class="option-label">' + p.value + '</span>' +
+              '<span class="option-desc">' + escapeHTML(p.desc) + '</span>' +
+            '</span>' +
+          '</label>').join('') +
+      '</div>' +
+    '</div>').join('');
+}
+
+function renderFusionOptions() {
+  $id('fusionList').innerHTML = FUSION_STRATEGIES.map(f =>
+    '<label class="option-row">' +
+      '<input type="radio" name="fusionStrategy" value="' + f.value + '">' +
+      '<span class="option-text">' +
+        '<span class="option-label">' + f.label + '</span>' +
+        '<span class="option-desc">' + escapeHTML(f.desc) + '</span>' +
+      '</span>' +
+    '</label>').join('');
+}
+
+function renderPreviewOptions() {
+  $id('previewOptions').innerHTML = PREVIEW_OPTION_DEFS.map(p =>
+    '<label class="option-row">' +
+      '<input type="checkbox" class="preview-check" value="' + p.value + '">' +
+      '<span class="option-text">' +
+        '<span class="option-label">' + p.value + '</span>' +
+        '<span class="option-desc">' + escapeHTML(p.desc) + '</span>' +
+      '</span>' +
+    '</label>').join('');
+}
+
+/* ---- Langkah 2: pembacaan & sinkronisasi status -------------------------- */
+
+function sourceEnableBox(src) {
+  return document.querySelector('.sat-enable[data-source="' + src + '"]');
+}
+
+function sourceProcBoxes(src) {
+  return Array.from(document.querySelectorAll('.proc-check[data-source="' + src + '"]'));
+}
+
+function checkedProcessing(src) {
+  return sourceProcBoxes(src).filter(c => c.checked).map(c => c.value);
+}
+
+function enabledSourceKeys() {
+  return SATELLITE_SOURCES.map(s => s.key).filter(k => sourceEnableBox(k).checked);
+}
+
+// Bentuk payload API: {"sentinel1": {"processing": ["RAW","PROCESSED"]}, ...}.
+// Sumber yang tidak diaktifkan sengaja TIDAK dikirim sebagai key kosong --
+// DOCS/API.md: key yang hilang berarti "tidak diingest", sedangkan key dengan
+// processing kosong ditolak backend.
+function collectSources() {
+  const out = {};
+  enabledSourceKeys().forEach(k => {
+    const levels = checkedProcessing(k);
+    if (levels.length) out[k] = { processing: levels };
+  });
+  return out;
+}
+
+function selectedFusionStrategy() {
+  const picked = document.querySelector('input[name="fusionStrategy"]:checked');
+  return picked ? picked.value : null;
+}
+
+function selectedPreviewOptions() {
+  return Array.from(document.querySelectorAll('.preview-check:checked')).map(c => c.value);
+}
+
+function setSourceState(src, enabled, levels) {
+  sourceEnableBox(src).checked = enabled;
+  sourceProcBoxes(src).forEach(c => { c.checked = enabled && levels.indexOf(c.value) !== -1; });
+}
+
+// Satu-satunya tempat yang menulis status turunan langkah 2: kartu mati/hidup,
+// kotak "Semua" (termasuk status indeterminate), master toggle, lalu bagian
+// fusi dan ringkasan yang ikut bergantung pada jumlah sumber.
+function syncWizardSources() {
+  let allOn = true;
+  SATELLITE_SOURCES.forEach(s => {
+    const on = sourceEnableBox(s.key).checked;
+    const boxes = sourceProcBoxes(s.key);
+    const checked = boxes.filter(c => c.checked).length;
+    const card = document.querySelector('.satellite-card[data-source="' + s.key + '"]');
+    card.classList.toggle('is-off', !on);
+    // Input-nya dinonaktifkan, bukan cuma disamarkan: kartu yang mati tidak
+    // boleh masih bisa dicentang lewat Tab walau tampak abu-abu.
+    const allBox = card.querySelector('.sat-all');
+    boxes.concat([allBox]).forEach(c => { c.disabled = !on; });
+    allBox.checked = on && checked === boxes.length;
+    allBox.indeterminate = on && checked > 0 && checked < boxes.length;
+    if (!on || checked < boxes.length) allOn = false;
+  });
+  const master = $id('masterAll');
+  master.checked = allOn;
+  master.indeterminate = !allOn && enabledSourceKeys().length > 0;
+  syncFusionVisibility();
+  renderWizardReview();
+}
+
+// Strategi fusi wajib kalau >1 sumber dan harus null kalau cuma 1
+// (DOCS/API.md, "Validation"). Pilihan yang terlanjur dibuat dikosongkan saat
+// bagiannya disembunyikan, supaya tidak ada nilai tak terlihat yang ikut
+// terkirim.
+function syncFusionVisibility() {
+  const multi = enabledSourceKeys().length > 1;
+  $id('fusionGroup').classList.toggle('hidden', !multi);
+  if (!multi) {
+    document.querySelectorAll('input[name="fusionStrategy"]').forEach(r => { r.checked = false; });
+  }
+}
+
+/* ---- Navigasi wisaya ---------------------------------------------------- */
+
+function setWizardError(msg) {
+  const box = $id('wizardError');
+  box.textContent = msg || '';
+  box.classList.toggle('hidden', !msg);
+}
+
+function validateWizardStep(step) {
+  if (step === 1) {
+    if (!state.selectedRegionId) return 'Pilih dulu lokasi dari daftar di panel kiri';
+    const start = $id('fDateStart').value;
+    const end = $id('fDateEnd').value;
+    if (!start || !end) return 'Lengkapi rentang tanggal';
+    if (start > end) return 'Tanggal awal harus lebih dulu dari tanggal akhir';
+    return null;
+  }
+  if (step === 2) {
+    const enabled = enabledSourceKeys();
+    if (enabled.length === 0) return 'Pilih minimal satu sumber satelit';
+    const kosong = enabled.filter(k => checkedProcessing(k).length === 0);
+    if (kosong.length) {
+      const def = SATELLITE_SOURCES.find(s => s.key === kosong[0]);
+      return 'Pilih minimal satu tingkat pemrosesan untuk ' + def.label;
+    }
+    return null;
+  }
+  if (step === 3) {
+    if (enabledSourceKeys().length > 1 && !selectedFusionStrategy()) {
+      return 'Pilih strategi fusi (wajib kalau sumbernya lebih dari satu)';
+    }
+    return null;
+  }
+  if (step === 4) {
+    if (!$id('fName').value.trim()) return 'Isi nama dataset';
+    return null;
+  }
+  return null;
+}
+
+function showWizardStep(step) {
+  wizardStep = step;
+  document.querySelectorAll('.wizard-panel').forEach(p => {
+    p.classList.toggle('hidden', Number(p.dataset.step) !== step);
+  });
+  document.querySelectorAll('.wizard-step-pip').forEach(pip => {
+    const n = Number(pip.dataset.pip);
+    pip.classList.toggle('active', n === step);
+    pip.classList.toggle('done', n < step);
+  });
+  $id('wizardBack').classList.toggle('hidden', step === 1);
+  $id('wizardNext').classList.toggle('hidden', step === WIZARD_LAST_STEP);
+  $id('createSubmit').classList.toggle('hidden', step !== WIZARD_LAST_STEP);
+  setWizardError('');
+  if (step === WIZARD_LAST_STEP) renderWizardReview();
+}
+
+// Maju hanya lewat langkah yang sudah valid; mundur selalu boleh. Pip di header
+// memakai jalur yang sama, jadi melompat ke depan tidak bisa melewati validasi.
+function goToWizardStep(target) {
+  if (target > wizardStep) {
+    for (let s = wizardStep; s < target; s++) {
+      const err = validateWizardStep(s);
+      if (err) { showWizardStep(s); setWizardError(err); return false; }
+    }
+  }
+  showWizardStep(Math.min(Math.max(target, 1), WIZARD_LAST_STEP));
+  return true;
+}
+
+function describeSourceSelection(sources) {
+  const keys = Object.keys(sources);
+  if (keys.length === 0) return 'belum ada sumber dipilih';
+  return keys.map(k => {
+    const levels = (sources[k].processing || []).map(l => (l === 'PROCESSED' ? 'PROC' : l));
+    return (SOURCE_SHORT[k] || k) + '[' + (levels.join('+') || '-') + ']';
+  }).join(' | ');
+}
+
+function renderWizardReview() {
+  const box = $id('wizardReview');
+  if (!box) return;
+  const region = state.regions.find(r => r.region_id === state.selectedRegionId);
+  const previews = selectedPreviewOptions();
+  const multi = enabledSourceKeys().length > 1;
+  const rows = [
+    ['Lokasi', region ? region.name : 'belum dipilih'],
+    ['Tanggal', ($id('fDateStart').value || '-') + ' s/d ' + ($id('fDateEnd').value || '-')],
+    ['Sumber', describeSourceSelection(collectSources())],
+    ['Strategi fusi', selectedFusionStrategy() || (multi ? 'belum dipilih' : 'tidak dipakai (1 sumber)')],
+    ['Preview', previews.length ? previews.join(', ') : 'tidak dibuat'],
+  ];
+  box.innerHTML = rows.map(r =>
+    '<div class="review-row"><span>' + r[0] + '</span><span>' + escapeHTML(String(r[1])) + '</span></div>'
+  ).join('');
+}
+
+// Wilayah dipilih di panel kiri, jadi langkah 1 hanya menampilkan hasilnya.
+// Dipanggil ulang oleh selectRegion/clearRegionSelection supaya pembacaan dan
+// ringkasan tidak pernah tertinggal dari kartu lokasi yang aktif.
+function updateWizardRegion() {
+  const box = $id('wizardRegion');
+  if (!box) return;
+  const region = state.regions.find(r => r.region_id === state.selectedRegionId);
+  box.classList.toggle('empty', !region);
+  box.textContent = region
+    ? region.name + ' -- ' + fmtBBox(region.bbox)
+    : 'Belum ada lokasi dipilih -- pilih dari panel kiri';
+  renderWizardReview();
+}
+
+/* ---- Pra-wisaya: "Pakai Config Sebelumnya" ------------------------------- */
+
+function setCloneError(msg) {
+  const box = $id('cloneError');
+  box.textContent = msg || '';
+  box.classList.toggle('hidden', !msg);
+}
+
+function renderClonePreview(cfg) {
+  const box = $id('clonePreview');
+  if (!cfg) { box.classList.add('hidden'); box.innerHTML = ''; return; }
+  box.innerHTML =
+    '<p class="clone-preview-title">Konfigurasi Terakhir</p>' +
+    '<div class="clone-line">' + escapeHTML(cfg.region_name || 'lokasi tidak diketahui') + '</div>' +
+    '<div class="clone-line">' + escapeHTML(describeSourceSelection(cfg.sources || {})) + '</div>' +
+    '<div class="clone-line">Strategi: ' + escapeHTML(cfg.fusion_strategy || 'tidak dipakai') + '</div>';
+  box.classList.remove('hidden');
+}
+
+function cacheLastConfig(cfg) {
+  try { localStorage.setItem(LAST_CONFIG_KEY, JSON.stringify(cfg)); } catch (e) {}
+}
+
+// Dipanggil saat halaman dimuat dan sesudah dataset baru dibuat. 404 berarti
+// user memang belum punya dataset -> tombol disembunyikan dan cache dibuang.
+// Kegagalan lain (jaringan/500) TIDAK menyembunyikan tombol: kalau cache bilang
+// pernah ada config, tombol tetap ada dan errornya baru muncul saat diklik.
+async function refreshCloneAvailability() {
+  const block = $id('cloneBlock');
+  let cached = null;
+  try { cached = JSON.parse(localStorage.getItem(LAST_CONFIG_KEY) || 'null'); } catch (e) { cached = null; }
+  if (cached) { block.classList.remove('hidden'); renderClonePreview(cached); }
+  try {
+    const res = await fetch('/api/datasets/last-config');
+    if (res.status === 404) {
+      block.classList.add('hidden');
+      renderClonePreview(null);
+      try { localStorage.removeItem(LAST_CONFIG_KEY); } catch (e) {}
+      return;
+    }
+    if (!res.ok) return;
+    const cfg = await res.json();
+    cacheLastConfig(cfg);
+    block.classList.remove('hidden');
+    renderClonePreview(cfg);
+  } catch (e) {
+    // Offline: biarkan apa adanya. Tombolnya menangani errornya sendiri saat
+    // diklik, dan menyembunyikannya di sini justru menghilangkan jalan pintas
+    // hanya karena satu request gagal.
+  }
+}
+
+// Klon adalah preset, bukan kunci: semua field tetap bisa diedit sesudahnya,
+// dan nama + tanggal sengaja TIDAK ikut supaya dataset hasil klon tidak
+// diam-diam menduplikasi yang lama (DOCS/DECISIONS.md D13).
+function applyLastConfig(cfg) {
+  SATELLITE_SOURCES.forEach(s => setSourceState(s.key, false, []));
+  Object.keys(cfg.sources || {}).forEach(k => {
+    if (sourceEnableBox(k)) setSourceState(k, true, cfg.sources[k].processing || []);
+  });
+  syncWizardSources();
+  if (cfg.fusion_strategy && !$id('fusionGroup').classList.contains('hidden')) {
+    const radio = document.querySelector('input[name="fusionStrategy"][value="' + cfg.fusion_strategy + '"]');
+    if (radio) radio.checked = true;
+  }
+  const previews = cfg.preview_options || [];
+  document.querySelectorAll('.preview-check').forEach(c => { c.checked = previews.indexOf(c.value) !== -1; });
+
+  let regionMissing = false;
+  if (cfg.region_id && state.regions.some(r => r.region_id === cfg.region_id)) {
+    selectRegion(cfg.region_id);
+  } else if (cfg.region_id || cfg.region_name) {
+    regionMissing = true;
+  }
+  showWizardStep(1);
+  renderWizardReview();
+  $id('fDateStart').focus();
+  return regionMissing;
+}
+
+/* ---- Pemasangan listener ------------------------------------------------ */
+
+renderSatelliteCards();
+renderFusionOptions();
+renderPreviewOptions();
+
+$id('satelliteList').addEventListener('change', (e) => {
+  const target = e.target;
+  const src = target.dataset.source;
+  if (target.classList.contains('sat-enable')) {
+    // Mengaktifkan sumber tanpa level apa pun akan langsung gagal validasi,
+    // jadi PROCESSED (keluaran siap analisis) dipasang sebagai default; user
+    // tinggal menguranginya. Level yang sudah dipilih sebelumnya dipertahankan.
+    if (target.checked && checkedProcessing(src).length === 0) {
+      sourceProcBoxes(src).forEach(c => { c.checked = c.value === 'PROCESSED'; });
+    }
+  } else if (target.classList.contains('sat-all')) {
+    sourceProcBoxes(src).forEach(c => { c.checked = target.checked; });
+  } else if (target.classList.contains('proc-check') && target.checked) {
+    sourceEnableBox(src).checked = true;
+  }
+  syncWizardSources();
+  setWizardError('');
+});
+
+$id('masterAll').addEventListener('change', (e) => {
+  const on = e.target.checked;
+  SATELLITE_SOURCES.forEach(s => {
+    setSourceState(s.key, on, on ? s.processing.map(p => p.value) : []);
+  });
+  syncWizardSources();
+  setWizardError('');
+});
+
+$id('previewOptions').addEventListener('change', renderWizardReview);
+$id('fusionList').addEventListener('change', () => { renderWizardReview(); setWizardError(''); });
+$id('fDateStart').addEventListener('change', renderWizardReview);
+$id('fDateEnd').addEventListener('change', renderWizardReview);
+
+$id('wizardNext').addEventListener('click', () => {
+  const err = validateWizardStep(wizardStep);
+  if (err) { setWizardError(err); return; }
+  showWizardStep(Math.min(wizardStep + 1, WIZARD_LAST_STEP));
+});
+$id('wizardBack').addEventListener('click', () => showWizardStep(Math.max(wizardStep - 1, 1)));
+document.querySelectorAll('.wizard-step-pip').forEach(pip => {
+  pip.addEventListener('click', () => goToWizardStep(Number(pip.dataset.pip)));
+});
+
+$id('cloneConfigBtn').addEventListener('click', async (e) => {
+  const btn = e.currentTarget;
+  const markup = btn.innerHTML;
+  btn.disabled = true;
+  btn.textContent = 'Memuat config...';
+  setCloneError('');
+  try {
+    const res = await fetch('/api/datasets/last-config');
+    if (!res.ok) {
+      throw new Error(res.status === 404
+        ? 'Belum ada dataset sebelumnya untuk disalin'
+        : 'Gagal mengambil config terakhir (' + res.status + ')');
+    }
+    const cfg = await res.json();
+    cacheLastConfig(cfg);
+    renderClonePreview(cfg);
+    const regionMissing = applyLastConfig(cfg);
+    if (regionMissing) {
+      setCloneError('Lokasi "' + (cfg.region_name || cfg.region_id) +
+        '" tidak ada lagi di daftar -- pilih lokasi lain.');
+    }
+    showToast('Config terakhir dipakai. Isi tanggal dan nama dataset.', 'success');
+  } catch (err) {
+    // Tombolnya sengaja tetap aktif: klon itu jalan pintas, kegagalannya tidak
+    // boleh ikut memblokir pembuatan dataset secara manual.
+    setCloneError(err.message);
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = markup;
+  }
+});
+
+function resetWizard() {
+  $id('createForm').reset();
+  // form.reset() mengembalikan kotak centang ke atribut `checked` di markup,
+  // tapi kartu satelit dirender JS tanpa atribut itu -- statusnya ditulis ulang
+  // di sini supaya class is-off dan master toggle ikut kembali ke posisi awal.
+  SATELLITE_SOURCES.forEach(s => setSourceState(s.key, false, []));
+  document.querySelectorAll('.preview-check').forEach(c => { c.checked = false; });
+  syncWizardSources();
+  clearRegionSelection();
+  updateWizardRegion();
+  showWizardStep(1);
+}
+
+$id('createForm').addEventListener('submit', async (e) => {
   e.preventDefault();
-  const tiers = Array.from(document.querySelectorAll('.tier-check:checked')).map(c => c.value);
-  if (tiers.length === 0) { showToast('Pilih minimal satu tier data', 'error'); return; }
-  const regionId = state.selectedRegionId;
-  const dateStart = document.getElementById('fDateStart').value;
-  const dateEnd = document.getElementById('fDateEnd').value;
-  const name = document.getElementById('fName').value.trim();
-  if (!regionId) { showToast('Pilih dulu lokasi dari daftar', 'error'); return; }
-  if (!dateStart || !dateEnd || !name) { showToast('Lengkapi tanggal dan nama dataset', 'error'); return; }
+  for (let s = 1; s <= WIZARD_LAST_STEP; s++) {
+    const err = validateWizardStep(s);
+    if (err) { showWizardStep(s); setWizardError(err); showToast(err, 'error'); return; }
+  }
   const qs = {};
-  const cloud = document.getElementById('fMinCloud').value;
-  const qual = document.getElementById('fMinQuality').value;
-  const res = document.getElementById('fResolution').value;
+  const cloud = $id('fMinCloud').value;
+  const qual = $id('fMinQuality').value;
+  const resolution = $id('fResolution').value;
   if (cloud !== '') qs.min_cloud_cover = Number(cloud);
   if (qual !== '') qs.min_quality_score = Number(qual);
-  if (res !== '') qs.resolution_m = Number(res);
+  if (resolution !== '') qs.resolution_m = Number(resolution);
+  const previewOptions = selectedPreviewOptions();
   const body = {
-    region_id: regionId, date_start: dateStart, date_end: dateEnd, tiers: tiers, name: name,
-    description: document.getElementById('fDescription').value.trim() || null,
+    region_id: state.selectedRegionId,
+    date_start: $id('fDateStart').value,
+    date_end: $id('fDateEnd').value,
+    name: $id('fName').value.trim(),
+    description: $id('fDescription').value.trim() || null,
+    // Menggantikan tier global + satu processing level: satu objek sumber ->
+    // level pemrosesan (DOCS/API.md, "Create Dataset"). `tiers` diturunkan
+    // backend dari sini, jadi tidak lagi dikirim frontend.
+    sources: collectSources(),
+    fusion_strategy: enabledSourceKeys().length > 1 ? selectedFusionStrategy() : null,
+    preview_options: previewOptions,
     quality_settings: Object.keys(qs).length ? qs : null,
-    // Field tersendiri, bukan bagian quality_settings: ini sakelar tahap
-    // pipeline, bukan ambang mutu data.
-    generate_preview: document.getElementById('fGeneratePreview').checked,
+    // Sakelar tahap pipeline, bukan ambang mutu data: tanpa satu pun opsi
+    // preview yang dipilih, tahap PREVIEW tidak perlu dijalankan sama sekali.
+    generate_preview: previewOptions.length > 0,
   };
-  const submitBtn = document.getElementById('createSubmit');
+  const submitBtn = $id('createSubmit');
   submitBtn.disabled = true; submitBtn.textContent = 'Membuat...';
   try {
     const result = await api('/api/datasets', { method: 'POST', body: JSON.stringify(body) });
     showToast('Dataset dibuat (status: ' + result.status + ')', 'success');
-    e.target.reset();
-    document.querySelectorAll('.tier-check').forEach(c => c.checked = c.value === 'FUSION');
-    // reset() sudah mengembalikannya ke atribut `checked` di HTML; ditulis
-    // ulang di sini supaya default-nya tidak diam-diam berubah kalau markup-nya
-    // suatu saat diedit.
-    document.getElementById('fGeneratePreview').checked = true;
-    clearRegionSelection();
+    resetWizard();
+    refreshCloneAvailability();
     switchTab('datasets');
   } catch (err) {
+    setWizardError(err.message);
     showToast(err.message, 'error');
   } finally {
     submitBtn.disabled = false; submitBtn.textContent = 'Buat Dataset';
   }
 });
+
+syncWizardSources();
+showWizardStep(1);
+updateWizardRegion();
+refreshCloneAvailability();
 
 async function loadDatasets() {
   try {
@@ -1074,6 +1566,15 @@ async function renderPreviewGallery(id) {
   drawPreviewGallery(id);
 }
 
+// Label tab galeri per jenis render. Dipetakan eksplisit, bukan lewat
+// ternary 'grayscale ? ... : ...': jenis ketiga (composite) sudah ada, dan
+// ternary itu akan diam-diam melabelinya "Berwarna".
+const PREVIEW_KIND_LABELS = {
+  grayscale: 'Grayscale',
+  colored: 'Berwarna',
+  composite: 'Komposit RGB',
+};
+
 // Tiga alasan berbeda kenapa galeri bisa kosong, dan ketiganya butuh kalimat
 // berbeda -- "belum ada preview" saja membuat user menunggu sesuatu yang tidak
 // akan pernah datang kalau sebabnya checkbox yang dimatikan.
@@ -1123,7 +1624,7 @@ function drawPreviewGallery(id) {
     data.kinds.map(k =>
       '<button class="preview-kind' + (k === kind ? ' active' : '') + '" role="tab"' +
         ' aria-selected="' + (k === kind) + '" data-preview-kind="' + k + '">' +
-        (k === 'grayscale' ? 'Grayscale' : 'Berwarna') +
+        (PREVIEW_KIND_LABELS[k] || k) +
         '<span class="preview-kind-count">' + ((scene.kinds[k] || {}).count || 0) + '</span>' +
       '</button>').join('') +
     '</div>';

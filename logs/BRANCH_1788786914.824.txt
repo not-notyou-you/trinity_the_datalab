@@ -1,0 +1,11 @@
+2026-09-07 20:15:14,878 INFO    [MainThread] etl.pipeline_logger [PLOG-FILE] run log opened for dataset='BRANCH_1788786914.824' -> logs\BRANCH_1788786914.824.txt
+2026-09-07 20:15:14,878 INFO    [MainThread] etl.module9_fusion [M9] MODIS tidak dikonfigurasi dataset=72, tidak diunduh
+2026-09-07 20:15:14,882 INFO    [MainThread] etl.module8_gpm_download [M8] dataset_id=72 level=['RAW'] window=['24h'] granule_hari=1
+2026-09-07 20:15:14,897 INFO    [MainThread] etl.pipeline_logger [PLOG] {"log_id": 851, "dataset_id": 72, "scene_id": "GPM_20240305", "module": "MODULE8_GPM_DOWNLOAD", "stage": "DOWNLOAD", "status": "COMPLETED", "message": "GPM 24h: selesai (1 hari)", "window": "24h", "days_aggregated": 1}
+2026-09-07 20:15:14,904 INFO    [MainThread] etl.pipeline_logger [PLOG] {"log_id": 852, "dataset_id": 72, "scene_id": "GPM_20240305", "module": "MODULE8_GPM_DOWNLOAD", "stage": "DOWNLOAD_SUMMARY", "status": "COMPLETED", "message": "GPM selesai: 1/1 produk", "windows_ok": ["24h"], "windows_failed": [], "quality": "GOOD"}
+2026-09-07 20:15:14,905 INFO    [MainThread] etl.module8_gpm_download [M8] selesai: 1/1 produk rainfall dibuat untuk dataset_id=72 tanggal=2024-03-05
+2026-09-07 20:15:14,914 INFO    [MainThread] etl.metadata_manager [SCENE] Registered scene_id=82 pid=NASA_AUX_GPM_72_20240305 acq=2024-03-05T00:00:00+00:00
+2026-09-07 20:15:14,924 INFO    [MainThread] etl.metadata_manager [JOB] Created job_id=137 scene=82 stage=DOWNLOAD attempt=1
+2026-09-07 20:15:14,952 INFO    [MainThread] etl.metadata_manager [PRODUCT] Registered product_id=576 scene=82 band=RAIN_24H tier=BRONZE level=RAW source=GPM dataset=72 file=gpm_rain_24h_20240305.tif
+2026-09-07 20:15:14,970 INFO    [MainThread] etl.pipeline_logger [PLOG] {"log_id": 853, "dataset_id": 72, "scene_id": "20240305", "module": "ORCHESTRATOR", "stage": "SCENE_PIPELINE", "status": "COMPLETED", "message": "Aux 20240305: 1 berkas ditulis", "date": "2024-03-05", "files_written": 1, "tiers": {"BRONZE": 1, "SILVER": 0, "GOLD": 0}}
+2026-09-07 20:15:14,970 INFO    [MainThread] etl.pipeline_logger [PLOG-FILE] run log closed for dataset='BRANCH_1788786914.824'

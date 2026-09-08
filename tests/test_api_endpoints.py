@@ -396,25 +396,27 @@ class TestGeneratePreviewFlag:
         assert items and all("generate_preview" in it for it in items)
 
     def test_create_request_accepts_false(self, sample_region):
-        from api.schemas import DatasetCreateRequest
+        from api.schemas import CreateDatasetRequest
 
-        req = DatasetCreateRequest(
+        req = CreateDatasetRequest(
             region_id=sample_region, date_start="2024-01-01", date_end="2024-01-31",
-            tiers=["GOLD"], name="no preview", generate_preview=False,
+            name="no preview", sources={"sentinel1": {"processing": ["PROCESSED"]}},
+            generate_preview=False,
         )
         assert req.generate_preview is False
 
-    def test_preview_not_a_requestable_tier(self, sample_region):
-        """PREVIEW turunan, bukan tier lineage: memintanya lewat `tiers` harus
-        ditolak, bukan diam-diam diterima lalu dihapus tier cleanup."""
-        import pytest as _pytest
-        from api.schemas import DatasetCreateRequest
+    def test_tiers_no_longer_requestable(self, sample_region):
+        """`tiers` tidak lagi field user: diturunkan internal dari `sources`
+        (DOCS/PROTOTYPE_CHANGELOG.md). Mengirimnya tidak boleh menentukan
+        apa pun -- termasuk PREVIEW, yang turunan dan bukan tier lineage."""
+        from api.schemas import CreateDatasetRequest
 
-        with _pytest.raises(ValueError):
-            DatasetCreateRequest(
-                region_id=sample_region, date_start="2024-01-01", date_end="2024-01-31",
-                tiers=["PREVIEW"], name="bad",
-            )
+        req = CreateDatasetRequest(
+            region_id=sample_region, date_start="2024-01-01", date_end="2024-01-31",
+            name="tiers diabaikan", tiers=["PREVIEW"],
+            sources={"sentinel1": {"processing": ["RAW"]}},
+        )
+        assert not hasattr(req, "tiers")
 
 
 class TestDatasetStorageEndpoints:

@@ -1,4 +1,32 @@
 # etl/module5_orchestrator.py
+"""
+Orchestrator dataset: menyusun DAG pemrosesan dari konfigurasi per-satelit.
+
+Sejak model per-satelit (DOCS/DESIGN.md: dataset_source_config), pipeline
+sebuah dataset bukan lagi satu rantai tetap. Setiap sumber punya cabangnya
+sendiri, dan level (RAW/PROCESSED) sumber itulah yang menentukan sampai mana
+cabangnya jalan:
+
+    SENTINEL1 RAW        DOWNLOAD -> CALIBRATE -> CROP                (BRONZE)
+    SENTINEL1 PROCESSED  ... -> LEE_FILTER -> QUALITY_ANALYTICS
+                             -> GOLD_EXPORT                   (SILVER, GOLD)
+    MODIS     RAW        peta banjir saja                             (BRONZE)
+    MODIS     PROCESSED  + NDVI + NDWI                        (SILVER, GOLD)
+    GPM       RAW        curah hujan harian                           (BRONZE)
+    GPM       PROCESSED  + window akumulasi 24h/72h/7d        (SILVER, GOLD)
+
+    FUSION jalan hanya kalau >1 sumber dikonfigurasi DAN dataset punya
+    fusion_strategy.
+
+Terjemahan konfigurasi -> keputusan ada di etl/processing_plan.py; modul ini
+cuma menjalankan keputusannya dan menandai setiap baris data_products dengan
+processing_level yang menghasilkannya.
+
+Sentinel-1 tetap jadi jangkar tanggal ketika dikonfigurasi (MODIS/GPM diambil
+untuk tanggal akuisisi tiap scene S1). Dataset tanpa Sentinel-1 tidak punya
+jangkar itu, jadi sumber aux-nya diproses per hari sepanjang rentang tanggal
+dataset — lihat _run_aux_only().
+"""
 from __future__ import annotations
 import json
 import logging
@@ -8,7 +36,7 @@ import threading
 import time
 import traceback
 from dataclasses import asdict, dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from queue import Queue
 import rasterio
@@ -30,8 +58,22 @@ from etl.module2_crop import run as crop_run
 from etl.module3_lee_filter import run as lee_run
 from etl.module4_gold_export import export_scene_to_gold, gold_product_type
 from etl.module6_analytics import compute_band_metrics
-from etl.module9_fusion import FUSION_LAYERS, create_fusion_stack, ensure_aux_inputs_for_date
-from etl.module10_generate_preview import generate_previews
+from etl.module9_fusion import (
+    create_fusion_stack,
+    ensure_aux_inputs_for_date,
+    fusion_layers_for,
+)
+from etl.module10_generate_preview import (
+    generate_previews,
+    tier_for_level as preview_tier_for_level,
+)
+from etl.processing_plan import (
+    PROCESSED,
+    ProcessingPlan,
+    SourcePlan,
+    load_processing_plan,
+)
+from etl.processing_plan import SENTINEL1 as S1_SOURCE_NAME
 from etl.pipeline_logger import (
     PipelineLogger,
     adopt_dataset_log_scope,
@@ -61,8 +103,25 @@ class _JobContext:
     skip_stages: set[str]
     min_quality_score: float
     base_dir: Path
+    # Rencana per-satelit dataset ini (etl/processing_plan.py). Sumber yang
+    # tidak ada di sini tidak diproses sama sekali, dan level tiap sumber
+    # menentukan tahap mana yang dilewati + nilai data_products.processing_level.
+    plan: ProcessingPlan
+    fusion_strategy: str | None
+    # datasets.preview_options — varian PNG yang diminta user. None berarti
+    # kolomnya tidak dinyatakan; module10 me-render ketiganya (perilaku lama).
+    preview_options: list[str] | None
     pause_event: threading.Event
     cancel_event: threading.Event
+
+    @property
+    def s1_plan(self) -> SourcePlan:
+        """Konfigurasi Sentinel-1. Hanya dipanggil dari jalur yang sudah
+        memastikan S1 dikonfigurasi (_process_scene dan pemanggilnya)."""
+        plan = self.plan.get(S1_SOURCE_NAME)
+        if plan is None:  # pragma: no cover - dijaga run_dataset_job
+            raise RuntimeError("jalur Sentinel-1 dipanggil tanpa konfigurasi S1")
+        return plan
     # Set once run_dataset_job enters its dataset_log_file(...) block; worker
     # threads enrol themselves with it so their records reach the .txt file.
     log_path: Path | None = None
@@ -106,9 +165,21 @@ def _write_dataset_metadata(
         logger.warning("[ORCH] gagal tulis metadata.json dataset_id=%d", dataset_id, exc_info=True)
 
 
-def _process_scene(
+def _run_s1_chain(
     jc: _JobContext, scene_meta: dict, dl_result
-) -> tuple[int, list[str], dict[str, list[str]]]:
+) -> tuple[int, list[str], dict[str, list[str]], dict[str, str]]:
+    """Cabang Sentinel-1 untuk satu scene: DOWNLOAD -> CALIBRATE -> CROP, lalu
+    (hanya untuk level PROCESSED) LEE_FILTER -> QUALITY_ANALYTICS -> GOLD_EXPORT.
+
+    Berhenti lebih awal di tahap mana pun yang ada di jc.skip_stages — untuk
+    S1 RAW-only itu berarti berhenti tepat setelah CROP, dengan BRONZE sebagai
+    artefaknya.
+
+    Returns:
+        (scene_id, produced_tiers, produced_files, gold_files). `gold_files`
+        kosong kalau jalur PROCESSED tidak dijalankan; pemanggil memakainya
+        untuk PREVIEW.
+    """
     pid = scene_meta["product_identifier"]
     acq_date = dl_result.acquisition_datetime
     produced_tiers: list[str] = []
@@ -134,12 +205,19 @@ def _process_scene(
 
     dl_job_id = jc.meta.insert_processing_job(scene_id, "DOWNLOAD", parameters={"dataset_id": jc.dataset_id})
     jc.meta.start_job(dl_job_id)
+    # Level yang menandai artefak tiap tier untuk sumber ini. RAW/BRONZE
+    # ditandai 'RAW' hanya kalau user memang meminta level RAW; kalau S1
+    # dikonfigurasi PROCESSED saja, keduanya cuma langkah antara jalur penuh.
+    s1_plan = jc.s1_plan
+    raw_level = s1_plan.level_for_tier("RAW")
+    bronze_level = s1_plan.level_for_tier("BRONZE")
     raw_vv_id = jc.meta.insert_data_product(
         scene_id=scene_id, job_id=dl_job_id, dataset_id=jc.dataset_id,
         product_tier="RAW", source="SENTINEL1", product_type="RAW_EXTRACTED_TIFF", band_name="VV",
         file_path=dl_result.vv_tif_path, file_name=Path(dl_result.vv_tif_path).name,
         file_size_mb=_file_size_mb(dl_result.vv_tif_path),
         data_hash_sha256=jc.lineage.compute_sha256(dl_result.vv_tif_path),
+        processing_level=raw_level,
     )
     raw_vh_id = jc.meta.insert_data_product(
         scene_id=scene_id, job_id=dl_job_id, dataset_id=jc.dataset_id,
@@ -147,6 +225,7 @@ def _process_scene(
         file_path=dl_result.vh_tif_path, file_name=Path(dl_result.vh_tif_path).name,
         file_size_mb=_file_size_mb(dl_result.vh_tif_path),
         data_hash_sha256=jc.lineage.compute_sha256(dl_result.vh_tif_path),
+        processing_level=raw_level,
     )
     jc.meta.complete_job(dl_job_id, output_size_mb=dl_result.file_size_mb)
     produced_tiers.append("RAW")
@@ -162,10 +241,10 @@ def _process_scene(
         produced_files["RAW"].append(dl_result.zip_path)
 
     if "CROP" in jc.skip_stages:
-        return scene_id, produced_tiers, produced_files
+        return scene_id, produced_tiers, produced_files, {}
     jc.pause_event.wait()
     if jc.cancel_event.is_set():
-        return scene_id, produced_tiers, produced_files
+        return scene_id, produced_tiers, produced_files, {}
 
     jc.dsmgr.upsert_scene_job_state(jc.job_id, pid, current_stage="CROP", stage_status="RUNNING")
     crop_job_id = jc.meta.insert_processing_job(
@@ -203,7 +282,7 @@ def _process_scene(
         product_tier="BRONZE", source="SENTINEL1", product_type="CROPPED_TIFF", band_name="VV",
         file_path=crop_vv, file_name=Path(crop_vv).name,
         file_size_mb=_file_size_mb(crop_vv), data_hash_sha256=jc.lineage.compute_sha256(crop_vv),
-        rows=vv_rows, cols=vv_cols,
+        rows=vv_rows, cols=vv_cols, processing_level=bronze_level,
     )
     vh_rows, vh_cols = _raster_dims(crop_vh)
     bronze_vh_id = jc.meta.insert_data_product(
@@ -211,7 +290,7 @@ def _process_scene(
         product_tier="BRONZE", source="SENTINEL1", product_type="CROPPED_TIFF", band_name="VH",
         file_path=crop_vh, file_name=Path(crop_vh).name,
         file_size_mb=_file_size_mb(crop_vh), data_hash_sha256=jc.lineage.compute_sha256(crop_vh),
-        rows=vh_rows, cols=vh_cols,
+        rows=vh_rows, cols=vh_cols, processing_level=bronze_level,
     )
     jc.lineage.record_transformation(raw_vv_id, bronze_vv_id, "CROP", crop_job_id, {"bbox": list(jc.bbox_tuple)})
     jc.lineage.record_transformation(raw_vh_id, bronze_vh_id, "CROP", crop_job_id, {"bbox": list(jc.bbox_tuple)})
@@ -220,11 +299,20 @@ def _process_scene(
     produced_files["BRONZE"] = [crop_vv, crop_vh]
     jc.dsmgr.upsert_scene_job_state(jc.job_id, pid, current_stage="CROP", stage_status="COMPLETED")
 
+    # Sentinel-1 RAW berhenti di sini: BRONZE (terkalibrasi, ter-crop, tanpa
+    # Lee filter dan tanpa QA) ADALAH artefak RAW-nya (DOCS/ETL.md, "What RAW
+    # means for Sentinel-1"). jc.skip_stages sudah memuat LEE_FILTER/
+    # QUALITY_ANALYTICS/GOLD_EXPORT dari SourcePlan.s1_skip_stages(); cabang
+    # ini cuma membuat alasannya terbaca di log.
     if "LEE_FILTER" in jc.skip_stages:
-        return scene_id, produced_tiers, produced_files
+        if s1_plan.raw_only:
+            logger.info(
+                "[ORCH] pid=%s berhenti di BRONZE: SENTINEL1 dikonfigurasi RAW-only", pid
+            )
+        return scene_id, produced_tiers, produced_files, {}
     jc.pause_event.wait()
     if jc.cancel_event.is_set():
-        return scene_id, produced_tiers, produced_files
+        return scene_id, produced_tiers, produced_files, {}
 
     jc.dsmgr.upsert_scene_job_state(jc.job_id, pid, current_stage="LEE_FILTER", stage_status="RUNNING")
     lee_job_id = jc.meta.insert_processing_job(scene_id, "LEE_FILTER", parameters={"window_size": 7, "looks": 1})
@@ -247,12 +335,14 @@ def _process_scene(
         product_tier="SILVER", source="SENTINEL1", product_type="LEE_FILTERED", band_name="VV",
         file_path=lee_vv, file_name=Path(lee_vv).name,
         file_size_mb=_file_size_mb(lee_vv), data_hash_sha256=jc.lineage.compute_sha256(lee_vv),
+        processing_level=PROCESSED,
     )
     silver_vh_id = jc.meta.insert_data_product(
         scene_id=scene_id, job_id=lee_job_id, dataset_id=jc.dataset_id,
         product_tier="SILVER", source="SENTINEL1", product_type="LEE_FILTERED", band_name="VH",
         file_path=lee_vh, file_name=Path(lee_vh).name,
         file_size_mb=_file_size_mb(lee_vh), data_hash_sha256=jc.lineage.compute_sha256(lee_vh),
+        processing_level=PROCESSED,
     )
     jc.lineage.record_transformation(bronze_vv_id, silver_vv_id, "LEE_FILTER", lee_job_id, {"window_size": 7, "looks": 1})
     jc.lineage.record_transformation(bronze_vh_id, silver_vh_id, "LEE_FILTER", lee_job_id, {"window_size": 7, "looks": 1})
@@ -262,10 +352,10 @@ def _process_scene(
     jc.dsmgr.upsert_scene_job_state(jc.job_id, pid, current_stage="LEE_FILTER", stage_status="COMPLETED")
 
     if "QUALITY_ANALYTICS" in jc.skip_stages:
-        return scene_id, produced_tiers, produced_files
+        return scene_id, produced_tiers, produced_files, {}
     jc.pause_event.wait()
     if jc.cancel_event.is_set():
-        return scene_id, produced_tiers, produced_files
+        return scene_id, produced_tiers, produced_files, {}
 
     jc.dsmgr.upsert_scene_job_state(jc.job_id, pid, current_stage="QUALITY_ANALYTICS", stage_status="RUNNING")
     qa_job_id = jc.meta.insert_processing_job(scene_id, "QUALITY_ANALYTICS", parameters={})
@@ -307,10 +397,10 @@ def _process_scene(
     jc.dsmgr.upsert_scene_job_state(jc.job_id, pid, current_stage="QUALITY_ANALYTICS", stage_status="COMPLETED")
 
     if "GOLD_EXPORT" in jc.skip_stages:
-        return scene_id, produced_tiers, produced_files
+        return scene_id, produced_tiers, produced_files, {}
     jc.pause_event.wait()
     if jc.cancel_event.is_set():
-        return scene_id, produced_tiers, produced_files
+        return scene_id, produced_tiers, produced_files, {}
 
     jc.dsmgr.upsert_scene_job_state(jc.job_id, pid, current_stage="GOLD_EXPORT", stage_status="RUNNING")
     gold_job_id = jc.meta.insert_processing_job(
@@ -348,6 +438,8 @@ def _process_scene(
             file_size_mb=_file_size_mb(gold_path),
             data_hash_sha256=jc.lineage.compute_sha256(gold_path),
             file_format="COG", rows=g_rows, cols=g_cols,
+            # SILVER dan GOLD hanya pernah lahir dari jalur PROCESSED.
+            processing_level=PROCESSED,
         )
         jc.lineage.record_transformation(
             silver_product_id, gold_product_ids[band], "GOLD_EXPORT", gold_job_id,
@@ -360,7 +452,31 @@ def _process_scene(
     produced_files["GOLD"] = list(gold_files.values())
     jc.dsmgr.upsert_scene_job_state(jc.job_id, pid, current_stage="GOLD_EXPORT", stage_status="COMPLETED")
 
-    if "FUSION" in jc.skip_stages:
+    return scene_id, produced_tiers, produced_files, gold_files
+
+
+def _process_scene(
+    jc: _JobContext, scene_meta: dict, dl_result
+) -> tuple[int, list[str], dict[str, list[str]]]:
+    """Pipeline satu scene Sentinel-1, ujung ke ujung.
+
+    Dua bagian yang sengaja dipisah: cabang S1 (_run_s1_chain) berhenti sesuai
+    level yang dikonfigurasi untuk SENTINEL1, sementara tahap lintas-sumber di
+    bawah (input MODIS/GPM, PREVIEW, FUSION) tetap jalan setelahnya.
+
+    Pemisahan itu bukan kosmetik: sebelumnya tahap aux menempel di ujung
+    rantai S1, jadi dataset dengan sentinel1[RAW] + modis[PROCESSED] berhenti
+    di CROP dan TIDAK PERNAH mengunduh MODIS-nya. Level satu sumber tidak
+    boleh memutus sumber lain.
+    """
+    pid = scene_meta["product_identifier"]
+    acq_date = dl_result.acquisition_datetime
+
+    scene_id, produced_tiers, produced_files, gold_files = _run_s1_chain(
+        jc, scene_meta, dl_result
+    )
+
+    if jc.cancel_event.is_set():
         return scene_id, produced_tiers, produced_files
     jc.pause_event.wait()
     if jc.cancel_event.is_set():
@@ -369,13 +485,22 @@ def _process_scene(
     s1_date = acq_date.date()
     date_key = s1_date.strftime("%Y%m%d")
 
-    # Input aux (MODIS + GPM: unduh -> SILVER -> COG GOLD) disiapkan di sini,
-    # bukan lagi di dalam blok FUSION. PREVIEW me-render dari tier GOLD, jadi
-    # kalau MODIS/GPM baru dimaterialisasi saat fusion berjalan, preview akan
-    # selalu kehabisan lima dari tujuh lapisannya. Pemanggilannya idempotent
-    # dan tetap cuma sekali per scene.
+    # Input aux (MODIS + GPM) disiapkan di sini, bukan lagi di dalam blok
+    # FUSION. PREVIEW me-render dari tier GOLD, jadi kalau MODIS/GPM baru
+    # dimaterialisasi saat fusion berjalan, preview akan selalu kehabisan lima
+    # dari tujuh lapisannya. Pemanggilannya idempotent dan tetap cuma sekali
+    # per scene.
+    #
+    # Tidak lagi digantung pada "FUSION" in skip_stages: MODIS dan GPM sekarang
+    # sumber yang berdiri sendiri di dataset_source_config, bukan sekadar bahan
+    # fusi. Dataset yang meminta modis[PROCESSED] tanpa fusi tetap harus dapat
+    # NDVI/NDWI-nya.
+    #
+    # plan diteruskan supaya sumber yang tidak dikonfigurasi tidak diunduh
+    # sama sekali, dan sumber RAW-only berhenti di BRONZE.
     aux_produced = ensure_aux_inputs_for_date(
-        jc.db, jc.dataset_id, jc.dataset_name, jc.region_id, jc.bbox_tuple, s1_date, plog=jc.plog
+        jc.db, jc.dataset_id, jc.dataset_name, jc.region_id, jc.bbox_tuple, s1_date,
+        plog=jc.plog, plan=jc.plan,
     )
     # File MODIS/GPM yang baru ditulis ikut dicatat di tier-nya masing-masing,
     # supaya _cleanup_scene_tiers bisa menghapusnya juga kalau tier itu tidak
@@ -399,24 +524,42 @@ def _process_scene(
         jc.dsmgr.upsert_scene_job_state(
             jc.job_id, pid, current_stage="PREVIEW", stage_status="RUNNING"
         )
+        preview_files: list[str] = []
         try:
-            with jc.plog.stage(
-                jc.dataset_id, pid, module="MODULE10_PREVIEW", stage="PREVIEW",
-                message="Rendering PNG preview (grayscale + colored) dari tier GOLD",
-                acquisition_date=date_key,
-            ) as st:
-                preview_result = generate_previews(
-                    jc.dataset_id, jc.dataset_name, s1_date,
-                    s1_scene_key=pid, s1_gold_files=gold_files,
-                )
-                st.output(
-                    output_dir=str(fm.get_preview_dir(jc.dataset_id, jc.dataset_name, date_key)),
-                    grayscale_count=preview_result["counts"]["grayscale"],
-                    colored_count=preview_result["counts"]["colored"],
-                    skipped_count=preview_result["counts"]["skipped"],
-                    file_size_mb=preview_result["total_size_mb"],
-                )
-            produced_files["PREVIEW"] = preview_result["files"]
+            # Satu render per level yang dihasilkan dataset ini — sama dengan
+            # jumlah stack fusion (ProcessingPlan.output_levels). Dataset yang
+            # meminta sebuah sumber di RAW dan PROCESSED sekaligus mendapat dua
+            # set PNG: satu dari bronze/, satu dari gold/, di folder terpisah.
+            for level in jc.plan.output_levels():
+                with jc.plog.stage(
+                    jc.dataset_id, pid, module="MODULE10_PREVIEW", stage="PREVIEW",
+                    message=f"Rendering PNG preview level {level} dari tier "
+                            f"{preview_tier_for_level(level).upper()}",
+                    acquisition_date=date_key, processing_level=level,
+                ) as st:
+                    preview_result = generate_previews(
+                        jc.dataset_id, jc.dataset_name, s1_date,
+                        s1_scene_key=pid,
+                        # gold_files hanya berlaku untuk level PROCESSED. Untuk
+                        # RAW, module10 mencari sendiri hasil crop di bronze/ —
+                        # mengoper path GOLD ke sana akan me-render raster
+                        # ter-Lee-filter lalu melabelinya RAW.
+                        s1_files=gold_files if level == PROCESSED else None,
+                        processing_level=level,
+                        options=jc.preview_options,
+                    )
+                    st.output(
+                        output_dir=str(fm.get_preview_level_dir(
+                            jc.dataset_id, jc.dataset_name, date_key, level
+                        )),
+                        grayscale_count=preview_result["counts"]["grayscale"],
+                        colored_count=preview_result["counts"]["colored"],
+                        composite_count=preview_result["counts"]["composite"],
+                        skipped_count=preview_result["counts"]["skipped"],
+                        file_size_mb=preview_result["total_size_mb"],
+                    )
+                preview_files.extend(preview_result["files"])
+            produced_files["PREVIEW"] = preview_files
             jc.dsmgr.upsert_scene_job_state(
                 jc.job_id, pid, current_stage="PREVIEW", stage_status="COMPLETED"
             )
@@ -430,14 +573,36 @@ def _process_scene(
     # lineage RAW->FUSION, jadi compute_tiers_to_delete tidak boleh
     # menghapusnya cuma karena tidak disebut di required_tiers dataset.
 
+    # Fusi butuh lebih dari satu sumber DAN sebuah strategi (DOCS/ETL.md,
+    # "Fusion Stage"). Dataset satu-sumber tidak punya apa-apa untuk
+    # dipasangkan; menjalankannya cuma menghasilkan HDF5 berisi satu grup dan
+    # enam lapisan NaN. required_tiers biasanya sudah menutup kasus ini lewat
+    # skip_stages, tapi kondisinya diperiksa eksplisit di sini karena
+    # required_tiers dataset bersifat global sementara jumlah sumber tidak.
+    if "FUSION" in jc.skip_stages or not jc.plan.fusion_eligible(jc.fusion_strategy):
+        logger.info(
+            "[ORCH] pid=%s FUSION dilewati: sumber=%d strategi=%r skipped=%s",
+            pid, jc.plan.source_count, jc.fusion_strategy,
+            "FUSION" in jc.skip_stages,
+        )
+        return scene_id, produced_tiers, produced_files
+
     jc.dsmgr.upsert_scene_job_state(jc.job_id, pid, current_stage="FUSION", stage_status="RUNNING")
 
-    fusion_dir = fm.get_fusion_dir(jc.dataset_id, jc.dataset_name, date_key)
-    h5_path = fusion_dir / f"fusion_{date_key}.h5"
+    # Lapisan yang akan ditulis ikut konfigurasi sumber, bukan konstanta
+    # FUSION_LAYERS: dataset selektif menghasilkan HDF5 dengan group yang lebih
+    # sedikit, dan mencatat daftar penuh di log membuat progress terlihat macet
+    # di lapisan yang memang tidak pernah dibuat.
+    planned_layers = sorted({
+        layer
+        for level in jc.plan.output_levels()
+        for layer in fusion_layers_for(jc.plan.source_levels_for_run(level))
+    })
 
     with jc.plog.stage(
         jc.dataset_id, pid, module="MODULE9_FUSION", stage="FUSION",
-        message="Fusing multi-modal data into H5", layers=FUSION_LAYERS,
+        message="Fusing multi-modal data into H5", layers=planned_layers,
+        processing_levels=list(jc.plan.output_levels()),
     ) as st:
         def _fusion_progress(layer_name: str, done: int, total: int) -> None:
             jc.plog.log_event(
@@ -446,19 +611,29 @@ def _process_scene(
                 {"progress_percent": round(done / total * 100, 1), "layer": layer_name},
             )
 
-        create_fusion_stack(
+        runs = create_fusion_stack(
             jc.dataset_id, jc.dataset_name, s1_date, jc.bbox_tuple, scene_id,
             db=jc.db, progress_cb=_fusion_progress,
+            plan=jc.plan, fusion_strategy=jc.fusion_strategy,
         )
         st.output(
-            output_path=str(h5_path),
-            file_size_mb=_file_size_mb(str(h5_path)) if h5_path.exists() else None,
+            output_paths=[str(run.h5_path) for run in runs],
+            processing_levels=[run.processing_level for run in runs],
+            file_size_mb=round(
+                sum(_file_size_mb(str(run.h5_path)) for run in runs
+                    if run.h5_path.exists()), 3,
+            ),
         )
 
     produced_tiers.append("FUSION")
+    # Path diambil dari hasil create_fusion_stack, bukan disusun ulang di sini:
+    # jumlah berkasnya (satu atau dua) dan nama berkasnya ditentukan level yang
+    # dijalankan, dan menebaknya di dua tempat adalah cara kedua tempat itu
+    # berbeda pendapat begitu salah satunya diubah.
     produced_files["FUSION"] = [
-        str(h5_path),
-        str(fusion_dir / "fusion_metadata.json"),
+        str(path)
+        for run in runs
+        for path in (run.h5_path, run.json_path)
     ]
     jc.dsmgr.upsert_scene_job_state(jc.job_id, pid, current_stage="FUSION", stage_status="COMPLETED")
 
@@ -660,6 +835,79 @@ def _cleanup_worker(jc: _JobContext, cleanup_queue: Queue) -> None:
             _record_worker_failure(jc, pid, "CLEANUP", exc)
 
 
+def _run_aux_only(jc: _JobContext, date_from: date, date_to: date) -> None:
+    """Jalankan dataset yang TIDAK mengkonfigurasi Sentinel-1.
+
+    Tanpa S1 tidak ada scene yang bisa ditemukan CDSE dan tidak ada jangkar
+    tanggal, jadi MODIS/GPM diproses satu hari per hari sepanjang rentang
+    dataset. Tiap hari berdiri sendiri: satu hari yang gagal (granule NASA
+    belum terbit) dicatat lalu dilewati, tidak menjatuhkan hari lain.
+
+    FUSION tidak dijalankan di jalur ini: create_fusion_stack memakai raster
+    GOLD Sentinel-1 sebagai grid referensi dan melempar tanpa itu. Fusi
+    tanpa-S1 (reproyeksi ke sumber ber-extent terbesar, DOCS/ETL.md) belum
+    diimplementasikan.
+    """
+    total_days = (date_to - date_from).days + 1
+    jc.dsmgr.set_job_status(jc.job_id, "DOWNLOADING")
+    logger.info(
+        "[ORCH] job_id=%d mode aux-only (tanpa Sentinel-1) sumber=%s hari=%d",
+        jc.job_id, list(jc.plan.aux_sources()), total_days,
+    )
+
+    ok_days = 0
+    failed_days = 0
+    with dataset_log_file(jc.dataset_name) as run_log_path:
+        jc.log_path = run_log_path
+        day = date_from
+        while day <= date_to:
+            jc.pause_event.wait()
+            if jc.cancel_event.is_set():
+                break
+            date_key = day.strftime("%Y%m%d")
+            try:
+                produced = ensure_aux_inputs_for_date(
+                    jc.db, jc.dataset_id, jc.dataset_name, jc.region_id,
+                    jc.bbox_tuple, day, plog=jc.plog, plan=jc.plan,
+                )
+                written = sum(len(paths) for paths in produced.values())
+                if written:
+                    ok_days += 1
+                    jc.dsmgr.increment_job_counters(jc.job_id, processed=1)
+                else:
+                    failed_days += 1
+                    jc.dsmgr.increment_job_counters(jc.job_id, failed=1)
+                jc.plog.log_event(
+                    jc.dataset_id, date_key, "ORCHESTRATOR", "SCENE_PIPELINE",
+                    "COMPLETED" if written else "FAILED",
+                    f"Aux {date_key}: {written} berkas ditulis",
+                    {"date": day.isoformat(), "files_written": written,
+                     "tiers": {tier: len(paths) for tier, paths in produced.items()}},
+                )
+            except Exception as exc:
+                failed_days += 1
+                logger.exception("[ORCH] aux gagal tanggal=%s job_id=%d", day, jc.job_id)
+                _record_worker_failure(jc, date_key, "SCENE_PIPELINE", exc)
+                jc.dsmgr.increment_job_counters(jc.job_id, failed=1)
+            day += timedelta(days=1)
+
+    total_size = _dir_size_bytes(jc.base_dir)
+    jc.dsmgr.set_dataset_size(jc.dataset_id, total_size)
+    _write_dataset_metadata(jc.dsmgr, jc.dataset_id, total_size)
+
+    if jc.cancel_event.is_set():
+        jc.dsmgr.set_job_status(jc.job_id, "CANCELLED", completed_at=_now())
+        logger.info("[ORCH] job_id=%d dibatalkan", jc.job_id)
+        return
+
+    final_status = "FAILED" if ok_days == 0 else "COMPLETED"
+    jc.dsmgr.set_job_status(jc.job_id, final_status, completed_at=_now())
+    logger.info(
+        "[ORCH] job_id=%d aux-only selesai status=%s hari_ok=%d hari_gagal=%d",
+        jc.job_id, final_status, ok_days, failed_days,
+    )
+
+
 def run_dataset_job(db: DatabaseClient, job_id: int) -> None:
     with db.session() as sess:
         job = sess.get(DatasetJob, job_id)
@@ -688,7 +936,33 @@ def run_dataset_job(db: DatabaseClient, job_id: int) -> None:
     quality_settings = dataset["quality_settings"] or {}
     min_quality_score = float(quality_settings.get("min_quality_score") or 60.0)
     min_cloud_cover = quality_settings.get("min_cloud_cover")
+    fusion_strategy = dataset.get("fusion_strategy")
+
+    # --- rencana per-satelit ------------------------------------------------
+    plan = load_processing_plan(db, dataset_id)
+    if not plan.sources:
+        logger.error(
+            "[ORCH] job_id=%d dataset_id=%d tidak punya sumber terkonfigurasi",
+            job_id, dataset_id,
+        )
+        dsmgr.set_job_status(job_id, "FAILED", completed_at=_now())
+        _write_dataset_metadata(dsmgr, dataset_id)
+        return
+
+    # Dua sumber pembatas tahap, di-union:
+    #   1. required_tiers dataset (retensi tier yang diminta user);
+    #   2. level Sentinel-1 di dataset_source_config (RAW berhenti di CROP).
+    # Keduanya perlu: yang pertama bisa memangkas lebih dalam dari yang kedua
+    # (dataset yang cuma menyimpan BRONZE), yang kedua memangkas walau
+    # required_tiers memuat GOLD karena sumber LAIN yang PROCESSED.
     skip_stages = compute_skip_stages(required_tiers)
+    s1_plan = plan.get(S1_SOURCE_NAME)
+    if s1_plan is not None:
+        skip_stages |= s1_plan.s1_skip_stages()
+    logger.info(
+        "[ORCH] job_id=%d rencana sumber=%s strategi_fusi=%r skip=%s",
+        job_id, plan.summary(), fusion_strategy, sorted(skip_stages),
+    )
 
     # PREVIEW punya dua alasan bisa dilewati, dan keduanya dilipat jadi satu di
     # sini supaya _process_scene cukup memeriksa skip_stages seperti tahap lain:
@@ -701,6 +975,16 @@ def run_dataset_job(db: DatabaseClient, job_id: int) -> None:
         logger.info(
             "[ORCH] job_id=%d PREVIEW dilewati: dimatikan di konfigurasi dataset "
             "(generate_preview=false)", job_id,
+        )
+    #   3. user mencentang "Buat Preview" tapi tidak memilih satu varian pun.
+    # preview_options KOSONG berarti persis itu (DOCS/DESIGN.md); dibedakan
+    # dari NULL, yang berarti "tidak dinyatakan" dan tetap merender ketiganya.
+    # Migrasi 018 mem-backfill NULL jadi ketiga varian, jadi kolomnya sekarang
+    # selalu menyatakan pilihan yang sebenarnya.
+    elif dataset.get("preview_options") == []:
+        skip_stages.add("PREVIEW")
+        logger.info(
+            "[ORCH] job_id=%d PREVIEW dilewati: preview_options kosong", job_id,
         )
 
     bbox_tuple = _bbox_tuple_from_wkt(bbox_wkt)
@@ -717,6 +1001,8 @@ def run_dataset_job(db: DatabaseClient, job_id: int) -> None:
         required_tiers=required_tiers, skip_stages=skip_stages,
         min_quality_score=min_quality_score,
         base_dir=base_dir, pause_event=pause_event, cancel_event=cancel_event,
+        plan=plan, fusion_strategy=fusion_strategy,
+        preview_options=dataset.get("preview_options"),
     )
 
     dsmgr.set_job_status(job_id, "PREPARING", started_at=_now())
@@ -729,6 +1015,13 @@ def run_dataset_job(db: DatabaseClient, job_id: int) -> None:
         datetime.combine(date_range_end, datetime.min.time(), tzinfo=timezone.utc) + timedelta(days=1)
         if date_range_end else _now()
     )
+
+    # Dataset tanpa Sentinel-1 tidak punya scene untuk ditemukan: seluruh
+    # jalur discovery/download/pipeline di bawah ini berputar di sekitar scene
+    # S1. Sumber aux-nya diproses per hari sepanjang rentang tanggal.
+    if s1_plan is None:
+        _run_aux_only(jc, date_from.date(), (date_to - timedelta(days=1)).date())
+        return
 
     try:
         scenes = discover_scenes(bbox_wkt=bbox_wkt, date_from=date_from, date_to=date_to, max_results=200)

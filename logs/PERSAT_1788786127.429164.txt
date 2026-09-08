@@ -1,0 +1,30 @@
+2026-09-07 20:02:07,469 INFO    [MainThread] etl.pipeline_logger [PLOG-FILE] run log opened for dataset='PERSAT_1788786127.429164' -> logs\PERSAT_1788786127.429164.txt
+2026-09-07 20:02:07,472 INFO    [MainThread] etl.module7_modis_download [M7] dataset_id=33 level=['PROCESSED'] band=['FLOOD', 'NDVI', 'NDWI']
+2026-09-07 20:02:07,502 INFO    [MainThread] etl.pipeline_logger [PLOG] {"log_id": 665, "dataset_id": 33, "scene_id": "MODIS_20240305", "module": "MODULE7_MODIS_DOWNLOAD", "stage": "DOWNLOAD", "status": "COMPLETED", "message": "MODIS 20240305: selesai (3/3 band)", "date": "2024-03-05", "bands_ok": ["FLOOD", "NDVI", "NDWI"], "bands_failed": [], "degraded": false}
+2026-09-07 20:02:07,504 INFO    [MainThread] etl.pipeline_logger [PLOG] {"log_id": 666, "dataset_id": 33, "scene_id": "MODIS_20240305_20240305", "module": "MODULE7_MODIS_DOWNLOAD", "stage": "DOWNLOAD_SUMMARY", "status": "COMPLETED", "message": "MODIS selesai: 1/1 hari berhasil", "days_ok": 1, "days_degraded": 0, "days_failed": 0, "failed_days": [], "quality": "GOOD"}
+2026-09-07 20:02:07,508 INFO    [MainThread] etl.module7_modis_download [M7] selesai: 1 hari diproses untuk dataset_id=33
+2026-09-07 20:02:07,517 INFO    [MainThread] etl.metadata_manager [SCENE] Registered scene_id=53 pid=NASA_AUX_MODIS_33_20240305 acq=2024-03-05T00:00:00+00:00
+2026-09-07 20:02:07,521 INFO    [MainThread] etl.metadata_manager [JOB] Created job_id=90 scene=53 stage=DOWNLOAD attempt=1
+2026-09-07 20:02:07,554 INFO    [MainThread] etl.metadata_manager [PRODUCT] Registered product_id=387 scene=53 band=FLOOD tier=SILVER level=PROCESSED source=MODIS dataset=33 file=modis_20240305_flood.tif
+2026-09-07 20:02:07,572 INFO    [MainThread] etl.metadata_manager [JOB] Created job_id=91 scene=53 stage=GOLD_EXPORT attempt=1
+2026-09-07 20:02:07,580 INFO    [MainThread] etl.metadata_manager [JOB] job_id=91 -> RUNNING
+2026-09-07 20:02:07,607 INFO    [MainThread] etl.metadata_manager [PRODUCT] Registered product_id=388 scene=53 band=FLOOD tier=GOLD level=PROCESSED source=MODIS dataset=33 file=modis_20240305_flood.tif
+2026-09-07 20:02:07,613 INFO    [MainThread] etl.lineage_tracker [LINEAGE] lineage_id=223 parent=387 →[GOLD_EXPORT]→ child=388
+2026-09-07 20:02:07,619 INFO    [MainThread] etl.metadata_manager [JOB] job_id=91 -> SUCCESS
+2026-09-07 20:02:07,623 WARNING [MainThread] etl.metadata_manager [JOB] Duplicate job skipped: scene=53 stage=DOWNLOAD attempt=1 (job_id=90)
+2026-09-07 20:02:07,654 INFO    [MainThread] etl.metadata_manager [PRODUCT] Registered product_id=389 scene=53 band=NDVI tier=SILVER level=PROCESSED source=MODIS dataset=33 file=modis_20240305_ndvi.tif
+2026-09-07 20:02:07,666 WARNING [MainThread] etl.metadata_manager [JOB] Duplicate job skipped: scene=53 stage=GOLD_EXPORT attempt=1 (job_id=91)
+2026-09-07 20:02:07,669 INFO    [MainThread] etl.metadata_manager [JOB] job_id=91 -> RUNNING
+2026-09-07 20:02:07,694 INFO    [MainThread] etl.metadata_manager [PRODUCT] Registered product_id=390 scene=53 band=NDVI tier=GOLD level=PROCESSED source=MODIS dataset=33 file=modis_20240305_ndvi.tif
+2026-09-07 20:02:07,702 INFO    [MainThread] etl.lineage_tracker [LINEAGE] lineage_id=224 parent=389 →[GOLD_EXPORT]→ child=390
+2026-09-07 20:02:07,702 INFO    [MainThread] etl.metadata_manager [JOB] job_id=91 -> SUCCESS
+2026-09-07 20:02:07,711 WARNING [MainThread] etl.metadata_manager [JOB] Duplicate job skipped: scene=53 stage=DOWNLOAD attempt=1 (job_id=90)
+2026-09-07 20:02:07,738 INFO    [MainThread] etl.metadata_manager [PRODUCT] Registered product_id=391 scene=53 band=NDWI tier=SILVER level=PROCESSED source=MODIS dataset=33 file=modis_20240305_ndwi.tif
+2026-09-07 20:02:07,754 WARNING [MainThread] etl.metadata_manager [JOB] Duplicate job skipped: scene=53 stage=GOLD_EXPORT attempt=1 (job_id=91)
+2026-09-07 20:02:07,760 INFO    [MainThread] etl.metadata_manager [JOB] job_id=91 -> RUNNING
+2026-09-07 20:02:07,786 INFO    [MainThread] etl.metadata_manager [PRODUCT] Registered product_id=392 scene=53 band=NDWI tier=GOLD level=PROCESSED source=MODIS dataset=33 file=modis_20240305_ndwi.tif
+2026-09-07 20:02:07,792 INFO    [MainThread] etl.lineage_tracker [LINEAGE] lineage_id=225 parent=391 →[GOLD_EXPORT]→ child=392
+2026-09-07 20:02:07,796 INFO    [MainThread] etl.metadata_manager [JOB] job_id=91 -> SUCCESS
+2026-09-07 20:02:07,796 INFO    [MainThread] etl.module9_fusion [M9] GPM tidak dikonfigurasi dataset=33, tidak diunduh
+2026-09-07 20:02:07,808 INFO    [MainThread] etl.pipeline_logger [PLOG] {"log_id": 667, "dataset_id": 33, "scene_id": "20240305", "module": "ORCHESTRATOR", "stage": "SCENE_PIPELINE", "status": "COMPLETED", "message": "Aux 20240305: 6 berkas ditulis", "date": "2024-03-05", "files_written": 6, "tiers": {"BRONZE": 0, "SILVER": 3, "GOLD": 3}}
+2026-09-07 20:02:07,808 INFO    [MainThread] etl.pipeline_logger [PLOG-FILE] run log closed for dataset='PERSAT_1788786127.429164'

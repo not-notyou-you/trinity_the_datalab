@@ -61,13 +61,56 @@ class TestPathConstruction:
         assert p == data_root / DATASET_DIR / "preview" / "20260712"
 
     def test_preview_kind_dirs(self, data_root):
+        """Level pemrosesan duduk di antara tanggal dan jenis render. Tanpa
+        level di path, dataset RAW+PROCESSED menulis dua set PNG dengan nama
+        berkas yang sama ke folder yang sama."""
         for kind in fm.PREVIEW_KINDS:
             p = fm.get_preview_kind_dir(DATASET_ID, DATASET_NAME, "20260712", kind)
-            assert p == data_root / DATASET_DIR / "preview" / "20260712" / kind
+            assert p == (
+                data_root / DATASET_DIR / "preview" / "20260712" / "PROCESSED" / kind
+            )
+
+    def test_preview_kind_dirs_per_level(self, data_root):
+        for level in fm.PREVIEW_LEVELS:
+            p = fm.get_preview_kind_dir(
+                DATASET_ID, DATASET_NAME, "20260712", "colored", level
+            )
+            assert p == (
+                data_root / DATASET_DIR / "preview" / "20260712" / level / "colored"
+            )
+
+    def test_preview_levels_are_separate_dirs(self, data_root):
+        raw = fm.get_preview_kind_dir(DATASET_ID, DATASET_NAME, "20260712", "colored", "RAW")
+        processed = fm.get_preview_kind_dir(
+            DATASET_ID, DATASET_NAME, "20260712", "colored", "PROCESSED"
+        )
+        assert raw != processed
+
+    def test_composite_is_a_preview_kind(self, data_root):
+        assert "composite" in fm.PREVIEW_KINDS
+
+    def test_list_preview_levels_reads_disk(self, data_root):
+        assert fm.list_preview_levels(DATASET_ID, DATASET_NAME, "20260712") == []
+        fm.ensure_preview_kind_dir(
+            DATASET_ID, DATASET_NAME, "20260712", "grayscale", "RAW"
+        )
+        assert fm.list_preview_levels(DATASET_ID, DATASET_NAME, "20260712") == ["RAW"]
+        fm.ensure_preview_kind_dir(
+            DATASET_ID, DATASET_NAME, "20260712", "grayscale", "PROCESSED"
+        )
+        assert fm.list_preview_levels(DATASET_ID, DATASET_NAME, "20260712") == [
+            "RAW", "PROCESSED",
+        ]
 
     def test_preview_kind_rejects_unknown_kind(self, data_root):
         with pytest.raises(ValueError):
             fm.get_preview_kind_dir(DATASET_ID, DATASET_NAME, "20260712", "thumbnail")
+
+    def test_preview_kind_rejects_unknown_level(self, data_root):
+        with pytest.raises(ValueError):
+            fm.get_preview_kind_dir(
+                DATASET_ID, DATASET_NAME, "20260712", "colored", "SILVER"
+            )
 
     def test_preview_tier_rejects_source_level(self, data_root):
         """preview lintas-source persis seperti fusion, jadi get_source_dir
@@ -102,11 +145,13 @@ class TestValidation:
         with pytest.raises(ValueError, match="tidak punya level source"):
             fm.get_source_dir(DATASET_ID, DATASET_NAME, "fusion", "modis")
 
-    def test_bronze_only_accepts_sentinel1(self):
-        """MODIS/GPM tidak lewat tahap crop, jadi tidak punya bronze."""
-        with pytest.raises(ValueError, match="tidak dipakai di tier"):
-            fm.get_source_dir(DATASET_ID, DATASET_NAME, "bronze", "modis")
-        assert fm.get_source_dir(DATASET_ID, DATASET_NAME, "bronze", "sentinel1")
+    def test_bronze_accepts_every_source(self):
+        """Sejak model per-satelit, bronze adalah tempat artefak level RAW
+        SETIAP sumber berhenti — bukan cuma hasil crop Sentinel-1."""
+        for source in ("sentinel1", "modis", "gpm"):
+            assert fm.get_source_dir(DATASET_ID, DATASET_NAME, "bronze", source) == (
+                fm.get_dataset_root(DATASET_ID, DATASET_NAME) / "bronze" / source
+            )
 
     def test_granule_cache_rejects_sentinel1(self):
         """Sentinel-1 disimpan per-scene, bukan sebagai cache granule flat."""

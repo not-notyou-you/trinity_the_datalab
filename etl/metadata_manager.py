@@ -15,6 +15,7 @@ from etl.database_client import (
     JobStatusEnum,
     NasaScene,
     ProcessingJob,
+    ProcessingLevelEnum,
     ProcessingStage,
     ProductSourceEnum,
     ProductTierEnum,
@@ -190,7 +191,20 @@ class MetadataManager:
         band_count: int = 1,
         storage_location: str = "LOCAL",
         dataset_id: int | None = None,
+        processing_level: str | None = None,
     ) -> int:
+        """Daftarkan satu file keluaran ke `data_products`.
+
+        `processing_level` ("RAW" | "PROCESSED") adalah level di
+        dataset_source_config yang memproduksi artefak ini — beda dari
+        `product_tier`, yang cuma menyatakan posisinya di lineage. Nilainya
+        datang dari SourcePlan.level_for_tier() (etl/processing_plan.py).
+        None berarti "tidak dinyatakan" dan dibiarkan diisi default kolom
+        ('PROCESSED'), yaitu perilaku pipeline sebelum migrasi 017.
+        """
+        if processing_level is not None:
+            processing_level = ProcessingLevelEnum(str(processing_level).upper()).value
+
         with self._db.session() as sess:
             sess.query(DataProduct).filter(
                 and_(
@@ -208,6 +222,7 @@ class MetadataManager:
                 dataset_id=dataset_id,
                 product_tier=ProductTierEnum(product_tier),
                 source=ProductSourceEnum(source).value,
+                processing_level=processing_level,
                 product_type=product_type,
                 band_name=band_name,
                 file_name=file_name,
@@ -229,8 +244,9 @@ class MetadataManager:
             sess.flush()
             product_id = product.product_id
 
-        logger.info("[PRODUCT] Registered product_id=%d scene=%d band=%s tier=%s source=%s dataset=%s file=%s",
-                    product_id, scene_id, band_name, product_tier, source, dataset_id, file_name)
+        logger.info("[PRODUCT] Registered product_id=%d scene=%d band=%s tier=%s level=%s source=%s dataset=%s file=%s",
+                    product_id, scene_id, band_name, product_tier, processing_level,
+                    source, dataset_id, file_name)
         return product_id
 
     def mark_products_invalid_by_paths(self, dataset_id: int | None, paths: list[str]) -> int:

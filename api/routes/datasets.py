@@ -10,10 +10,11 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
 from starlette.background import BackgroundTask
 from api.schemas import (
+    CreateDatasetRequest,
     DatasetCancelRequest,
     DatasetCancelResponse,
-    DatasetCreateRequest,
     DatasetCreateResponse,
+    DatasetLastConfigResponse,
     DatasetDeleteResponse,
     DatasetDetail,
     DatasetListResponse,
@@ -48,19 +49,25 @@ def _slugify(name: str) -> str:
     return fm.slugify(name)
 
 
-@router.post("", response_model=DatasetCreateResponse, summary="Buat dataset baru")
+@router.post("", status_code=201, response_model=DatasetCreateResponse, summary="Buat dataset baru")
 async def create_dataset(
-    req: DatasetCreateRequest,
+    req: CreateDatasetRequest,
     db: DatabaseClient = Depends(get_db),
 ) -> DatasetCreateResponse:
+    """Buat dataset dari konfigurasi per-satelit (DOCS/API.md "Create Dataset").
+
+    `tiers` tidak lagi diterima: diturunkan internal dari `sources`.
+    """
     try:
         result = _mgr(db).create_dataset(
             region_id=req.region_id,
             location=req.location,
             date_start=req.date_start,
             date_end=req.date_end,
-            tiers=req.tiers,
             name=req.name,
+            sources=req.sources,
+            fusion_strategy=req.fusion_strategy,
+            preview_options=req.preview_options,
             description=req.description,
             quality_settings=req.quality_settings.model_dump() if req.quality_settings else None,
             generate_preview=req.generate_preview,
@@ -68,6 +75,29 @@ async def create_dataset(
     except (ValueError, RuntimeError) as exc:
         raise HTTPException(400, str(exc))
     return DatasetCreateResponse(**result)
+
+
+# Didaftarkan SEBELUM /{dataset_id}: FastAPI mencocokkan rute sesuai urutan
+# deklarasi, jadi kalau rute ini di bawah, "last-config" akan ditangkap
+# /{dataset_id} dan ditolak sebagai int yang tidak sah (422, bukan 200).
+@router.get(
+    "/last-config",
+    response_model=DatasetLastConfigResponse,
+    summary="Konfigurasi dataset terakhir (tombol 'Pakai Config Sebelumnya')",
+)
+async def get_last_dataset_config(
+    db: DatabaseClient = Depends(get_db),
+) -> DatasetLastConfigResponse:
+    """Config dataset terakhir yang dibuat: region, sources + level pemrosesan,
+    strategi fusi, opsi preview.
+
+    Tanpa `name` dan rentang tanggal -- keduanya sengaja harus diisi ulang user
+    supaya tidak tanpa sengaja menduplikasi dataset (DOCS/DECISIONS.md D13).
+    """
+    config = db.get_last_dataset_config()
+    if not config:
+        raise HTTPException(404, "No dataset found yet")
+    return DatasetLastConfigResponse(**config)
 
 
 @router.get("", response_model=DatasetListResponse, summary="List dataset")
@@ -283,28 +313,38 @@ async def get_dataset_metadata(dataset_id: int, db: DatabaseClient = Depends(get
 # tanpa ada yang membacanya.
 
 
-def _preview_scene_payload(dataset_id: int, name: str, scene: str) -> dict:
-    """Rakit satu entri scene preview: isi preview_metadata.json ditambah URL
-    gambar yang siap dipakai <img src>."""
-    scene_dir = fm.get_preview_dir(dataset_id, name, scene)
-    base_url = f"/api/datasets/{dataset_id}/preview/{scene}"
+def _read_preview_json(path: Path) -> dict | None:
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, json.JSONDecodeError):
+        # Sidecar hilang/rusak tidak boleh menjatuhkan seluruh listing:
+        # PNG-nya sendiri masih ada dan masih berguna ditampilkan.
+        return None
 
-    def _read(path: Path) -> dict | None:
-        try:
-            with open(path, encoding="utf-8") as f:
-                return json.load(f)
-        except (OSError, json.JSONDecodeError):
-            # Sidecar hilang/rusak tidak boleh menjatuhkan seluruh listing:
-            # PNG-nya sendiri masih ada dan masih berguna ditampilkan.
-            return None
 
-    metadata = _read(scene_dir / "preview_metadata.json") or {}
+def preferred_preview_level(levels: list[str]) -> str:
+    """Level yang ditampilkan galeri kalau pemanggil tidak memilih.
+
+    PROCESSED lebih dulu: itu artefak analysis-ready dataset, dan level RAW
+    ada terutama sebagai pembanding. Kalau cuma RAW yang ada, itu yang dipakai.
+    """
+    if "PROCESSED" in levels:
+        return "PROCESSED"
+    return levels[0] if levels else fm.DEFAULT_PREVIEW_LEVEL
+
+
+def _preview_level_payload(
+    dataset_id: int, name: str, scene: str, level: str
+) -> dict:
+    """Isi satu level preview: PNG per jenis render + sidecar-nya."""
+    base_url = f"/api/datasets/{dataset_id}/preview/{scene}/{level}"
     kinds: dict[str, dict] = {}
     for kind in fm.PREVIEW_KINDS:
-        kind_dir = fm.get_preview_kind_dir(dataset_id, name, scene, kind)
+        kind_dir = fm.get_preview_kind_dir(dataset_id, name, scene, kind, level)
         if not kind_dir.is_dir():
             continue
-        info = _read(kind_dir / f"{kind}_info.json") or {}
+        info = _read_preview_json(kind_dir / f"{kind}_info.json") or {}
         images = []
         for entry in info.get("images", []):
             filename = entry.get("file")
@@ -326,6 +366,40 @@ def _preview_scene_payload(dataset_id: int, name: str, scene: str) -> dict:
             "images": images,
         }
 
+    metadata = _read_preview_json(
+        fm.get_preview_level_dir(dataset_id, name, scene, level)
+        / "preview_metadata.json"
+    ) or {}
+    return {
+        "processing_level": level,
+        "derived_from": metadata.get("derived_from"),
+        "sources_present": metadata.get("sources_present", []),
+        "skipped": metadata.get("skipped", []),
+        "generated_at": metadata.get("generated_at"),
+        "kinds": kinds,
+    }
+
+
+def _preview_scene_payload(dataset_id: int, name: str, scene: str) -> dict:
+    """Rakit satu entri scene preview: isi preview_metadata.json ditambah URL
+    gambar yang siap dipakai <img src>.
+
+    Satu tanggal bisa punya dua level (RAW dan PROCESSED) kalau datasetnya
+    meminta sebuah sumber di keduanya, jadi payload-nya bertingkat per level.
+    `kinds` di tingkat atas tetap ada dan menunjuk level yang dipilih
+    preferred_preview_level() — pembaca lama (galeri web) memakainya apa adanya
+    dan tidak perlu tahu soal level.
+    """
+    scene_dir = fm.get_preview_dir(dataset_id, name, scene)
+    metadata = _read_preview_json(scene_dir / "preview_metadata.json") or {}
+
+    levels = fm.list_preview_levels(dataset_id, name, scene)
+    by_level = {
+        level: _preview_level_payload(dataset_id, name, scene, level)
+        for level in levels
+    }
+    default_level = preferred_preview_level(levels)
+
     files = fm.get_preview_scene_files(dataset_id, name, scene)
     return {
         "scene": scene,
@@ -336,7 +410,10 @@ def _preview_scene_payload(dataset_id: int, name: str, scene: str) -> dict:
         "skipped": metadata.get("skipped", []),
         "usage": metadata.get("usage", {}),
         "size_bytes": sum(f.stat().st_size for f in files),
-        "kinds": kinds,
+        "processing_levels": levels,
+        "default_processing_level": default_level,
+        "by_level": by_level,
+        "kinds": by_level.get(default_level, {}).get("kinds", {}),
     }
 
 
@@ -374,16 +451,78 @@ async def list_dataset_previews(
         "dataset_id": dataset_id,
         "tier": "preview",
         "kinds": list(fm.PREVIEW_KINDS),
+        "processing_levels": list(fm.PREVIEW_LEVELS),
         "scene_count": len(scenes),
         "total_size_bytes": sum(sc["size_bytes"] for sc in scenes),
         "scenes": scenes,
     }
 
 
+def _resolve_preview_image(
+    dataset_id: int, name: str, scene: str, level: str, kind: str, filename: str
+) -> Path:
+    """Path PNG preview yang sudah divalidasi.
+
+    Keempat komponen path divalidasi ketat lalu hasilnya dicek harus
+    benar-benar berada di dalam folder kind: `filename` datang dari URL, jadi
+    tanpa pemeriksaan itu ".." di dalamnya bisa membaca berkas mana pun yang
+    bisa dijangkau proses ini.
+    """
+    if kind not in fm.PREVIEW_KINDS:
+        raise HTTPException(
+            400, f"Jenis preview tidak valid: {kind}. Valid: {list(fm.PREVIEW_KINDS)}"
+        )
+    try:
+        level = fm.normalize_preview_level(level)
+    except ValueError:
+        raise HTTPException(
+            400,
+            f"Level preview tidak valid: {level}. Valid: {list(fm.PREVIEW_LEVELS)}",
+        )
+    if not filename.endswith(".png") or Path(filename).name != filename:
+        raise HTTPException(400, "Nama berkas preview harus satu nama .png tanpa path")
+
+    kind_dir = fm.get_preview_kind_dir(dataset_id, name, scene, kind, level).resolve()
+    path = (kind_dir / filename).resolve()
+    if not path.is_relative_to(kind_dir) or not path.is_file():
+        raise HTTPException(
+            404, f"Preview tidak ditemukan: {scene}/{level}/{kind}/{filename}"
+        )
+    return path
+
+
+@router.get(
+    "/{dataset_id}/preview/{scene}/{level}/{kind}/{filename}",
+    response_class=FileResponse,
+    summary="Satu berkas PNG preview pada satu level pemrosesan",
+)
+async def get_preview_image_at_level(
+    dataset_id: int,
+    scene: str,
+    level: str,
+    kind: str,
+    filename: str,
+    db: DatabaseClient = Depends(get_db),
+) -> FileResponse:
+    """Kirim satu PNG dari preview/{scene}/{LEVEL}/{kind}/."""
+    info = _mgr(db).get_dataset(dataset_id)
+    if info is None:
+        raise HTTPException(404, f"Dataset {dataset_id} tidak ditemukan")
+
+    path = _resolve_preview_image(
+        dataset_id, info["name"], scene, level, kind, filename
+    )
+    return FileResponse(
+        path,
+        media_type="image/png",
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
+
+
 @router.get(
     "/{dataset_id}/preview/{scene}/{kind}/{filename}",
     response_class=FileResponse,
-    summary="Satu berkas PNG preview",
+    summary="Satu berkas PNG preview (level default)",
 )
 async def get_preview_image(
     dataset_id: int,
@@ -392,26 +531,21 @@ async def get_preview_image(
     filename: str,
     db: DatabaseClient = Depends(get_db),
 ) -> FileResponse:
-    """Kirim satu PNG dari preview/{scene}/{kind}/.
+    """Kirim satu PNG dari level default tanggal ini.
 
-    Ketiga komponen path divalidasi ketat lalu hasilnya dicek harus benar-benar
-    berada di dalam folder kind: `filename` datang dari URL, jadi tanpa
-    pemeriksaan itu ".." di dalamnya bisa membaca berkas mana pun yang bisa
-    dijangkau proses ini.
+    Bentuk URL tanpa level dipertahankan untuk tautan lama; level yang dipakai
+    dipilih preferred_preview_level(), yaitu PROCESSED kalau ada.
     """
     info = _mgr(db).get_dataset(dataset_id)
     if info is None:
         raise HTTPException(404, f"Dataset {dataset_id} tidak ditemukan")
 
-    if kind not in fm.PREVIEW_KINDS:
-        raise HTTPException(400, f"Jenis preview tidak valid: {kind}. Valid: {list(fm.PREVIEW_KINDS)}")
-    if not filename.endswith(".png") or Path(filename).name != filename:
-        raise HTTPException(400, "Nama berkas preview harus satu nama .png tanpa path")
-
-    kind_dir = fm.get_preview_kind_dir(dataset_id, info["name"], scene, kind).resolve()
-    path = (kind_dir / filename).resolve()
-    if not path.is_relative_to(kind_dir) or not path.is_file():
-        raise HTTPException(404, f"Preview tidak ditemukan: {scene}/{kind}/{filename}")
+    level = preferred_preview_level(
+        fm.list_preview_levels(dataset_id, info["name"], scene)
+    )
+    path = _resolve_preview_image(
+        dataset_id, info["name"], scene, level, kind, filename
+    )
 
     return FileResponse(
         path,

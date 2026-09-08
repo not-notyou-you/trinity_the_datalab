@@ -191,53 +191,120 @@ class DatasetQualitySettings(BaseModel):
     resolution_m: int | None = None
 
 
-class DatasetCreateRequest(BaseModel):
-    # Jalur utama: UI mengirim region_id dari tabel lokasi. `location` tetap
-    # diterima untuk pemanggil lama (dan CLI) — di-resolve lewat nama/geocoding.
+class DatasetSourceConfigResponse(BaseModel):
+    """Satu baris dataset_source_config seperti yang dilihat API.
+
+    `source` memakai key huruf kecil gaya API ("sentinel1"), bukan nama kolom
+    database ("SENTINEL1") -- pemetaannya milik database_client, lihat
+    SOURCE_NAME_TO_API_KEY di sana.
+    """
+    source: str
+    processing: list[str]
+
+
+class CreateDatasetRequest(BaseModel):
+    """Payload POST /api/datasets (DOCS/API.md, "Create Dataset").
+
+    Menggantikan model prototipe yang memakai `tiers` + satu processing level
+    global. `tiers` sekarang diturunkan internal dari `sources`
+    (DOCS/PROTOTYPE_CHANGELOG.md, "Changed: Dataset Creation API"), jadi tidak
+    lagi diterima di sini.
+    """
+    # Jalur utama UI: region_id dari tabel lokasi. `location` tetap diterima
+    # untuk pemanggil lama/CLI -- di-resolve lewat nama lalu geocoding.
     region_id: int | None = None
     location: str | None = None
     date_start: date
     date_end: date
-    tiers: list[str] = Field(default_factory=lambda: ["GOLD"])
     name: str
     description: str | None = None
+    # {"sentinel1": {"processing": ["RAW", "PROCESSED"]}, ...}
+    sources: dict[str, dict[str, list[str]]]
+    fusion_strategy: str | None = None
+    preview_options: list[str] | None = None
     quality_settings: DatasetQualitySettings | None = None
-    # Default True: preview murah dan berguna untuk riset, jadi opt-out, bukan
-    # opt-in. Pemanggil lama yang tidak mengirim field ini tetap dapat perilaku
-    # lamanya (PREVIEW jalan).
     generate_preview: bool = True
 
-    @field_validator("tiers")
+    @field_validator("sources")
     @classmethod
-    def _validate_tiers(cls, v: list[str]) -> list[str]:
-        from etl.dataset_manager import TIER_ORDER
+    def _validate_sources(
+        cls, v: dict[str, dict[str, list[str]]]
+    ) -> dict[str, dict[str, list[str]]]:
+        # Aturan sumber/level hidup di normalize_source_configs(): satu-satunya
+        # definisi "sources yang sah", dipakai juga oleh ETL dan penulis
+        # langsung ke database. Menyalinnya ke sini akan membuat dua definisi
+        # yang bisa berbeda diam-diam.
+        from etl.database_client import normalize_source_configs, SOURCE_NAME_TO_API_KEY
 
-        allowed = set(TIER_ORDER)
-        normalized = [t.upper() for t in v]
-        invalid = set(normalized) - allowed
-        if invalid:
-            raise ValueError(f"Invalid tiers: {invalid}. Valid: {allowed}")
-        if not normalized:
-            raise ValueError("tiers must not be empty")
-        return normalized
+        normalized = normalize_source_configs(v)
+        return {
+            SOURCE_NAME_TO_API_KEY[name]: {"processing": levels}
+            for name, levels in normalized.items()
+        }
+
+    @field_validator("preview_options")
+    @classmethod
+    def _validate_preview_options(cls, v: list[str] | None) -> list[str] | None:
+        # None diteruskan apa adanya: "tidak disebutkan" berbeda dari "[] =
+        # sengaja tanpa preview", dan pembedaan itu ditangani di layer database.
+        if v is None:
+            return None
+        from etl.database_client import _validate_preview_options
+
+        return _validate_preview_options(v)
 
     @model_validator(mode="after")
-    def _validate_date_range(self) -> "DatasetCreateRequest":
+    def _validate_date_range(self) -> "CreateDatasetRequest":
         if self.date_end < self.date_start:
             raise ValueError("date_end must be >= date_start")
         return self
 
     @model_validator(mode="after")
-    def _require_location(self) -> "DatasetCreateRequest":
+    def _require_location(self) -> "CreateDatasetRequest":
         if self.region_id is None and not (self.location or "").strip():
             raise ValueError("Isi region_id atau location")
         return self
+
+    @model_validator(mode="after")
+    def _validate_fusion_strategy(self) -> "CreateDatasetRequest":
+        # Wajib kalau sumbernya >1, harus null kalau cuma 1 (DOCS/API.md,
+        # bagian Validation). Aturan ini tidak bisa jadi CHECK constraint --
+        # jumlah sumber ada di tabel lain -- jadi ditegakkan di sini dan lagi
+        # di database_client untuk penulis non-API.
+        from etl.database_client import _validate_fusion_strategy
+
+        self.fusion_strategy = _validate_fusion_strategy(
+            self.fusion_strategy, source_count=len(self.sources)
+        )
+        return self
+
+
+# Nama lama, dipertahankan supaya pemanggil internal (dan tes) yang mengimpor
+# DatasetCreateRequest tidak putus. Bentuk payloadnya sendiri sudah berubah.
+DatasetCreateRequest = CreateDatasetRequest
 
 
 class DatasetCreateResponse(BaseModel):
     dataset_id: int
     job_id: int
     status: str
+    source_configs: list[DatasetSourceConfigResponse] = Field(default_factory=list)
+
+
+class DatasetLastConfigResponse(BaseModel):
+    """GET /api/datasets/last-config.
+
+    Sengaja tanpa `name` dan rentang tanggal: keduanya harus diisi ulang user
+    supaya "Pakai Config Sebelumnya" tidak diam-diam menduplikasi dataset
+    (DOCS/DECISIONS.md D13).
+    """
+    region_id: int | None
+    region_name: str | None
+    sources: dict[str, dict[str, list[str]]]
+    fusion_strategy: str | None
+    preview_options: list[str]
+    created_from_dataset_id: int
+    created_at: datetime
 
 
 class DatasetItem(BaseModel):
@@ -258,9 +325,27 @@ class DatasetItem(BaseModel):
     is_deletable: bool
     generate_preview: bool
     live_enabled: bool
+    # Konfigurasi per-satelit ikut di listing, bukan cuma di detail: kartu
+    # dataset (Tab 2) menampilkan satelit + level pemrosesan + strategi fusi
+    # (DOCS/PROTOTYPE_CHANGELOG.md, "Changed: Dataset Cards"), dan kartu itu
+    # dirender dari GET /api/datasets tanpa menarik detail satu per satu.
+    # Model lama -- selected_satellites + satu processing_level global --
+    # digantikan seluruhnya oleh source_configs.
+    source_configs: list[DatasetSourceConfigResponse] = Field(default_factory=list)
+    fusion_strategy: str | None = None
+    preview_options: list[str] = Field(default_factory=list)
+    # Diisi hanya kalau dataset ini dibuat lewat "Pakai Config Sebelumnya":
+    # dataset_id yang config-nya disalin. None untuk dataset yang dikonfigurasi
+    # dari nol -- tidak ada kolomnya di database, jadi nilainya berasal dari
+    # payload pembuatan.
+    last_config_source: int | None = None
     created_at: datetime
     updated_at: datetime
     model_config = {"from_attributes": True}
+
+
+# Alias eksplisit: DOCS/API.md menyebut skema respons dataset "DatasetResponse".
+DatasetResponse = DatasetItem
 
 
 class DatasetDetail(DatasetItem):

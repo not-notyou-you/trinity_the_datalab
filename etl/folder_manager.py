@@ -11,6 +11,8 @@ Layout on-disk:
             gpm/                        # cache granule .nc4 mentah (flat, lintas tanggal)
         bronze/
             sentinel1/{scene}/
+            modis/{scene}/               # hanya kalau MODIS dikonfigurasi RAW
+            gpm/{scene}/                 # hanya kalau GPM dikonfigurasi RAW
         silver/
             sentinel1/{scene}/
             modis/{scene}/
@@ -23,8 +25,10 @@ Layout on-disk:
             {scene}/                    # lintas-source, jadi tidak punya level source
         preview/
             {scene}/                    # lintas-source juga
-                grayscale/              # PNG stretch persentil, 1 kanal + alpha
-                colored/                # PNG colormap/false-color RGBA
+                {PROCESSING_LEVEL}/     # RAW (dirender dari BRONZE) | PROCESSED (dari GOLD)
+                    grayscale/          # PNG stretch persentil, 1 kanal + alpha
+                    colored/            # PNG colormap RGBA
+                    composite/          # PNG false-color RGB (VV/VH/VV-VH)
 
 `{scene}` untuk file Sentinel-1 adalah product_identifier scene tersebut
 (sudah unik termasuk jam:menit:detik). Untuk artefak yang tidak terikat ke
@@ -59,11 +63,14 @@ SOURCES: tuple[str, ...] = ("sentinel1", "modis", "gpm")
 
 # Tier fusion dan preview sengaja dipetakan ke tuple kosong: keduanya
 # lintas-source.
-# bronze cuma dipakai Sentinel-1 (crop AOI) — MODIS/GPM langsung dari granule
-# mentah di raw/ ke produk harian di silver/, tanpa tahap crop terpisah.
+# bronze dipakai SEMUA source sejak model per-satelit (DOCS/ETL.md): dia tempat
+# artefak level RAW tiap sumber berhenti — S1 hasil crop AOI, MODIS peta banjir
+# tanpa indeks turunan, GPM curah hujan harian tanpa window akumulasi. Sebelum
+# itu MODIS/GPM memang langsung dari granule di raw/ ke produk harian di
+# silver/, karena satu-satunya jalur yang ada adalah jalur penuh.
 TIER_SOURCES: dict[str, tuple[str, ...]] = {
     "raw": SOURCES,
-    "bronze": ("sentinel1",),
+    "bronze": SOURCES,
     "silver": SOURCES,
     "gold": SOURCES,
     "preview": (),
@@ -75,7 +82,14 @@ SOURCELESS_TIERS: tuple[str, ...] = tuple(t for t, s in TIER_SOURCES.items() if 
 
 # Subfolder di dalam satu scene preview. Urutannya ikut dipakai
 # module10_generate_preview.py sebagai urutan tampil.
-PREVIEW_KINDS: tuple[str, ...] = ("grayscale", "colored")
+PREVIEW_KINDS: tuple[str, ...] = ("grayscale", "colored", "composite")
+
+# Level pemrosesan yang bisa jadi nama folder di dalam preview/{scene}/.
+# Sama dengan etl.processing_plan.LEVEL_ORDER, tapi ditulis ulang di sini
+# supaya folder_manager tetap bisa diimpor tanpa menarik modul ETL lain
+# (dia dipakai API dan skrip perawatan yang tidak butuh pipeline-nya).
+PREVIEW_LEVELS: tuple[str, ...] = ("RAW", "PROCESSED")
+DEFAULT_PREVIEW_LEVEL = "PROCESSED"
 
 # Source yang file mentahnya berupa cache granule flat (bukan per-scene):
 # satu granule GPM harian ikut dipakai window 72h/7d tanggal berikutnya, jadi
@@ -234,21 +248,63 @@ def ensure_preview_dir(dataset_id: int, dataset_name: str, scene_key: str) -> Pa
     return p
 
 
-def get_preview_kind_dir(
-    dataset_id: int, dataset_name: str, scene_key: str, kind: str
+def normalize_preview_level(processing_level: str | None) -> str:
+    """Validasi nama folder level preview. None -> PROCESSED."""
+    if processing_level is None:
+        return DEFAULT_PREVIEW_LEVEL
+    level = str(processing_level).strip().upper()
+    if level not in PREVIEW_LEVELS:
+        raise ValueError(
+            f"Level preview tidak valid: {processing_level!r}. Valid: {PREVIEW_LEVELS}"
+        )
+    return level
+
+
+def get_preview_level_dir(
+    dataset_id: int, dataset_name: str, scene_key: str,
+    processing_level: str | None = None,
 ) -> Path:
-    """Subfolder satu jenis render: preview/{YYYYMMDD}/{grayscale|colored}/."""
+    """Folder satu level pemrosesan: preview/{YYYYMMDD}/{RAW|PROCESSED}/.
+
+    Level ikut ke path, bukan cuma ke nama berkas: dataset yang meminta sebuah
+    sumber di kedua level me-render DUA set PNG untuk tanggal yang sama, dari
+    tier yang berbeda (BRONZE vs GOLD), dengan nama berkas yang sama persis
+    (`s1_vv.png`). Tanpa folder pemisah yang kedua menimpa yang pertama."""
+    return (
+        get_preview_dir(dataset_id, dataset_name, scene_key)
+        / normalize_preview_level(processing_level)
+    )
+
+
+def get_preview_kind_dir(
+    dataset_id: int, dataset_name: str, scene_key: str, kind: str,
+    processing_level: str | None = None,
+) -> Path:
+    """Subfolder satu jenis render:
+    preview/{YYYYMMDD}/{RAW|PROCESSED}/{grayscale|colored|composite}/."""
     if kind not in PREVIEW_KINDS:
         raise ValueError(f"Jenis preview tidak valid: {kind!r}. Valid: {PREVIEW_KINDS}")
-    return get_preview_dir(dataset_id, dataset_name, scene_key) / kind
+    return get_preview_level_dir(
+        dataset_id, dataset_name, scene_key, processing_level
+    ) / kind
 
 
 def ensure_preview_kind_dir(
-    dataset_id: int, dataset_name: str, scene_key: str, kind: str
+    dataset_id: int, dataset_name: str, scene_key: str, kind: str,
+    processing_level: str | None = None,
 ) -> Path:
-    p = get_preview_kind_dir(dataset_id, dataset_name, scene_key, kind)
+    p = get_preview_kind_dir(dataset_id, dataset_name, scene_key, kind, processing_level)
     p.mkdir(parents=True, exist_ok=True)
     return p
+
+
+def list_preview_levels(dataset_id: int, dataset_name: str, scene_key: str) -> list[str]:
+    """Level yang benar-benar punya folder di disk untuk tanggal ini, urut
+    RAW lalu PROCESSED. Kosong berarti belum ada preview untuk tanggal itu."""
+    root = get_preview_dir(dataset_id, dataset_name, scene_key)
+    if not root.is_dir():
+        return []
+    return [level for level in PREVIEW_LEVELS if (root / level).is_dir()]
 
 
 def get_scratch_dir(dataset_id: int, dataset_name: str, scene_key: str) -> Path:
@@ -346,8 +402,8 @@ def get_fusion_scene_files(dataset_id: int, dataset_name: str, scene_key: str) -
 
 
 def get_preview_scene_files(dataset_id: int, dataset_name: str, scene_key: str) -> list[Path]:
-    """Semua berkas satu scene preview, termasuk yang ada di dalam
-    subfolder grayscale/ dan colored/ (_files_under rglob rekursif)."""
+    """Semua berkas satu scene preview, termasuk yang ada di dalam subfolder
+    {LEVEL}/{grayscale,colored,composite}/ (_files_under rglob rekursif)."""
     return _files_under(get_preview_dir(dataset_id, dataset_name, scene_key))
 
 

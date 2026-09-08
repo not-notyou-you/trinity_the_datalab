@@ -21,17 +21,29 @@ Hasilnya ditulis ke data/datasets/{id}_{slug}/fusion/{date}/ sebagai .h5 +
 metadata JSON, dicatat sebagai baris `fusion_products` (untuk lineage
 `fusion_id`) dan baris `data_products` (tier=FUSION, source=FUSION).
 
-Struktur HDF5 dikelompokkan per source, bukan datar:
+Struktur HDF5 dikelompokkan per source, bukan datar, dan hanya memuat group
+untuk sumber yang benar-benar dikonfigurasi dataset ini (DOCS/ETL.md, "Fusion
+Process" langkah 4). Isi tiap group ikut level sumbernya:
 
-    /sentinel1/VV, /sentinel1/VH
-    /modis/FLOOD, /modis/NDVI, /modis/NDWI
-    /gpm/rainfall_24h, /gpm/rainfall_72h, /gpm/rainfall_7d
+    sentinel1 RAW / PROCESSED  ->  /sentinel1/VV, /sentinel1/VH
+    modis     RAW              ->  /modis/FLOOD
+    modis     PROCESSED        ->  /modis/FLOOD, /modis/NDVI, /modis/NDWI
+    gpm       RAW              ->  /gpm/rainfall_daily
+    gpm       PROCESSED        ->  /gpm/rainfall_24h, /gpm/rainfall_72h,
+                                   /gpm/rainfall_7d
+
+Stack yang levelnya RAW dibaca dari BRONZE, yang PROCESSED dari GOLD. Sebuah
+dataset yang meminta salah satu sumbernya di KEDUA level menghasilkan dua
+stack per tanggal (satu RAW, satu PROCESSED) — lihat
+ProcessingPlan.output_levels() di etl/processing_plan.py untuk aturan
+lengkapnya.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+from dataclasses import dataclass
 from datetime import date as date_type, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable
@@ -65,6 +77,16 @@ from etl.constants import (
 from etl.lineage_tracker import LineageTracker
 from etl.metadata_manager import MetadataManager
 from etl.pipeline_logger import PipelineLogger
+from etl.processing_plan import GPM as GPM_PLAN_NAME
+from etl.processing_plan import MODIS as MODIS_PLAN_NAME
+from etl.processing_plan import SENTINEL1 as S1_PLAN_NAME
+from etl.processing_plan import (
+    PROCESSED,
+    RAW,
+    ProcessingPlan,
+    SourcePlan,
+    load_processing_plan,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -72,50 +94,131 @@ ALIGNMENT_WINDOW_HOURS = 24
 MODIS_NODATA_U8 = 255  # uint8 can't hold NaN; 255 marks a missing/nodata pixel
 HDF5_CHUNK_MAX = 256
 
-# Path dataset di dalam file HDF5, dikelompokkan per source.
-FUSION_LAYERS = [
-    "sentinel1/VV",
-    "sentinel1/VH",
-    "modis/FLOOD",
-    "modis/NDVI",
-    "modis/NDWI",
-    "gpm/rainfall_24h",
-    "gpm/rainfall_72h",
-    "gpm/rainfall_7d",
-]
+# Band Sentinel-1 yang ikut difusikan. Sama di kedua level: "RAW" untuk SAR
+# tetap berarti terkalibrasi (DOCS/ETL.md), yang berubah cuma tier sumbernya.
+S1_FUSION_BANDS: tuple[str, ...] = ("VV", "VH")
 
-# Band MODIS yang ikut difusikan, dan cara meresamplenya ke grid S1.
-# FLOOD kategorikal (kelas banjir) jadi nearest; NDVI/NDWI kontinu jadi bilinear.
-MODIS_FUSION_BANDS: dict[str, Resampling] = {
-    "FLOOD": Resampling.nearest,
-    "NDVI": Resampling.bilinear,
-    "NDWI": Resampling.bilinear,
+
+@dataclass(frozen=True)
+class _AuxLayer:
+    """Satu dataset HDF5 dari sumber aux (MODIS/GPM).
+
+    `name` adalah nama di dalam group HDF5, `file_key` adalah kunci yang
+    dipakai `band_filename()` modul sumbernya. Keduanya sengaja dipisah: pada
+    level RAW, GPM menulis window "24h" ke disk tapi menyajikannya sebagai
+    /gpm/rainfall_daily di HDF5 — nama itu jujur soal isinya (curah hujan satu
+    hari, tanpa akumulasi) dan mencegah konsumen menyangka stack RAW punya
+    window 24h yang sebanding dengan milik stack PROCESSED.
+    """
+
+    name: str
+    file_key: str
+    resampling: Resampling
+    categorical: bool = False
+
+
+# Lapisan aux per level. Level RAW hanya memuat artefak mentah sumbernya;
+# turunannya (NDVI/NDWI, akumulasi 72h/7d) tidak pernah dihitung di jalur RAW
+# jadi tidak ada berkasnya untuk dimasukkan (DOCS/DESIGN.md, tabel RAW vs
+# PROCESSED per satelit).
+_FLOOD = _AuxLayer("FLOOD", "FLOOD", Resampling.nearest, categorical=True)
+
+MODIS_FUSION_LAYERS: dict[str, tuple[_AuxLayer, ...]] = {
+    RAW: (_FLOOD,),
+    PROCESSED: (
+        _FLOOD,
+        _AuxLayer("NDVI", "NDVI", Resampling.bilinear),
+        _AuxLayer("NDWI", "NDWI", Resampling.bilinear),
+    ),
 }
 
-# Window GPM yang ikut difusikan — sama dengan kunci module8.WINDOWS.
-GPM_FUSION_WINDOWS = ("24h", "72h", "7d")
+GPM_FUSION_LAYERS: dict[str, tuple[_AuxLayer, ...]] = {
+    RAW: (_AuxLayer("rainfall_daily", "24h", Resampling.bilinear),),
+    PROCESSED: (
+        _AuxLayer("rainfall_24h", "24h", Resampling.bilinear),
+        _AuxLayer("rainfall_72h", "72h", Resampling.bilinear),
+        _AuxLayer("rainfall_7d", "7d", Resampling.bilinear),
+    ),
+}
+
+_AUX_LAYERS_BY_SOURCE: dict[str, dict[str, tuple[_AuxLayer, ...]]] = {
+    MODIS_PLAN_NAME: MODIS_FUSION_LAYERS,
+    GPM_PLAN_NAME: GPM_FUSION_LAYERS,
+}
+
+# Nama group HDF5 per sumber (lowercase), dan sekaligus nama folder tier-nya
+# di disk — folder_manager memakai konvensi yang sama.
+GROUP_BY_SOURCE: dict[str, str] = {
+    S1_PLAN_NAME: "sentinel1",
+    MODIS_PLAN_NAME: "modis",
+    GPM_PLAN_NAME: "gpm",
+}
+
+# Seluruh lapisan yang MUNGKIN muncul, dipakai untuk logging/UI saat
+# konfigurasi dataset belum diketahui. Isi berkas sebenarnya ditentukan
+# fusion_layers_for(); jangan pakai konstanta ini sebagai kontrak isi HDF5.
+FUSION_LAYERS = [
+    *(f"sentinel1/{band}" for band in S1_FUSION_BANDS),
+    *(f"modis/{layer.name}" for layer in MODIS_FUSION_LAYERS[PROCESSED]),
+    *(f"gpm/{layer.name}" for layer in GPM_FUSION_LAYERS[PROCESSED]),
+]
 
 
-def _find_s1_gold(db: DatabaseClient, dataset_id: int, scene_id: int) -> dict | None:
-    """Find the Sentinel-1 GOLD (COG) VV/VH products for `scene_id` within
-    `dataset_id`. Returns None if the scene doesn't exist.
+def fusion_layers_for(source_levels: dict[str, str]) -> list[str]:
+    """Path dataset HDF5 yang akan ditulis untuk {SOURCE: level} ini.
 
-    Looked up by the exact scene_id the caller just processed, rather than
-    re-derived from the acquisition date: adjacent Sentinel-1 slices from the
-    same orbit pass can both land on the same UTC day over the same AOI, and
-    picking "whichever scene happened that day" would silently grab the
-    wrong one whenever more than one scene qualifies."""
+    Ini adalah satu-satunya definisi "group apa yang ada di dalam HDF5".
+    Sumber yang tidak ada di `source_levels` tidak menghasilkan group sama
+    sekali — bukan group berisi NaN. Group kosong akan membuat konsumen
+    (dan tabel `data_products`) tidak bisa membedakan "sensor ini tidak
+    diminta" dari "sensor ini diminta tapi datanya hilang hari itu", padahal
+    keduanya butuh penanganan berbeda saat training.
+    """
+    out: list[str] = []
+    for source, level in source_levels.items():
+        group = GROUP_BY_SOURCE.get(source)
+        if group is None:
+            logger.warning("[M9] sumber tanpa group HDF5, dilewati: %r", source)
+            continue
+        if source == S1_PLAN_NAME:
+            out.extend(f"{group}/{band}" for band in S1_FUSION_BANDS)
+        else:
+            out.extend(
+                f"{group}/{layer.name}"
+                for layer in _AUX_LAYERS_BY_SOURCE[source][level]
+            )
+    return out
+
+
+def _find_s1_products(
+    db: DatabaseClient, dataset_id: int, scene_id: int, tier: str = "GOLD"
+) -> dict | None:
+    """Cari produk Sentinel-1 VV/VH scene `scene_id` di `tier`. None kalau
+    scene-nya sendiri tidak ada.
+
+    `tier` mengikuti level yang dikonfigurasi untuk SENTINEL1 pada run ini:
+    GOLD untuk PROCESSED, BRONZE untuk RAW. BRONZE adalah artefak RAW S1 yang
+    sah — sudah terkalibrasi, terreproyeksi, dan ter-crop, cuma belum
+    di-Lee-filter (DOCS/ETL.md, "What RAW means for Sentinel-1") — jadi
+    memfusikannya bukan kompromi, itu memang deliverable yang diminta user.
+
+    Dicari lewat scene_id persis yang baru diproses pemanggil, bukan
+    diturunkan ulang dari tanggal akuisisi: dua slice Sentinel-1 dari orbit
+    yang sama bisa jatuh di hari UTC yang sama di atas AOI yang sama, dan
+    memilih "scene mana pun yang hari itu" akan diam-diam mengambil yang
+    keliru begitu ada lebih dari satu yang memenuhi syarat."""
+    tier_enum = ProductTierEnum[str(tier).upper()]
     with db.session() as sess:
         scene = sess.get(SatelliteScene, scene_id)
         if scene is None:
             return None
 
-        def _gold_band(band: str) -> DataProduct | None:
+        def _band(band: str) -> DataProduct | None:
             return sess.scalar(
                 select(DataProduct).where(
                     DataProduct.scene_id == scene.scene_id,
                     DataProduct.dataset_id == dataset_id,
-                    DataProduct.product_tier == ProductTierEnum.GOLD,
+                    DataProduct.product_tier == tier_enum,
                     DataProduct.source == "SENTINEL1",
                     DataProduct.band_name == band,
                     DataProduct.is_latest == True,
@@ -123,18 +226,38 @@ def _find_s1_gold(db: DatabaseClient, dataset_id: int, scene_id: int) -> dict | 
                 )
             )
 
-        vv = _gold_band("VV")
-        vh = _gold_band("VH")
+        vv = _band("VV")
+        vh = _band("VH")
 
         return {
             "scene_id": scene.scene_id,
             "region_id": scene.region_id,
             "acquisition_datetime": scene.acquisition_datetime,
+            "tier": tier_enum.value,
             "vv_product_id": vv.product_id if vv else None,
             "vv_path": vv.file_path if vv else None,
             "vh_product_id": vh.product_id if vh else None,
             "vh_path": vh.file_path if vh else None,
         }
+
+
+def _as_utc(dt: datetime) -> datetime:
+    """Normalkan waktu akuisisi ke UTC sebelum diturunkan jadi tanggal.
+
+    Wajib, bukan kosmetik: psycopg2 mengembalikan TIMESTAMPTZ dalam zona waktu
+    SESI database, jadi `acquisition_datetime` sebuah scene bisa datang sebagai
+    2024-03-06T05:50+07:00 padahal berkas MODIS/GPM-nya distempel dengan
+    tanggal UTC-nya (2024-03-05) — orchestrator memakai `acq_date.date()` dari
+    hasil download yang selalu UTC. Tanpa normalisasi ini, kunci tanggal yang
+    dicari fusion bergeser satu hari di setiap deployment yang zona waktunya
+    di timur UTC (termasuk Asia/Jakarta, AOI utama proyek ini), dan SEMUA
+    lapisan aux terisi NaN tanpa satu pun error.
+
+    Datetime naif dianggap sudah UTC — itu konvensi seluruh pipeline ini.
+    """
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
 
 
 def _find_nearest_daily_file(
@@ -143,12 +266,30 @@ def _find_nearest_daily_file(
     source: str,
     filename_fn,
     center_dt: datetime,
-    tolerance_hours: int = ALIGNMENT_WINDOW_HOURS // 2,
+    tolerance_hours: int = ALIGNMENT_WINDOW_HOURS,
+    tier: str = "gold",
 ) -> tuple[Path, date_type] | None:
-    """File GOLD MODIS/GPM distempel satu per hari pada tengah malam lokal,
-    masing-masing di folder gold/{source}/{YYYYMMDD}/ sendiri. Kembalikan
+    """File MODIS/GPM distempel satu per hari pada tengah malam lokal,
+    masing-masing di folder {tier}/{source}/{YYYYMMDD}/ sendiri. Kembalikan
     (path, tanggal) kandidat hari terdekat yang tengah malamnya masih dalam
-    `tolerance_hours` dari `center_dt`, atau None kalau tidak ada di disk."""
+    `tolerance_hours` dari `center_dt`, atau None kalau tidak ada di disk.
+
+    `tier` ikut level sumber pada run ini: "gold" untuk PROCESSED, "bronze"
+    untuk RAW. Nama berkasnya sama persis di kedua tier (module7/module8
+    memakai `band_filename()` yang sama untuk semua target), jadi yang berbeda
+    hanya folder induknya.
+
+    Toleransinya ALIGNMENT_WINDOW_HOURS penuh (24 jam), bukan setengahnya.
+    Setengah jendela berarti "tengah malam terdekat", dan itu memutus justru
+    kasus yang paling umum di AOI ini: pass descending Sentinel-1 di atas
+    Jabodetabek turun sekitar 22:50 UTC, yang jaraknya 22,8 jam dari tengah
+    malam HARI ITU tapi cuma 1,2 jam dari tengah malam hari BERIKUTNYA. Dengan
+    toleransi 12 jam, berkas MODIS/GPM hari itu — satu-satunya yang memang
+    diunduh pipeline (ensure_aux_inputs_for_date dipanggil dengan s1_date) —
+    di luar jendela, jadi setiap stack fusion terisi NaN untuk semua lapisan
+    aux. Kandidat tetap diurutkan berdasarkan selisih terkecil, jadi hari
+    berikutnya tetap menang KALAU berkasnya ada."""
+    center_dt = _as_utc(center_dt)
     best: tuple[Path, date_type] | None = None
     best_diff = None
     for offset in (0, -1, 1):
@@ -158,10 +299,11 @@ def _find_nearest_daily_file(
         diff_hours = abs((candidate_midnight - center_dt).total_seconds()) / 3600.0
         if diff_hours > tolerance_hours:
             continue
-        gold_dir = fm.get_scene_dir(
-            dataset_id, dataset_name, "gold", source, candidate_date.strftime("%Y%m%d")
+        tier_dir = fm.get_scene_dir(
+            dataset_id, dataset_name, tier.lower(), source,
+            candidate_date.strftime("%Y%m%d"),
         )
-        path = gold_dir / filename_fn(candidate_date)
+        path = tier_dir / filename_fn(candidate_date)
         if path.exists() and (best_diff is None or diff_hours < best_diff):
             best, best_diff = (path, candidate_date), diff_hours
     return best
@@ -242,22 +384,34 @@ def _get_or_create_nasa_scene(
 def _write_fusion_h5(
     h5_path: Path,
     layers: dict[str, np.ndarray],
+    ref_shape: tuple[int, int],
     acquisition_datetime: datetime,
     processing_datetime: datetime,
     aoi_bbox: tuple[float, float, float, float],
+    processing_level: str,
+    source_levels: dict[str, str],
+    fusion_strategy: str | None = None,
     crs: object | None = None,
     transform: object | None = None,
 ) -> None:
     """Tulis stack fusion. `layers` memetakan path dataset HDF5
     ("modis/NDVI") ke arraynya; h5py membuat group perantaranya sendiri.
 
+    `ref_shape` dioper terpisah, tidak lagi dibaca dari layers["sentinel1/VV"]:
+    isi `layers` sekarang bergantung pada sumber apa yang dikonfigurasi, jadi
+    tidak ada satu pun nama lapisan yang dijamin ada di setiap stack.
+
     `crs`/`transform` adalah grid referensi scene S1 yang semua layer sudah
     direproject ke sana. Keduanya wajib ikut ditulis: `aoi_bbox` adalah kotak
     AOI yang diminta, bukan batas raster hasilnya, jadi tanpa affine transform
     yang sebenarnya konsumen tidak bisa memetakan piksel ke koordinat bumi
-    selain dengan menebak."""
-    ref = layers["sentinel1/VV"]
-    height, width = ref.shape
+    selain dengan menebak.
+
+    `processing_level` dan `source_levels` ditulis sebagai atribut root supaya
+    berkasnya bisa menjelaskan dirinya sendiri: dua stack tanggal yang sama
+    dari dataset RAW+PROCESSED punya lapisan yang bisa bernama sama, dan tanpa
+    atribut ini konsumen harus menebak dari nama berkas mana yang mana."""
+    height, width = ref_shape
     chunks = (min(HDF5_CHUNK_MAX, height), min(HDF5_CHUNK_MAX, width))
 
     h5_path.parent.mkdir(parents=True, exist_ok=True)
@@ -277,6 +431,14 @@ def _write_fusion_h5(
         f.attrs["layers"] = list(layers)
         f.attrs["height"] = height
         f.attrs["width"] = width
+        f.attrs["processing_level"] = processing_level
+        # Ditulis sebagai dua array sejajar, bukan JSON: h5py tidak punya tipe
+        # map, dan array string bisa dibaca alat apa pun (h5dump, HDFView)
+        # tanpa mem-parse ulang.
+        f.attrs["sources"] = list(source_levels)
+        f.attrs["source_levels"] = [source_levels[k] for k in source_levels]
+        if fusion_strategy:
+            f.attrs["fusion_strategy"] = fusion_strategy
         if crs is not None:
             # WKT + string CRS: WKT supaya tidak bergantung ke lookup EPSG di
             # sisi pembaca, string pendek ("EPSG:4326") untuk keterbacaan.
@@ -291,8 +453,8 @@ def _write_fusion_h5(
             f.attrs["transform"] = [float(v) for v in tuple(transform)[:6]]
 
     logger.info(
-        "[M9] Saving fusion H5 to FUSION tier: %s shape=(%d, %d) layers=%d",
-        h5_path, height, width, len(layers),
+        "[M9] Saving fusion H5 to FUSION tier: %s level=%s shape=(%d, %d) layers=%d %s",
+        h5_path, processing_level, height, width, len(layers), sorted(layers),
     )
 
 
@@ -311,7 +473,21 @@ def _write_fusion_metadata_json(
     h5_path: Path,
     height: int,
     width: int,
+    processing_level: str,
+    source_levels: dict[str, str],
+    source_tiers: dict[str, str],
+    fusion_strategy: str | None,
+    temporal_offsets: dict[str, int | None],
+    checksum_sha256: str,
 ) -> None:
+    """Tulis sidecar fusion_metadata.json.
+
+    `layers` di sini adalah lapisan yang BENAR-BENAR ditulis (kunci
+    `layer_sources`), bukan daftar semua lapisan yang mungkin. Sebelumnya
+    berisi konstanta FUSION_LAYERS, yang pada dataset selektif berbohong
+    tentang isi berkas — sidecar-nya menjanjikan delapan lapisan padahal HDF5
+    di sebelahnya cuma punya tiga.
+    """
     metadata = {
         "fusion_id": fusion_id,
         "dataset_id": dataset_id,
@@ -321,12 +497,21 @@ def _write_fusion_metadata_json(
         "processing_datetime": processing_datetime.isoformat(),
         "aoi_bbox": list(aoi_bbox),
         "shape": {"height": height, "width": width},
-        "layers": FUSION_LAYERS,
+        "processing_level": processing_level,
+        # Level per sumber, bukan cuma level stack-nya: pada dataset campuran
+        # (mis. sentinel1[RAW] + modis[PROCESSED]) satu angka di level stack
+        # tidak cukup untuk merekonstruksi asal tiap lapisan.
+        "source_levels": source_levels,
+        "source_tiers": source_tiers,
+        "fusion_strategy": fusion_strategy,
+        "layers": list(layer_sources),
         "layer_sources": layer_sources,
         "source_scenes": {"s1_scene_id": s1["scene_id"]},
         "days_since_s1": days_since_s1,
+        "temporal_offsets": temporal_offsets,
         "file_name": h5_path.name,
         "file_size_mb": round(h5_path.stat().st_size / (1024 ** 2), 3),
+        "checksum_sha256": checksum_sha256,
     }
     with open(json_path, "w") as f:
         json.dump(metadata, f, indent=2, default=str)
@@ -381,6 +566,16 @@ def _resolve_aux_scene(
     )
 
 
+def _aux_plan(db: DatabaseClient, dataset_id: int, source_name: str) -> SourcePlan | None:
+    """Konfigurasi satu sumber aux, dibaca dari dataset_source_config.
+
+    Dipakai pemanggil yang tidak membawa ProcessingPlan sendiri (live_scheduler
+    memanggil ensure_*_inputs_for_date langsung per sumber). None berarti
+    sumber itu tidak dikonfigurasi untuk dataset ini — pemanggil harus
+    melewatinya, bukan memprosesnya dengan default."""
+    return load_processing_plan(db, dataset_id).get(source_name)
+
+
 def _register_aux_products(
     db: DatabaseClient,
     *,
@@ -392,11 +587,19 @@ def _register_aux_products(
     nasa_product_short_name: str,
     acquisition_date: date_type,
     aux_scene_id: int,
-    silver_paths: dict[str, str],
+    band_paths: dict[str, str],
     product_type: str,
+    tier: str = "SILVER",
+    processing_level: str = PROCESSED,
 ) -> tuple[dict[str, int], int]:
-    """Daftarkan band SILVER satu source/tanggal sebagai data_products.
-    Mengembalikan ({band: product_id SILVER}, job_id) — product_id dipakai
+    """Daftarkan band satu source/tanggal sebagai data_products di `tier`.
+
+    `tier`/`processing_level` datang dari SourcePlan.targets(): band level RAW
+    mendarat di BRONZE dan ditandai processing_level='RAW', band jalur penuh
+    di SILVER dan ditandai 'PROCESSED' (DOCS/ETL.md). Sebelum model
+    per-satelit keduanya selalu SILVER/PROCESSED, karena cuma ada satu jalur.
+
+    Mengembalikan ({band: product_id}, job_id) — product_id dipakai
     _promote_aux_to_gold untuk mencatat lineage SILVER -> GOLD."""
     meta = MetadataManager(db)
     lineage = LineageTracker(db)
@@ -404,8 +607,8 @@ def _register_aux_products(
     job_id = meta.insert_processing_job(
         aux_scene_id, "DOWNLOAD", parameters={"dataset_id": dataset_id, "source": source.upper()}
     )
-    silver_product_ids: dict[str, int] = {}
-    for band, path in silver_paths.items():
+    product_ids: dict[str, int] = {}
+    for band, path in band_paths.items():
         if not Path(path).exists():
             continue
         if _product_exists(db, dataset_id, path):
@@ -415,16 +618,17 @@ def _register_aux_products(
             product_short_name=nasa_product_short_name,
             acquisition_date=acquisition_date, region_id=region_id, raw_file_path=path,
         )
-        silver_product_ids[band] = meta.insert_data_product(
+        product_ids[band] = meta.insert_data_product(
             scene_id=aux_scene_id, job_id=job_id, dataset_id=dataset_id,
-            product_tier="SILVER", source=fm.db_source(source),
+            product_tier=tier, source=fm.db_source(source),
             product_type=product_type, band_name=band,
             file_path=path, file_name=Path(path).name,
             file_size_mb=round(Path(path).stat().st_size / (1024 ** 2), 3),
             data_hash_sha256=lineage.compute_sha256(path),
+            processing_level=processing_level,
         )
 
-    return silver_product_ids, job_id
+    return product_ids, job_id
 
 
 def _promote_aux_to_gold(
@@ -465,6 +669,9 @@ def _promote_aux_to_gold(
             file_size_mb=round(Path(path).stat().st_size / (1024 ** 2), 3),
             data_hash_sha256=lineage.compute_sha256(path),
             file_format="COG",
+            # GOLD hanya pernah lahir dari jalur PROCESSED: level RAW berhenti
+            # di BRONZE dan tidak pernah sampai ke fungsi ini.
+            processing_level=PROCESSED,
         )
         if band in silver_product_ids:
             lineage.record_transformation(
@@ -483,21 +690,37 @@ def ensure_modis_inputs_for_date(
     aoi_bbox: tuple[float, float, float, float],
     target_date: date_type,
     plog: PipelineLogger | None = None,
+    plan: SourcePlan | None = None,
 ) -> dict[str, list[str]]:
-    """Siapkan input MODIS (FLOOD/NDVI/NDWI) untuk satu tanggal: download
-    kalau belum ada di disk, daftarkan sebagai data_products SILVER, ekspor
-    ke COG di tier GOLD, lalu daftarkan produk GOLD-nya.
+    """Siapkan input MODIS untuk satu tanggal sesuai level yang dikonfigurasi.
+
+    RAW      : FLOOD saja -> bronze/, didaftarkan sebagai data_products BRONZE
+               dengan processing_level='RAW'. TIDAK diekspor ke GOLD — level
+               RAW memang berhenti di BRONZE (DOCS/ETL.md).
+    PROCESSED: FLOOD+NDVI+NDWI -> silver/, lalu COG GOLD, keduanya ditandai
+               processing_level='PROCESSED'.
+
+    `plan` boleh None; kalau begitu konfigurasinya dibaca dari
+    dataset_source_config (jalur live_scheduler, yang tidak punya plan job).
 
     Lihat ensure_aux_inputs_for_date untuk kontrak idempotensi & error."""
     from etl.module7_modis_download import MODIS_PRODUCT_TYPES, download_modis_scene
 
+    plan = plan or _aux_plan(db, dataset_id, MODIS_PLAN_NAME)
+    produced: dict[str, list[str]] = {"BRONZE": [], "SILVER": [], "GOLD": []}
+    if plan is None:
+        logger.info(
+            "[M9] MODIS tidak dikonfigurasi untuk dataset=%s, dilewati", dataset_id
+        )
+        return produced
+
     bbox_wkt = box(*aoi_bbox).wkt
     target_dt = datetime.combine(target_date, datetime.min.time(), tzinfo=timezone.utc)
-    produced: dict[str, list[str]] = {"SILVER": [], "GOLD": []}
 
     try:
         _, modis_meta = download_modis_scene(
-            dataset_id, dataset_name, target_dt, target_dt, aoi_bbox, plog=plog
+            dataset_id, dataset_name, target_dt, target_dt, aoi_bbox, plog=plog,
+            processing_levels=plan.levels,
         )
     except Exception:
         logger.exception(
@@ -507,27 +730,33 @@ def ensure_modis_inputs_for_date(
 
     for output in modis_meta["outputs"]:
         output_date = date_type.fromisoformat(output["date"])
+        date_key = output_date.strftime("%Y%m%d")
         aux_scene_id = _resolve_aux_scene(
             db, dataset_id, region_id, bbox_wkt, "MODIS", output_date
         )
         # product_type dibedakan per band supaya FLOOD/NDVI/NDWI tetap bisa
         # dipisahkan tanpa mengandalkan nama file.
-        for band, path in output["products"].items():
-            silver_ids, _ = _register_aux_products(
-                db, dataset_id=dataset_id, region_id=region_id,
-                source="modis", nasa_source=MODIS_SOURCE, nasa_tile_id=MODIS_TILE_ID,
-                nasa_product_short_name=MODIS_PRODUCT_SHORT_NAME,
-                acquisition_date=output_date, aux_scene_id=aux_scene_id,
-                silver_paths={band: path},
-                product_type=MODIS_PRODUCT_TYPES[band],
-            )
-            gold_paths = _promote_aux_to_gold(
-                db, dataset_id=dataset_id, dataset_name=dataset_name, source="modis",
-                date_key=output_date.strftime("%Y%m%d"), aux_scene_id=aux_scene_id,
-                silver_paths={band: path}, silver_product_ids=silver_ids,
-            )
-            produced["SILVER"].append(path)
-            produced["GOLD"].extend(gold_paths.values())
+        for band, entry in output["bands"].items():
+            for tier, target in entry["targets"].items():
+                path = target["path"]
+                product_ids, _ = _register_aux_products(
+                    db, dataset_id=dataset_id, region_id=region_id,
+                    source="modis", nasa_source=MODIS_SOURCE, nasa_tile_id=MODIS_TILE_ID,
+                    nasa_product_short_name=MODIS_PRODUCT_SHORT_NAME,
+                    acquisition_date=output_date, aux_scene_id=aux_scene_id,
+                    band_paths={band: path},
+                    product_type=MODIS_PRODUCT_TYPES[band],
+                    tier=tier, processing_level=target["processing_level"],
+                )
+                produced[tier].append(path)
+                if tier != "SILVER":
+                    continue
+                gold_paths = _promote_aux_to_gold(
+                    db, dataset_id=dataset_id, dataset_name=dataset_name, source="modis",
+                    date_key=date_key, aux_scene_id=aux_scene_id,
+                    silver_paths={band: path}, silver_product_ids=product_ids,
+                )
+                produced["GOLD"].extend(gold_paths.values())
 
     return produced
 
@@ -540,22 +769,39 @@ def ensure_gpm_inputs_for_date(
     aoi_bbox: tuple[float, float, float, float],
     target_date: date_type,
     plog: PipelineLogger | None = None,
+    plan: SourcePlan | None = None,
 ) -> dict[str, list[str]]:
-    """Siapkan input GPM (rainfall 24h/72h/7d) untuk satu tanggal, SILVER
-    lalu GOLD. Lihat ensure_aux_inputs_for_date untuk kontraknya."""
+    """Siapkan input GPM untuk satu tanggal sesuai level yang dikonfigurasi.
+
+    RAW      : curah hujan hari itu saja (window 24h) -> bronze/, ditandai
+               processing_level='RAW', tanpa ekspor GOLD.
+    PROCESSED: window 24h/72h/7d -> silver/ lalu COG GOLD.
+
+    `plan` boleh None; kalau begitu konfigurasinya dibaca dari
+    dataset_source_config. Lihat ensure_aux_inputs_for_date untuk kontraknya."""
     from etl.module8_gpm_download import (
         GPM_PRODUCT_TYPE,
         band_name as gpm_band_name,
         download_gpm_scene,
     )
 
+    plan = plan or _aux_plan(db, dataset_id, GPM_PLAN_NAME)
+    produced: dict[str, list[str]] = {"BRONZE": [], "SILVER": [], "GOLD": []}
+    if plan is None:
+        logger.info(
+            "[M9] GPM tidak dikonfigurasi untuk dataset=%s, dilewati", dataset_id
+        )
+        return produced
+
     bbox_wkt = box(*aoi_bbox).wkt
     target_dt = datetime.combine(target_date, datetime.min.time(), tzinfo=timezone.utc)
     date_key = target_date.strftime("%Y%m%d")
-    produced: dict[str, list[str]] = {"SILVER": [], "GOLD": []}
 
     try:
-        _, gpm_meta = download_gpm_scene(dataset_id, dataset_name, target_dt, aoi_bbox, plog=plog)
+        _, gpm_meta = download_gpm_scene(
+            dataset_id, dataset_name, target_dt, aoi_bbox, plog=plog,
+            processing_levels=plan.levels,
+        )
     except Exception:
         logger.exception(
             "[M9] gagal siapkan input GPM dataset=%s tanggal=%s", dataset_id, target_date
@@ -563,24 +809,34 @@ def ensure_gpm_inputs_for_date(
         return produced
 
     aux_scene_id = _resolve_aux_scene(db, dataset_id, region_id, bbox_wkt, "GPM", target_date)
-    silver_paths = {
-        gpm_band_name(window_name): output["path"]
-        for window_name, output in gpm_meta["windows"].items()
-    }
-    silver_ids, _ = _register_aux_products(
-        db, dataset_id=dataset_id, region_id=region_id,
-        source="gpm", nasa_source=GPM_SOURCE, nasa_tile_id=GPM_TILE_ID,
-        nasa_product_short_name=GPM_PRODUCT_SHORT_NAME,
-        acquisition_date=target_date, aux_scene_id=aux_scene_id,
-        silver_paths=silver_paths, product_type=GPM_PRODUCT_TYPE,
-    )
-    gold_paths = _promote_aux_to_gold(
-        db, dataset_id=dataset_id, dataset_name=dataset_name, source="gpm",
-        date_key=date_key, aux_scene_id=aux_scene_id,
-        silver_paths=silver_paths, silver_product_ids=silver_ids,
-    )
-    produced["SILVER"].extend(silver_paths.values())
-    produced["GOLD"].extend(gold_paths.values())
+
+    # Dikelompokkan per tier: satu job registrasi per tier, bukan per window.
+    by_tier: dict[str, dict[str, dict[str, str]]] = {}
+    for window_name, output in gpm_meta["windows"].items():
+        for tier, target in output["targets"].items():
+            by_tier.setdefault(tier, {})[gpm_band_name(window_name)] = target
+
+    for tier, bands in by_tier.items():
+        band_paths = {band: target["path"] for band, target in bands.items()}
+        level = next(iter(bands.values()))["processing_level"]
+        product_ids, _ = _register_aux_products(
+            db, dataset_id=dataset_id, region_id=region_id,
+            source="gpm", nasa_source=GPM_SOURCE, nasa_tile_id=GPM_TILE_ID,
+            nasa_product_short_name=GPM_PRODUCT_SHORT_NAME,
+            acquisition_date=target_date, aux_scene_id=aux_scene_id,
+            band_paths=band_paths, product_type=GPM_PRODUCT_TYPE,
+            tier=tier, processing_level=level,
+        )
+        produced[tier].extend(band_paths.values())
+        if tier != "SILVER":
+            continue
+        gold_paths = _promote_aux_to_gold(
+            db, dataset_id=dataset_id, dataset_name=dataset_name, source="gpm",
+            date_key=date_key, aux_scene_id=aux_scene_id,
+            silver_paths=band_paths, silver_product_ids=product_ids,
+        )
+        produced["GOLD"].extend(gold_paths.values())
+
     return produced
 
 
@@ -592,12 +848,17 @@ def ensure_aux_inputs_for_date(
     aoi_bbox: tuple[float, float, float, float],
     target_date: date_type,
     plog: PipelineLogger | None = None,
+    plan: "ProcessingPlan | None" = None,
 ) -> dict[str, list[str]]:
     """
-    Siapkan input MODIS (flood/NDVI/NDWI) + GPM (rainfall 24h/72h/7d) yang
-    dibutuhkan untuk memfusikan scene S1 tanggal `target_date`: download
-    kalau belum ada di disk, daftarkan sebagai data_products SILVER, ekspor
-    ke COG di tier GOLD, lalu daftarkan produk GOLD-nya.
+    Siapkan input MODIS + GPM yang dibutuhkan untuk memfusikan scene S1
+    tanggal `target_date`: download kalau belum ada di disk, daftarkan sebagai
+    data_products, dan (untuk level PROCESSED) ekspor ke COG di tier GOLD.
+
+    Sumber yang TIDAK ada di `plan` sama sekali tidak disentuh, dan sumber
+    yang cuma diminta RAW berhenti di BRONZE — jadi dataset yang hanya
+    mengkonfigurasi S1+GPM tidak lagi diam-diam mengunduh MODIS. `plan` boleh
+    None; kalau begitu konfigurasinya dibaca dari dataset_source_config.
 
     Idempotent: module7/module8 melewati file yang sudah ada di disk, dan
     dedup lewat file_path melewati registrasi ulang baris data_products
@@ -616,18 +877,355 @@ def ensure_aux_inputs_for_date(
         diminta dataset — tanpa ini, file gold/modis + gold/gpm akan
         tertinggal di disk saat user cuma meminta tier FUSION.
     """
-    produced: dict[str, list[str]] = {"SILVER": [], "GOLD": []}
-    for part in (
-        ensure_modis_inputs_for_date(
-            db, dataset_id, dataset_name, region_id, aoi_bbox, target_date, plog=plog
-        ),
-        ensure_gpm_inputs_for_date(
-            db, dataset_id, dataset_name, region_id, aoi_bbox, target_date, plog=plog
-        ),
+    plan = plan or load_processing_plan(db, dataset_id)
+    produced: dict[str, list[str]] = {"BRONZE": [], "SILVER": [], "GOLD": []}
+
+    # Sumber yang tidak ada di plan dilewati DI SINI, bukan diserahkan ke
+    # fungsi per-sumber: fungsi itu punya fallback "baca dari database" untuk
+    # pemanggil lain (live_scheduler), dan fallback itu akan menghidupkan lagi
+    # sumber yang justru sengaja tidak dikonfigurasi job ini.
+    for source_name, ensure_fn in (
+        (MODIS_PLAN_NAME, ensure_modis_inputs_for_date),
+        (GPM_PLAN_NAME, ensure_gpm_inputs_for_date),
     ):
+        source_plan = plan.get(source_name)
+        if source_plan is None:
+            logger.info(
+                "[M9] %s tidak dikonfigurasi dataset=%s, tidak diunduh",
+                source_name, dataset_id,
+            )
+            continue
+        part = ensure_fn(
+            db, dataset_id, dataset_name, region_id, aoi_bbox, target_date,
+            plog=plog, plan=source_plan,
+        )
         for tier, paths in part.items():
             produced[tier].extend(paths)
     return produced
+
+
+@dataclass(frozen=True)
+class FusionRun:
+    """Hasil satu stack fusion — satu berkas HDF5 dan barisnya di database."""
+
+    fusion_id: int
+    processing_level: str
+    h5_path: Path
+    json_path: Path
+    layers: tuple[str, ...]
+    source_levels: dict[str, str]
+    product_id: int
+    checksum_sha256: str
+
+
+def fusion_h5_name(date_key: str, processing_level: str) -> str:
+    """Nama berkas stack HDF5. Level SELALU ikut di nama, juga saat dataset
+    cuma menghasilkan satu stack.
+
+    Penamaan bersyarat ("fusion_{date}.h5" kalau satu, bersufiks kalau dua)
+    akan memaksa setiap konsumen — API, notebook training, skrip pihak ketiga —
+    menangani dua pola nama dan menebak mana yang berlaku dari konfigurasi
+    dataset yang belum tentu dia punya. Satu pola untuk semua kasus lebih
+    murah, dan level di nama berkas membuat isi folder fusion/ bisa dibaca
+    tanpa membuka satu pun HDF5."""
+    return f"fusion_{date_key}_{processing_level.lower()}.h5"
+
+
+def fusion_metadata_name(processing_level: str) -> str:
+    """Sidecar JSON pendamping `fusion_h5_name` untuk level yang sama."""
+    return f"fusion_metadata_{processing_level.lower()}.json"
+
+
+def _aux_layers_for_run(
+    dataset_id: int,
+    dataset_name: str,
+    source: str,
+    level: str,
+    center_dt: datetime,
+    filename_fn: Callable[[str, str], str],
+) -> list[tuple[_AuxLayer, tuple[Path, date_type] | None]]:
+    """Pasangkan tiap lapisan aux yang diminta level ini dengan berkasnya di
+    disk (None kalau tidak ada dalam jendela toleransi)."""
+    tier = "gold" if level == PROCESSED else "bronze"
+    out = []
+    for layer in _AUX_LAYERS_BY_SOURCE[source][level]:
+        hit = _find_nearest_daily_file(
+            dataset_id, dataset_name, GROUP_BY_SOURCE[source],
+            lambda d, k=layer.file_key: filename_fn(k, d.strftime("%Y%m%d")),
+            center_dt, tier=tier,
+        )
+        out.append((layer, hit))
+    return out
+
+
+def _build_fusion_stack_for_level(
+    db: DatabaseClient,
+    *,
+    dataset_id: int,
+    dataset_name: str,
+    s1_date: date_type,
+    aoi_bbox: tuple[float, float, float, float],
+    scene_id: int,
+    plan: ProcessingPlan,
+    run_level: str,
+    fusion_strategy: str | None,
+    progress_cb: Callable[[str, int, int], None] | None,
+) -> FusionRun:
+    """Bangun SATU stack HDF5 untuk `run_level`. Dipanggil sekali atau dua
+    kali per scene oleh create_fusion_stack."""
+    from etl.module7_modis_download import band_filename as modis_band_filename
+    from etl.module8_gpm_download import band_filename as gpm_band_filename
+
+    lineage = LineageTracker(db)
+    meta = MetadataManager(db)
+
+    source_levels = plan.source_levels_for_run(run_level)
+    source_tiers = {
+        name: plan.sources[name].tier_for_run(run_level) for name in source_levels
+    }
+    s1_tier = source_tiers[S1_PLAN_NAME]
+
+    s1 = _find_s1_products(db, dataset_id, scene_id, tier=s1_tier)
+    if s1 is None or (not s1["vv_path"] and not s1["vh_path"]):
+        raise RuntimeError(
+            f"No S1 {s1_tier} product found for scene_id={scene_id} "
+            f"s1_date={s1_date.isoformat()} (run level {run_level})"
+        )
+
+    ref_path = s1["vv_path"] or s1["vh_path"]
+    with rasterio.open(ref_path) as ref:
+        ref_transform, ref_crs = ref.transform, ref.crs
+        ref_shape = (ref.height, ref.width)
+
+    expected_layers = fusion_layers_for(source_levels)
+    total_layers = len(expected_layers)
+    done = 0
+    layers: dict[str, np.ndarray] = {}
+    layer_sources: dict[str, dict] = {}
+    found_dates: list[date_type] = []
+    # Offset per sumber aux, untuk fusion_products.temporal_offset_*.
+    offsets: dict[str, int | None] = {MODIS_PLAN_NAME: None, GPM_PLAN_NAME: None}
+
+    def _tick(name: str) -> None:
+        nonlocal done
+        done += 1
+        if progress_cb:
+            progress_cb(name, done, total_layers)
+
+    # --- Sentinel-1 ---------------------------------------------------------
+    for band, path_key in (("VV", "vv_path"), ("VH", "vh_path")):
+        name = f"sentinel1/{band}"
+        layers[name] = _read_band_or_nan(s1[path_key], ref_shape)
+        if s1[path_key] is None:
+            logger.warning(
+                "[M9] S1 %s missing at %s for scene=%s, filled with NaN",
+                band, s1_tier, s1["scene_id"],
+            )
+        layer_sources[name] = {
+            "path": s1[path_key],
+            "date": s1_date.isoformat(),
+            "tier": s1_tier,
+            "processing_level": source_levels[S1_PLAN_NAME],
+        }
+        _tick(name)
+
+    center_dt = s1["acquisition_datetime"]
+
+    # --- MODIS / GPM --------------------------------------------------------
+    # Sumber yang tidak ada di source_levels dilewati sama sekali: dia tidak
+    # menghasilkan group HDF5, bukan group berisi NaN (lihat
+    # fusion_layers_for untuk alasannya).
+    for source, filename_fn in (
+        (MODIS_PLAN_NAME, modis_band_filename),
+        (GPM_PLAN_NAME, gpm_band_filename),
+    ):
+        if source not in source_levels:
+            continue
+        group = GROUP_BY_SOURCE[source]
+        level = source_levels[source]
+        tier = source_tiers[source]
+        for layer, hit in _aux_layers_for_run(
+            dataset_id, dataset_name, source, level, center_dt, filename_fn
+        ):
+            name = f"{group}/{layer.name}"
+            if hit:
+                values = _reproject_to_grid(
+                    hit[0], ref_transform, ref_crs, ref_shape,
+                    resampling=layer.resampling, fill_value=np.nan,
+                )
+                if layer.categorical:
+                    # Kelas banjir itu kategorikal: NaN tidak muat di uint8,
+                    # jadi pakai sentinel 255 yang sama dengan module7.
+                    values = np.where(
+                        np.isnan(values), MODIS_NODATA_U8, values
+                    ).astype("uint8")
+                layers[name] = values
+                layer_sources[name] = {
+                    "path": str(hit[0]), "date": hit[1].isoformat(),
+                    "tier": tier, "processing_level": level,
+                }
+                found_dates.append(hit[1])
+                offset = (hit[1] - s1_date).days
+                if offsets[source] is None or abs(offset) < abs(offsets[source]):
+                    offsets[source] = offset
+            else:
+                logger.warning(
+                    "[M9] no %s %s %s product within %dh of %s",
+                    source, layer.name, tier, ALIGNMENT_WINDOW_HOURS, center_dt,
+                )
+                layers[name] = (
+                    np.full(ref_shape, MODIS_NODATA_U8, dtype="uint8")
+                    if layer.categorical
+                    else np.full(ref_shape, np.nan, dtype="float32")
+                )
+                layer_sources[name] = {
+                    "path": None, "date": None,
+                    "tier": tier, "processing_level": level,
+                }
+            _tick(name)
+
+    date_key = s1_date.strftime("%Y%m%d")
+    out_dir = fm.ensure_fusion_dir(dataset_id, dataset_name, date_key)
+    h5_path = out_dir / fusion_h5_name(date_key, run_level)
+    json_path = out_dir / fusion_metadata_name(run_level)
+    processing_dt = datetime.now(tz=timezone.utc)
+
+    _write_fusion_h5(
+        h5_path, layers, ref_shape,
+        acquisition_datetime=center_dt, processing_datetime=processing_dt,
+        aoi_bbox=aoi_bbox, processing_level=run_level, source_levels=source_levels,
+        fusion_strategy=fusion_strategy, crs=ref_crs, transform=ref_transform,
+    )
+
+    # nasa_scenes hanya didaftarkan untuk lapisan penanda tiap sumber (FLOOD
+    # untuk MODIS, curah hujan harian untuk GPM) — satu baris scene per sumber
+    # per tanggal, bukan per lapisan.
+    def _register_nasa_scene(
+        source: str, nasa_source: str, tile_id: str, short_name: str
+    ) -> int | None:
+        if source not in source_levels:
+            return None
+        anchors = _AUX_LAYERS_BY_SOURCE[source][source_levels[source]]
+        if not anchors:
+            return None
+        hit = layer_sources.get(f"{GROUP_BY_SOURCE[source]}/{anchors[0].name}", {})
+        if not hit.get("date"):
+            return None
+        return _get_or_create_nasa_scene(
+            db, nasa_source, tile_id, short_name,
+            date_type.fromisoformat(hit["date"]), s1["region_id"], Path(hit["path"]),
+        )
+
+    modis_scene_id = _register_nasa_scene(
+        MODIS_PLAN_NAME, MODIS_SOURCE, MODIS_TILE_ID, MODIS_PRODUCT_SHORT_NAME
+    )
+    gpm_scene_id = _register_nasa_scene(
+        GPM_PLAN_NAME, GPM_SOURCE, GPM_TILE_ID, GPM_PRODUCT_SHORT_NAME
+    )
+
+    days_since_s1 = max((abs((d - s1_date).days) for d in found_dates), default=0)
+
+    with db.session() as sess:
+        existing = sess.scalar(
+            select(FusionProduct).where(
+                FusionProduct.feature_date == s1_date,
+                FusionProduct.region_id == s1["region_id"],
+                FusionProduct.processing_level == run_level,
+            )
+        )
+        if existing:
+            existing.s1_scene_id = s1["scene_id"]
+            existing.modis_scene_id = modis_scene_id
+            existing.gpm_scene_id = gpm_scene_id
+            existing.days_since_s1 = days_since_s1
+            existing.feature_stack_path = str(h5_path)
+            existing.fusion_strategy = fusion_strategy
+            existing.temporal_offset_modis = offsets[MODIS_PLAN_NAME]
+            existing.temporal_offset_gpm = offsets[GPM_PLAN_NAME]
+            sess.flush()
+            fusion_id = existing.fusion_id
+        else:
+            fusion = FusionProduct(
+                feature_date=s1_date,
+                region_id=s1["region_id"],
+                s1_scene_id=s1["scene_id"],
+                modis_scene_id=modis_scene_id,
+                gpm_scene_id=gpm_scene_id,
+                days_since_s1=days_since_s1,
+                feature_stack_path=str(h5_path),
+                fusion_strategy=fusion_strategy,
+                processing_level=run_level,
+                temporal_offset_modis=offsets[MODIS_PLAN_NAME],
+                temporal_offset_gpm=offsets[GPM_PLAN_NAME],
+            )
+            sess.add(fusion)
+            sess.flush()
+            fusion_id = fusion.fusion_id
+
+    height, width = ref_shape
+    checksum = lineage.compute_sha256(h5_path)
+    _write_fusion_metadata_json(
+        json_path, fusion_id, dataset_id, s1["region_id"], s1_date, s1,
+        layer_sources, days_since_s1,
+        center_dt, processing_dt, aoi_bbox, h5_path, height, width,
+        processing_level=run_level,
+        source_levels=source_levels,
+        source_tiers=source_tiers,
+        fusion_strategy=fusion_strategy,
+        temporal_offsets={
+            "modis": offsets[MODIS_PLAN_NAME], "gpm": offsets[GPM_PLAN_NAME],
+        },
+        checksum_sha256=checksum,
+    )
+
+    fusion_job_id = meta.insert_processing_job(
+        s1["scene_id"], "FUSION",
+        parameters={
+            "dataset_id": dataset_id, "s1_date": s1_date.isoformat(),
+            "processing_level": run_level, "source_levels": source_levels,
+        },
+    )
+    meta.start_job(fusion_job_id)
+    fusion_product_id = meta.insert_data_product(
+        scene_id=s1["scene_id"], job_id=fusion_job_id, dataset_id=dataset_id,
+        product_tier="FUSION", source=fm.FUSION_DB_SOURCE,
+        product_type="FUSION_H5",
+        # band_name membawa level-nya, bukan cuma "FUSION": dedup is_latest di
+        # insert_data_product berjalan atas (scene_id, band_name, tier,
+        # dataset_id), jadi dua stack tanggal yang sama dengan band_name yang
+        # sama akan membuat stack RAW menandai dirinya sendiri usang begitu
+        # stack PROCESSED didaftarkan — dan hilang dari semua listing API.
+        band_name=f"FUSION_{run_level}",
+        file_path=str(h5_path), file_name=h5_path.name,
+        file_size_mb=round(h5_path.stat().st_size / (1024 ** 2), 3),
+        data_hash_sha256=checksum,
+        file_format="HDF5", rows=height, cols=width,
+        processing_level=run_level,
+    )
+    for product_key in ("vv_product_id", "vh_product_id"):
+        if s1[product_key]:
+            lineage.record_transformation(
+                s1[product_key], fusion_product_id, "FUSION", fusion_job_id,
+                {"aoi_bbox": list(aoi_bbox), "processing_level": run_level},
+            )
+    meta.complete_job(fusion_job_id)
+
+    logger.info(
+        "[M9] fusion_id=%d dataset=%s date=%s level=%s sources=%s path=%s hash=%s",
+        fusion_id, dataset_id, s1_date.isoformat(), run_level, source_levels,
+        h5_path, checksum[:12],
+    )
+
+    return FusionRun(
+        fusion_id=fusion_id,
+        processing_level=run_level,
+        h5_path=h5_path,
+        json_path=json_path,
+        layers=tuple(layer_sources),
+        source_levels=source_levels,
+        product_id=fusion_product_id,
+        checksum_sha256=checksum,
+    )
 
 
 def create_fusion_stack(
@@ -638,219 +1236,73 @@ def create_fusion_stack(
     scene_id: int,
     db: DatabaseClient | None = None,
     progress_cb: Callable[[str, int, int], None] | None = None,
-) -> int:
+    plan: ProcessingPlan | None = None,
+    fusion_strategy: str | None = None,
+) -> list[FusionRun]:
     """
-    Build a fused HDF5 feature stack for Sentinel-1 `scene_id` (acquired on
-    `s1_date`), aligning MODIS and GPM GOLD products found within 24h of the
-    S1 acquisition time. This is the FUSION tier deliverable.
+    Bangun stack fitur HDF5 untuk scene Sentinel-1 `scene_id` (akuisisi
+    `s1_date`), mencocokkan produk MODIS/GPM dalam 24 jam dari waktu akuisisi
+    S1. Ini deliverable tier FUSION.
 
-    Writes:
-        data/datasets/{id}_{slug}/fusion/{s1_date}/fusion_{s1_date}.h5
-        data/datasets/{id}_{slug}/fusion/{s1_date}/fusion_metadata.json
+    Isi tiap stack ditentukan `dataset_source_config`, bukan konstanta: sumber
+    yang tidak dikonfigurasi tidak menghasilkan group HDF5 sama sekali, dan
+    sumber yang cuma diminta RAW hanya menyumbang lapisan mentahnya
+    (/modis/FLOOD, /gpm/rainfall_daily) yang dibaca dari BRONZE.
+
+    Jumlah stack per tanggal = len(plan.output_levels()): satu untuk dataset
+    biasa, DUA (satu RAW + satu PROCESSED) kalau ada sumber yang diminta di
+    kedua level.
+
+    Menulis, untuk tiap level:
+        data/datasets/{id}_{slug}/fusion/{date}/fusion_{date}_{level}.h5
+        data/datasets/{id}_{slug}/fusion/{date}/fusion_metadata_{level}.json
+
+    Args:
+        plan: ProcessingPlan dataset. Boleh None; kalau begitu dibaca dari
+              dataset_source_config.
+        fusion_strategy: strategi yang dipakai, dicatat apa adanya ke
+              fusion_products.fusion_strategy dan ke sidecar JSON.
 
     Returns:
-        fusion_id (int) — primary key of the `fusion_products` row, used
-        for lineage tracking.
-    """
-    from etl.module7_modis_download import band_filename as modis_band_filename
-    from etl.module8_gpm_download import band_filename as gpm_band_filename
+        list[FusionRun] — satu entri per stack yang ditulis, urut RAW lalu
+        PROCESSED. (Sebelum model per-satelit fungsi ini mengembalikan satu
+        `fusion_id` int; sekarang selalu list karena satu panggilan bisa
+        menghasilkan dua stack.)
 
+    Raises:
+        RuntimeError: SENTINEL1 tidak dikonfigurasi, atau produk S1 di tier
+        yang diminta tidak ada. Fusi di pipeline ini di-anchor ke scene S1 —
+        lihat DOCS/IMPLEMENTATION_NOTES.md.
+    """
     owns_db = db is None
     db = db or DatabaseClient.from_env()
-    lineage = LineageTracker(db)
-    meta = MetadataManager(db)
 
     try:
-        s1 = _find_s1_gold(db, dataset_id, scene_id)
-        if s1 is None or (not s1["vv_path"] and not s1["vh_path"]):
+        plan = plan or load_processing_plan(db, dataset_id)
+        if not plan.is_configured(S1_PLAN_NAME):
             raise RuntimeError(
-                f"No S1 GOLD product found for scene_id={scene_id} "
-                f"s1_date={s1_date.isoformat()}"
+                f"FUSION dataset={dataset_id} diminta tanpa SENTINEL1 di "
+                "dataset_source_config. Fusi di pipeline ini di-anchor ke grid "
+                "dan tanggal akuisisi scene S1; tanpa S1 tidak ada grid "
+                "referensi maupun tanggal untuk dipasangkan "
+                "(DOCS/IMPLEMENTATION_NOTES.md)."
             )
 
-        ref_path = s1["vv_path"] or s1["vh_path"]
-        with rasterio.open(ref_path) as ref:
-            ref_transform, ref_crs = ref.transform, ref.crs
-            ref_shape = (ref.height, ref.width)
-
-        total_layers = len(FUSION_LAYERS)
-        done = 0
-        layers: dict[str, np.ndarray] = {}
-        layer_sources: dict[str, dict] = {}
-        found_dates: list[date_type] = []
-
-        def _tick(name: str) -> None:
-            nonlocal done
-            done += 1
-            if progress_cb:
-                progress_cb(name, done, total_layers)
-
-        # --- Sentinel-1 -----------------------------------------------------
-        for band, path_key in (("VV", "vv_path"), ("VH", "vh_path")):
-            name = f"sentinel1/{band}"
-            layers[name] = _read_band_or_nan(s1[path_key], ref_shape)
-            if s1[path_key] is None:
-                logger.warning("[M9] S1 %s missing for scene=%s, filled with NaN", band, s1["scene_id"])
-            layer_sources[name] = {"path": s1[path_key], "date": s1_date.isoformat()}
-            _tick(name)
-
-        center_dt = s1["acquisition_datetime"]
-
-        # --- MODIS ----------------------------------------------------------
-        for band, resampling in MODIS_FUSION_BANDS.items():
-            name = f"modis/{band}"
-            hit = _find_nearest_daily_file(
-                dataset_id, dataset_name, "modis",
-                lambda d, b=band: modis_band_filename(b, d.strftime("%Y%m%d")),
-                center_dt,
+        return [
+            _build_fusion_stack_for_level(
+                db,
+                dataset_id=dataset_id,
+                dataset_name=dataset_name,
+                s1_date=s1_date,
+                aoi_bbox=aoi_bbox,
+                scene_id=scene_id,
+                plan=plan,
+                run_level=run_level,
+                fusion_strategy=fusion_strategy,
+                progress_cb=progress_cb,
             )
-            if hit:
-                values = _reproject_to_grid(
-                    hit[0], ref_transform, ref_crs, ref_shape,
-                    resampling=resampling, fill_value=np.nan,
-                )
-                if band == "FLOOD":
-                    # Kelas banjir itu kategorikal: NaN tidak muat di uint8,
-                    # jadi pakai sentinel 255 yang sama dengan module7.
-                    values = np.where(np.isnan(values), MODIS_NODATA_U8, values).astype("uint8")
-                layers[name] = values
-                layer_sources[name] = {"path": str(hit[0]), "date": hit[1].isoformat()}
-                found_dates.append(hit[1])
-            else:
-                logger.warning(
-                    "[M9] no MODIS %s GOLD product within %dh of %s",
-                    band, ALIGNMENT_WINDOW_HOURS, center_dt,
-                )
-                layers[name] = (
-                    np.full(ref_shape, MODIS_NODATA_U8, dtype="uint8") if band == "FLOOD"
-                    else np.full(ref_shape, np.nan, dtype="float32")
-                )
-                layer_sources[name] = {"path": None, "date": None}
-            _tick(name)
-
-        # --- GPM ------------------------------------------------------------
-        for window in GPM_FUSION_WINDOWS:
-            name = f"gpm/rainfall_{window}"
-            hit = _find_nearest_daily_file(
-                dataset_id, dataset_name, "gpm",
-                lambda d, w=window: gpm_band_filename(w, d.strftime("%Y%m%d")),
-                center_dt,
-            )
-            if hit:
-                layers[name] = _reproject_to_grid(
-                    hit[0], ref_transform, ref_crs, ref_shape,
-                    resampling=Resampling.bilinear, fill_value=np.nan,
-                )
-                layer_sources[name] = {"path": str(hit[0]), "date": hit[1].isoformat()}
-                found_dates.append(hit[1])
-            else:
-                logger.warning(
-                    "[M9] no GPM %s GOLD product within %dh of %s",
-                    window, ALIGNMENT_WINDOW_HOURS, center_dt,
-                )
-                layers[name] = np.full(ref_shape, np.nan, dtype="float32")
-                layer_sources[name] = {"path": None, "date": None}
-            _tick(name)
-
-        date_key = s1_date.strftime("%Y%m%d")
-        out_dir = fm.ensure_fusion_dir(dataset_id, dataset_name, date_key)
-        h5_path = out_dir / f"fusion_{date_key}.h5"
-        json_path = out_dir / "fusion_metadata.json"
-        processing_dt = datetime.now(tz=timezone.utc)
-
-        _write_fusion_h5(
-            h5_path, layers,
-            acquisition_datetime=center_dt, processing_datetime=processing_dt,
-            aoi_bbox=aoi_bbox, crs=ref_crs, transform=ref_transform,
-        )
-
-        modis_scene_id = None
-        modis_hit_date = layer_sources["modis/FLOOD"]["date"]
-        if modis_hit_date:
-            modis_scene_id = _get_or_create_nasa_scene(
-                db, MODIS_SOURCE, MODIS_TILE_ID, MODIS_PRODUCT_SHORT_NAME,
-                date_type.fromisoformat(modis_hit_date), s1["region_id"],
-                Path(layer_sources["modis/FLOOD"]["path"]),
-            )
-        gpm_scene_id = None
-        gpm_hit_date = layer_sources["gpm/rainfall_24h"]["date"]
-        if gpm_hit_date:
-            gpm_scene_id = _get_or_create_nasa_scene(
-                db, GPM_SOURCE, GPM_TILE_ID, GPM_PRODUCT_SHORT_NAME,
-                date_type.fromisoformat(gpm_hit_date), s1["region_id"],
-                Path(layer_sources["gpm/rainfall_24h"]["path"]),
-            )
-
-        days_since_s1 = max((abs((d - s1_date).days) for d in found_dates), default=0)
-
-        with db.session() as sess:
-            existing = sess.scalar(
-                select(FusionProduct).where(
-                    FusionProduct.feature_date == s1_date,
-                    FusionProduct.region_id == s1["region_id"],
-                )
-            )
-            if existing:
-                existing.s1_scene_id = s1["scene_id"]
-                existing.modis_scene_id = modis_scene_id
-                existing.gpm_scene_id = gpm_scene_id
-                existing.days_since_s1 = days_since_s1
-                existing.feature_stack_path = str(h5_path)
-                sess.flush()
-                fusion_id = existing.fusion_id
-            else:
-                fusion = FusionProduct(
-                    feature_date=s1_date,
-                    region_id=s1["region_id"],
-                    s1_scene_id=s1["scene_id"],
-                    modis_scene_id=modis_scene_id,
-                    gpm_scene_id=gpm_scene_id,
-                    days_since_s1=days_since_s1,
-                    feature_stack_path=str(h5_path),
-                )
-                sess.add(fusion)
-                sess.flush()
-                fusion_id = fusion.fusion_id
-
-        height, width = ref_shape
-        _write_fusion_metadata_json(
-            json_path, fusion_id, dataset_id, s1["region_id"], s1_date, s1,
-            layer_sources, days_since_s1,
-            center_dt, processing_dt, aoi_bbox, h5_path, height, width,
-        )
-
-        fusion_job_id = meta.insert_processing_job(
-            s1["scene_id"], "FUSION",
-            parameters={"dataset_id": dataset_id, "s1_date": s1_date.isoformat()},
-        )
-        meta.start_job(fusion_job_id)
-        fusion_product_id = meta.insert_data_product(
-            scene_id=s1["scene_id"], job_id=fusion_job_id, dataset_id=dataset_id,
-            product_tier="FUSION", source=fm.FUSION_DB_SOURCE,
-            product_type="FUSION_H5", band_name="FUSION",
-            file_path=str(h5_path), file_name=h5_path.name,
-            file_size_mb=round(h5_path.stat().st_size / (1024 ** 2), 3),
-            data_hash_sha256=lineage.compute_sha256(h5_path),
-            file_format="HDF5", rows=height, cols=width,
-        )
-        if s1["vv_product_id"]:
-            lineage.record_transformation(
-                s1["vv_product_id"], fusion_product_id, "FUSION", fusion_job_id,
-                {"aoi_bbox": list(aoi_bbox)},
-            )
-        if s1["vh_product_id"]:
-            lineage.record_transformation(
-                s1["vh_product_id"], fusion_product_id, "FUSION", fusion_job_id,
-                {"aoi_bbox": list(aoi_bbox)},
-            )
-        meta.complete_job(fusion_job_id)
-
-        logger.info(
-            "[M9] fusion_id=%d dataset=%s date=%s path=%s hash=%s",
-            fusion_id, dataset_id, s1_date.isoformat(), h5_path,
-            lineage.compute_sha256(h5_path)[:12],
-        )
-        return fusion_id
+            for run_level in plan.output_levels()
+        ]
 
     finally:
         if owns_db:

@@ -1,0 +1,24 @@
+2026-09-07 16:38:01,910 INFO    [MainThread] etl.pipeline_logger [PLOG-FILE] run log opened for dataset='BRANCH_1788773881.869328' -> logs\BRANCH_1788773881.869328.txt
+2026-09-07 16:38:01,911 INFO    [MainThread] etl.module9_fusion [M9] MODIS tidak dikonfigurasi dataset=9, tidak diunduh
+2026-09-07 16:38:01,911 INFO    [MainThread] etl.module8_gpm_download [M8] dataset_id=9 level=['PROCESSED'] window=['24h', '72h', '7d'] granule_hari=7
+2026-09-07 16:38:01,925 INFO    [MainThread] etl.pipeline_logger [PLOG] {"log_id": 25, "dataset_id": 9, "scene_id": "GPM_20240305", "module": "MODULE8_GPM_DOWNLOAD", "stage": "DOWNLOAD", "status": "COMPLETED", "message": "GPM 24h: selesai (1 hari)", "window": "24h", "days_aggregated": 1}
+2026-09-07 16:38:01,931 INFO    [MainThread] etl.pipeline_logger [PLOG] {"log_id": 26, "dataset_id": 9, "scene_id": "GPM_20240305", "module": "MODULE8_GPM_DOWNLOAD", "stage": "DOWNLOAD", "status": "COMPLETED", "message": "GPM 72h: selesai (3 hari)", "window": "72h", "days_aggregated": 3}
+2026-09-07 16:38:01,938 INFO    [MainThread] etl.pipeline_logger [PLOG] {"log_id": 27, "dataset_id": 9, "scene_id": "GPM_20240305", "module": "MODULE8_GPM_DOWNLOAD", "stage": "DOWNLOAD", "status": "COMPLETED", "message": "GPM 7d: selesai (7 hari)", "window": "7d", "days_aggregated": 7}
+2026-09-07 16:38:01,943 INFO    [MainThread] etl.pipeline_logger [PLOG] {"log_id": 28, "dataset_id": 9, "scene_id": "GPM_20240305", "module": "MODULE8_GPM_DOWNLOAD", "stage": "DOWNLOAD_SUMMARY", "status": "COMPLETED", "message": "GPM selesai: 3/3 produk", "windows_ok": ["24h", "72h", "7d"], "windows_failed": [], "quality": "GOOD"}
+2026-09-07 16:38:01,943 INFO    [MainThread] etl.module8_gpm_download [M8] selesai: 3/3 produk rainfall dibuat untuk dataset_id=9 tanggal=2024-03-05
+2026-09-07 16:38:01,951 INFO    [MainThread] etl.metadata_manager [SCENE] Registered scene_id=4 pid=NASA_AUX_GPM_9_20240305 acq=2024-03-05T00:00:00+00:00
+2026-09-07 16:38:01,960 INFO    [MainThread] etl.metadata_manager [JOB] Created job_id=5 scene=4 stage=DOWNLOAD attempt=1
+2026-09-07 16:38:01,982 INFO    [MainThread] etl.metadata_manager [PRODUCT] Registered product_id=9 scene=4 band=RAIN_24H tier=SILVER level=PROCESSED source=GPM dataset=9 file=gpm_rain_24h_20240305.tif
+2026-09-07 16:38:02,005 INFO    [MainThread] etl.metadata_manager [PRODUCT] Registered product_id=10 scene=4 band=RAIN_72H tier=SILVER level=PROCESSED source=GPM dataset=9 file=gpm_rain_72h_20240305.tif
+2026-09-07 16:38:02,029 INFO    [MainThread] etl.metadata_manager [PRODUCT] Registered product_id=11 scene=4 band=RAIN_7D tier=SILVER level=PROCESSED source=GPM dataset=9 file=gpm_rain_7d_20240305.tif
+2026-09-07 16:38:02,045 INFO    [MainThread] etl.metadata_manager [JOB] Created job_id=6 scene=4 stage=GOLD_EXPORT attempt=1
+2026-09-07 16:38:02,049 INFO    [MainThread] etl.metadata_manager [JOB] job_id=6 -> RUNNING
+2026-09-07 16:38:02,073 INFO    [MainThread] etl.metadata_manager [PRODUCT] Registered product_id=12 scene=4 band=RAIN_24H tier=GOLD level=PROCESSED source=GPM dataset=9 file=gpm_rain_24h_20240305.tif
+2026-09-07 16:38:02,079 INFO    [MainThread] etl.lineage_tracker [LINEAGE] lineage_id=4 parent=9 →[GOLD_EXPORT]→ child=12
+2026-09-07 16:38:02,103 INFO    [MainThread] etl.metadata_manager [PRODUCT] Registered product_id=13 scene=4 band=RAIN_72H tier=GOLD level=PROCESSED source=GPM dataset=9 file=gpm_rain_72h_20240305.tif
+2026-09-07 16:38:02,110 INFO    [MainThread] etl.lineage_tracker [LINEAGE] lineage_id=5 parent=10 →[GOLD_EXPORT]→ child=13
+2026-09-07 16:38:02,136 INFO    [MainThread] etl.metadata_manager [PRODUCT] Registered product_id=14 scene=4 band=RAIN_7D tier=GOLD level=PROCESSED source=GPM dataset=9 file=gpm_rain_7d_20240305.tif
+2026-09-07 16:38:02,144 INFO    [MainThread] etl.lineage_tracker [LINEAGE] lineage_id=6 parent=11 →[GOLD_EXPORT]→ child=14
+2026-09-07 16:38:02,148 INFO    [MainThread] etl.metadata_manager [JOB] job_id=6 -> SUCCESS
+2026-09-07 16:38:02,162 INFO    [MainThread] etl.pipeline_logger [PLOG] {"log_id": 29, "dataset_id": 9, "scene_id": "20240305", "module": "ORCHESTRATOR", "stage": "SCENE_PIPELINE", "status": "COMPLETED", "message": "Aux 20240305: 6 berkas ditulis", "date": "2024-03-05", "files_written": 6, "tiers": {"BRONZE": 0, "SILVER": 3, "GOLD": 3}}
+2026-09-07 16:38:02,162 INFO    [MainThread] etl.pipeline_logger [PLOG-FILE] run log closed for dataset='BRANCH_1788773881.869328'

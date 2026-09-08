@@ -1,0 +1,68 @@
+{
+  "dataset_id": 3,
+  "name": "Ablation Study Jan 2024",
+  "location_label": "Jabodetabek",
+  "bbox_wkt": "POLYGON ((106.4 -6.7, 107.2 -6.7, 107.2 -5.9, 106.4 -5.9, 106.4 -6.7))",
+  "date_range": {
+    "start": "2024-01-01",
+    "end": "2024-01-31"
+  },
+  "date_start": "2024-01-01",
+  "date_end": "2024-01-31",
+  "mode": "STANDARD",
+  "quality_threshold": null,
+  "required_tiers": [
+    "RAW",
+    "BRONZE",
+    "SILVER",
+    "GOLD",
+    "FUSION"
+  ],
+  "sources": [],
+  "status": "QUEUED",
+  "total_scenes": 0,
+  "completed_scenes": 0,
+  "failed_scenes": 0,
+  "total_size_bytes": 0,
+  "storage_usage": {
+    "raw": {
+      "size_bytes": 0,
+      "file_count": 0,
+      "scene_count": 0,
+      "sources": {}
+    },
+    "bronze": {
+      "size_bytes": 0,
+      "file_count": 0,
+      "scene_count": 0,
+      "sources": {}
+    },
+    "silver": {
+      "size_bytes": 0,
+      "file_count": 0,
+      "scene_count": 0,
+      "sources": {}
+    },
+    "gold": {
+      "size_bytes": 0,
+      "file_count": 0,
+      "scene_count": 0,
+      "sources": {}
+    },
+    "preview": {
+      "size_bytes": 0,
+      "file_count": 0,
+      "scene_count": 0,
+      "sources": {}
+    },
+    "fusion": {
+      "size_bytes": 0,
+      "file_count": 0,
+      "scene_count": 0,
+      "sources": {}
+    }
+  },
+  "storage_by_source": {},
+  "acquisition_dates": [],
+  "updated_at": "2026-09-07 12:01:38.126802+00:00"
+}

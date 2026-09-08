@@ -1,20 +1,34 @@
 # etl/module10_generate_preview.py
 """
-Tier PREVIEW: render PNG siap-pandang dari produk GOLD satu tanggal akuisisi.
+Tier PREVIEW: render PNG siap-pandang dari produk satu tanggal akuisisi.
 
 Posisi di pipeline:
 
     ... -> GOLD_EXPORT (gold/) -> PREVIEW (preview/) -> FUSION (fusion/)
 
-PREVIEW dijalankan SETELAH semua input GOLD satu tanggal lengkap (Sentinel-1
-dari scene itu sendiri, MODIS/GPM dari `module9_fusion.ensure_aux_inputs_for_date`)
+PREVIEW dijalankan SETELAH semua input satu tanggal lengkap (Sentinel-1 dari
+scene itu sendiri, MODIS/GPM dari `module9_fusion.ensure_aux_inputs_for_date`)
 dan SEBELUM fusion menulis HDF5. Urutan itu bukan kebetulan: dataset yang cuma
 meminta tier FUSION akan menghapus gold/ di tahap cleanup, jadi kalau preview
 digenerate belakangan tidak ada lagi rasternya untuk dirender. Dengan urutan
-ini, PNG di preview/ tetap jadi rekaman visual GOLD walaupun GeoTIFF-nya
-sendiri sudah dipangkas.
+ini, PNG di preview/ tetap jadi rekaman visual tier sumbernya walaupun
+GeoTIFF-nya sendiri sudah dipangkas.
 
-Dua jenis render, dua tujuan berbeda:
+DARI TIER MANA?
+`processing_level` menentukan tier yang dibaca, mengikuti aturan yang sama
+dengan fusion (DOCS/ETL.md, "Preview Stage"):
+
+    PROCESSED -> gold/    (COG hasil Lee filter / NDVI-NDWI / akumulasi)
+    RAW       -> bronze/  (S1 terkalibrasi+crop, MODIS FLOOD saja,
+                           GPM curah hujan harian saja)
+
+Level RAW karena itu me-render lebih sedikit lapisan — bukan karena gagal,
+tapi karena band turunannya memang tidak pernah dihitung di jalur itu. Level
+ikut ke path output (`preview/{tanggal}/{LEVEL}/...`) supaya dataset yang
+meminta sebuah sumber di KEDUA level bisa menyimpan dua set PNG berdampingan
+tanpa saling menimpa.
+
+Tiga jenis render, tiga tujuan berbeda:
 
     grayscale/  Stretch persentil 2–98 per-berkas, colormap netral (abu-abu).
                 Untuk pembacaan ilmiah: tidak ada hue yang mengarang struktur
@@ -24,12 +38,18 @@ Dua jenis render, dua tujuan berbeda:
                 (NDVI/NDWI dipatok -1..1, hujan dipatok mulai 0). Untuk
                 publikasi/presentasi: warna bisa dibaca lintas tanggal karena
                 skalanya tidak ikut bergeser mengikuti isi berkas.
+    composite/  False-color RGB Sentinel-1 (R=VV, G=VH, B=VV-VH). Folder
+                terpisah dari colored/ karena isinya bukan satu band yang
+                diberi warna melainkan tiga band yang digabung — legenda
+                colormap tidak berlaku untuknya, dan menyimpannya di colored/
+                membuat sidecar colored_info.json memuat satu entri yang
+                skema-nya berbeda dari yang lain.
 
 Keduanya ditulis RGBA/LA — piksel NoData jadi transparan, bukan hitam. Hitam
 adalah nilai yang sah untuk backscatter rendah (air tenang), jadi memetakan
 NoData ke hitam persis menghapus beda antara "air" dan "tidak ada data".
 
-Nama berkas GOLD tidak pernah ditebak dari string literal di sini: MODIS/GPM
+Nama berkas sumber tidak pernah ditebak dari string literal di sini: MODIS/GPM
 dicari lewat `module7.band_filename`/`module8.band_filename` (tempat pola nama
 itu didefinisikan), dan Sentinel-1 lewat dict yang dioper orchestrator atau
 glob per-band sebagai cadangan untuk pemakaian CLI.
@@ -241,30 +261,57 @@ S1_RGB_INTERPRETATION = (
 # Pencarian berkas GOLD
 # ---------------------------------------------------------------------------
 
-def _s1_gold_path(
-    dataset_id: int, dataset_name: str, s1_scene_key: str | None, band: str
+# Tier yang dibaca tiap level, dan sufiks nama berkas Sentinel-1 yang ditulis
+# tahap terakhir level itu (module3_lee_filter -> "_lee", module2_crop ->
+# "_crop"). Satu-satunya tempat pemetaan level -> tier untuk PREVIEW; fusion
+# menyatakan aturan yang sama lewat SourcePlan.tier_for_run().
+_TIER_BY_LEVEL: dict[str, str] = {"PROCESSED": "gold", "RAW": "bronze"}
+_S1_SUFFIX_BY_LEVEL: dict[str, str] = {"PROCESSED": "_lee", "RAW": "_crop"}
+
+
+def tier_for_level(processing_level: str | None) -> str:
+    """Tier on-disk yang dirender untuk level ini: PROCESSED -> gold,
+    RAW -> bronze (DOCS/ETL.md, "Preview Stage")."""
+    return _TIER_BY_LEVEL[fm.normalize_preview_level(processing_level)]
+
+
+def _s1_source_path(
+    dataset_id: int, dataset_name: str, s1_scene_key: str | None, band: str,
+    processing_level: str,
 ) -> Path | None:
-    """Cari COG GOLD Sentinel-1 satu band. Nama berkasnya diturunkan dari nama
-    berkas SILVER (module4 memakai `silver_path.name` apa adanya), jadi tidak
-    ada satu fungsi penamaan yang bisa dipanggil seperti pada MODIS/GPM —
-    band-nya dicocokkan lewat sufiks `_{BAND}_lee.tif` yang ditulis
-    module3_lee_filter."""
+    """Cari raster Sentinel-1 satu band di tier yang sesuai level. Nama
+    berkasnya tidak punya fungsi penamaan terpusat seperti MODIS/GPM (module4
+    memakai `silver_path.name` apa adanya), jadi band-nya dicocokkan lewat
+    sufiks yang ditulis tahap terakhir level itu: `_{BAND}_lee.tif` untuk
+    PROCESSED, `_{BAND}_crop.tif` untuk RAW."""
     if not s1_scene_key:
         return None
-    scene_dir = fm.get_scene_dir(dataset_id, dataset_name, "gold", "sentinel1", s1_scene_key)
+    level = fm.normalize_preview_level(processing_level)
+    scene_dir = fm.get_scene_dir(
+        dataset_id, dataset_name, _TIER_BY_LEVEL[level], "sentinel1", s1_scene_key
+    )
     if not scene_dir.is_dir():
         return None
-    matches = sorted(scene_dir.glob(f"*_{band.upper()}_lee.tif"))
+    matches = sorted(
+        scene_dir.glob(f"*_{band.upper()}{_S1_SUFFIX_BY_LEVEL[level]}.tif")
+    )
     if not matches:
         # Cadangan longgar: instalasi lama bisa punya sufiks berbeda.
         matches = sorted(p for p in scene_dir.glob("*.tif") if f"_{band.upper()}" in p.name)
     return matches[0] if matches else None
 
 
-def _aux_gold_path(
-    dataset_id: int, dataset_name: str, source: str, band: str, date_key: str
+def _aux_source_path(
+    dataset_id: int, dataset_name: str, source: str, band: str, date_key: str,
+    processing_level: str,
 ) -> Path | None:
-    """Cari COG GOLD MODIS/GPM satu band untuk satu tanggal."""
+    """Cari raster MODIS/GPM satu band untuk satu tanggal di tier level ini.
+
+    Nama berkasnya identik di bronze/ dan gold/ (module7/module8 memakai
+    `band_filename()` yang sama untuk semua target), jadi cuma folder induknya
+    yang berbeda. Band turunan (NDVI/NDWI, akumulasi 72h/7d) memang tidak ada
+    di bronze/ — jalur RAW tidak pernah menghitungnya — jadi pencariannya
+    gagal wajar dan lapisan itu masuk daftar "dilewati"."""
     if source == "modis":
         filename = m7.band_filename(band, date_key)
     elif source == "gpm":
@@ -272,8 +319,52 @@ def _aux_gold_path(
         filename = m8.band_filename(band.removeprefix("RAIN_").lower(), date_key)
     else:  # pragma: no cover - dijaga PREVIEW_SPECS
         raise ValueError(f"source aux tidak dikenal: {source!r}")
-    path = fm.get_scene_dir(dataset_id, dataset_name, "gold", source, date_key) / filename
+    tier = tier_for_level(processing_level)
+    path = fm.get_scene_dir(dataset_id, dataset_name, tier, source, date_key) / filename
     return path if path.exists() else None
+
+
+def resolve_source_inputs(
+    dataset_id: int,
+    dataset_name: str,
+    date_key: str,
+    s1_scene_key: str | None = None,
+    s1_files: dict[str, str] | None = None,
+    processing_level: str = fm.DEFAULT_PREVIEW_LEVEL,
+) -> dict[str, Path]:
+    """
+    Petakan `PreviewSpec.key` -> path raster yang ada di disk, di tier yang
+    sesuai `processing_level`.
+
+    `s1_files` ({band: path}) adalah keluaran tahap terakhir S1 yang dioper
+    orchestrator (COG GOLD untuk PROCESSED, hasil crop BRONZE untuk RAW):
+    dipakai lebih dulu karena itu jawaban pasti untuk scene yang baru saja
+    diproses. Tanpa itu (pemakaian CLI / regenerasi), path dicari lewat glob
+    di folder scene.
+
+    Key yang berkasnya tidak ada sengaja tidak muncul di hasil, bukan
+    dipetakan ke None — pemanggil melaporkannya sebagai "dilewati", dan
+    dataset yang MODIS/GPM-nya gagal diunduh tetap dapat preview Sentinel-1.
+    """
+    level = fm.normalize_preview_level(processing_level)
+    inputs: dict[str, Path] = {}
+    for spec in PREVIEW_SPECS:
+        if spec.source == "sentinel1":
+            path: Path | None = None
+            if s1_files and s1_files.get(spec.band):
+                candidate = Path(s1_files[spec.band])
+                path = candidate if candidate.exists() else None
+            if path is None:
+                path = _s1_source_path(
+                    dataset_id, dataset_name, s1_scene_key, spec.band, level
+                )
+        else:
+            path = _aux_source_path(
+                dataset_id, dataset_name, spec.source, spec.band, date_key, level
+            )
+        if path is not None:
+            inputs[spec.key] = path
+    return inputs
 
 
 def resolve_gold_inputs(
@@ -283,32 +374,15 @@ def resolve_gold_inputs(
     s1_scene_key: str | None = None,
     s1_gold_files: dict[str, str] | None = None,
 ) -> dict[str, Path]:
-    """
-    Petakan `PreviewSpec.key` -> path GOLD yang ada di disk.
+    """Alias lama `resolve_source_inputs` untuk level PROCESSED (tier GOLD).
 
-    `s1_gold_files` ({band: path}) adalah keluaran `export_scene_to_gold` yang
-    dioper orchestrator: dipakai lebih dulu karena itu jawaban pasti untuk
-    scene yang baru saja diproses. Tanpa itu (pemakaian CLI / regenerasi),
-    path dicari lewat glob di folder scene.
-
-    Key yang berkasnya tidak ada sengaja tidak muncul di hasil, bukan
-    dipetakan ke None — pemanggil melaporkannya sebagai "dilewati", dan
-    dataset yang MODIS/GPM-nya gagal diunduh tetap dapat preview Sentinel-1.
-    """
-    inputs: dict[str, Path] = {}
-    for spec in PREVIEW_SPECS:
-        if spec.source == "sentinel1":
-            path: Path | None = None
-            if s1_gold_files and s1_gold_files.get(spec.band):
-                candidate = Path(s1_gold_files[spec.band])
-                path = candidate if candidate.exists() else None
-            if path is None:
-                path = _s1_gold_path(dataset_id, dataset_name, s1_scene_key, spec.band)
-        else:
-            path = _aux_gold_path(dataset_id, dataset_name, spec.source, spec.band, date_key)
-        if path is not None:
-            inputs[spec.key] = path
-    return inputs
+    Dipertahankan karena nama ini sudah dipakai di luar modul; kode baru
+    sebaiknya memanggil resolve_source_inputs() dan menyatakan levelnya."""
+    return resolve_source_inputs(
+        dataset_id, dataset_name, date_key,
+        s1_scene_key=s1_scene_key, s1_files=s1_gold_files,
+        processing_level="PROCESSED",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -578,6 +652,54 @@ def _grayscale_info(entries: list[dict]) -> dict:
     }
 
 
+# Nama opsi di datasets.preview_options -> nama folder render.
+_OPTION_TO_KIND: dict[str, str] = {
+    "GRAYSCALE": "grayscale",
+    "COLORED": "colored",
+    "COMPOSITE": "composite",
+}
+
+
+def _normalize_options(options) -> set[str]:
+    """Ubah datasets.preview_options jadi himpunan nama folder render.
+
+    None berarti "tidak dinyatakan" -> ketiganya, yaitu perilaku modul ini
+    sebelum opsi per-varian ada. Himpunan KOSONG yang dinyatakan eksplisit
+    dihormati apa adanya (dataset yang memang tidak mau PNG apa pun);
+    membedakan keduanya itulah alasan default-nya None dan bukan tuple penuh.
+    Opsi tak dikenal dibuang dengan warning — preview adalah artefak turunan,
+    menjatuhkan scene karena satu string asing di kolom array jauh lebih mahal
+    daripada merender lebih sedikit varian.
+    """
+    if options is None:
+        return set(_OPTION_TO_KIND.values())
+    out: set[str] = set()
+    for raw in options:
+        kind = _OPTION_TO_KIND.get(str(raw).strip().upper())
+        if kind is None:
+            logger.warning("[M10] opsi preview tidak dikenal diabaikan: %r", raw)
+            continue
+        out.add(kind)
+    return out
+
+
+def _composite_info(entries: list[dict]) -> dict:
+    """Sidecar composite/. Skemanya sengaja beda dari colored_info: komposit
+    tidak punya colormap maupun rentang nilai tunggal — yang perlu dijelaskan
+    adalah pemetaan kanal ke besaran."""
+    return {
+        "kind": "composite",
+        "count": len(entries),
+        "description": (
+            "Komposit false-color RGB dari beberapa band sekaligus. Warna di "
+            "sini menyatakan hubungan antar-band, bukan nilai satu besaran, "
+            "jadi tidak ada colorbar yang bisa dipasang padanya."
+        ),
+        "not_for": "Analisis kuantitatif — pakai gold/*.tif atau fusion/*.h5.",
+        "images": entries,
+    }
+
+
 def _colored_info(entries: list[dict]) -> dict:
     return {
         "kind": "colored",
@@ -630,17 +752,29 @@ def generate_previews(
     s1_gold_files: dict[str, str] | None = None,
     max_width: int = MAX_WIDTH,
     overwrite: bool = True,
+    processing_level: str = fm.DEFAULT_PREVIEW_LEVEL,
+    s1_files: dict[str, str] | None = None,
+    options: tuple[str, ...] | list[str] | None = None,
 ) -> dict:
     """
-    Render seluruh preview untuk satu tanggal akuisisi.
+    Render seluruh preview untuk satu tanggal akuisisi pada SATU level
+    pemrosesan.
 
     Args:
         acquisition_date: tanggal scene S1; dinormalisasi ke kunci YYYYMMDD.
-        s1_scene_key:     product_identifier scene S1 (untuk mencari gold/).
-        s1_gold_files:    {band: path} keluaran export_scene_to_gold, kalau ada.
+        s1_scene_key:     product_identifier scene S1 (untuk glob folder scene).
+        s1_files:         {band: path} keluaran tahap terakhir S1 pada level
+                          ini (COG GOLD untuk PROCESSED, hasil crop BRONZE
+                          untuk RAW), kalau pemanggil sudah punya.
+        s1_gold_files:    nama lama `s1_files`, masih diterima.
+        processing_level: RAW atau PROCESSED. Menentukan tier yang dibaca
+                          (bronze/ vs gold/) DAN folder output
+                          preview/{tanggal}/{LEVEL}/.
+        options:          varian yang dirender, dari datasets.preview_options
+                          ("GRAYSCALE", "COLORED", "COMPOSITE"). None = ketiganya.
         overwrite:        True (default) me-render ulang semua PNG. Preview
                           adalah turunan murni dan murah, jadi menulis ulang
-                          lebih aman daripada menyimpan PNG basi dari GOLD
+                          lebih aman daripada menyimpan PNG basi dari raster
                           versi lama. False melewati berkas yang sudah ada —
                           untuk mengisi ulang preview yang hilang saja.
 
@@ -648,19 +782,35 @@ def generate_previews(
         Ringkasan yang sama isinya dengan preview_metadata.json, ditambah
         daftar path absolut di key "files".
 
-    Tidak pernah melempar karena satu band gagal: band yang berkas GOLD-nya
+    Tidak pernah melempar karena satu band gagal: band yang berkas sumbernya
     tidak ada atau rusak masuk ke daftar "skipped" beserta alasannya. Preview
     adalah artefak turunan — kegagalan render tidak boleh menjatuhkan scene
     yang datanya sendiri baik-baik saja.
     """
+    level = fm.normalize_preview_level(processing_level)
+    tier = tier_for_level(level)
+    wanted = _normalize_options(options)
     date_key = fm.date_key(acquisition_date)
     preview_dir = fm.ensure_preview_dir(dataset_id, dataset_name, date_key)
-    gray_dir = fm.ensure_preview_kind_dir(dataset_id, dataset_name, date_key, "grayscale")
-    color_dir = fm.ensure_preview_kind_dir(dataset_id, dataset_name, date_key, "colored")
 
-    inputs = resolve_gold_inputs(
+    # Folder tiap varian dibuat hanya kalau varian itu diminta: folder kosong
+    # akan membuat API melaporkan varian yang sebenarnya tidak pernah dirender.
+    def _kind_dir(kind: str) -> Path | None:
+        if kind not in wanted:
+            return None
+        return fm.ensure_preview_kind_dir(
+            dataset_id, dataset_name, date_key, kind, level
+        )
+
+    gray_dir = _kind_dir("grayscale")
+    color_dir = _kind_dir("colored")
+    composite_dir = _kind_dir("composite")
+
+    inputs = resolve_source_inputs(
         dataset_id, dataset_name, date_key,
-        s1_scene_key=s1_scene_key, s1_gold_files=s1_gold_files,
+        s1_scene_key=s1_scene_key,
+        s1_files=s1_files or s1_gold_files,
+        processing_level=level,
     )
 
     gray_entries: list[dict] = []
@@ -680,9 +830,10 @@ def generate_previews(
             })
             continue
 
-        gray_path = gray_dir / f"{spec.key}.png"
-        color_path = color_dir / f"{spec.key}.png"
-        if not overwrite and gray_path.exists() and color_path.exists():
+        gray_path = gray_dir / f"{spec.key}.png" if gray_dir else None
+        color_path = color_dir / f"{spec.key}.png" if color_dir else None
+        wanted_paths = [p for p in (gray_path, color_path) if p is not None]
+        if not overwrite and wanted_paths and all(p.exists() for p in wanted_paths):
             skipped.append({
                 "key": spec.key, "source": spec.source, "band": spec.band,
                 "reason": "sudah ada (overwrite=False)",
@@ -724,31 +875,33 @@ def generate_previews(
         }
 
         try:
-            _render_grayscale(layer, gray_path)
-            g_lo, g_hi = _stretch_range(layer, None)
-            gray_entries.append({
-                **common,
-                "file": gray_path.name,
-                "colormap": "gray",
-                "value_range": [round(g_lo, 4), round(g_hi, 4)],
-                "range_method": f"persentil {PCT_LOW}-{PCT_HIGH}",
-                "size_bytes": gray_path.stat().st_size,
-            })
-            written.append(gray_path)
+            if gray_path is not None:
+                _render_grayscale(layer, gray_path)
+                g_lo, g_hi = _stretch_range(layer, None)
+                gray_entries.append({
+                    **common,
+                    "file": gray_path.name,
+                    "colormap": "gray",
+                    "value_range": [round(g_lo, 4), round(g_hi, 4)],
+                    "range_method": f"persentil {PCT_LOW}-{PCT_HIGH}",
+                    "size_bytes": gray_path.stat().st_size,
+                })
+                written.append(gray_path)
 
-            _render_colored(layer, spec, color_path)
-            c_lo, c_hi = _stretch_range(layer, spec)
-            color_entries.append({
-                **common,
-                "file": color_path.name,
-                "colormap": spec.cmap,
-                "value_range": [round(c_lo, 4), round(c_hi, 4)],
-                "range_method": spec.scale,
-                "transparent_below": spec.transparent_below,
-                "interpretation": spec.interpretation,
-                "size_bytes": color_path.stat().st_size,
-            })
-            written.append(color_path)
+            if color_path is not None:
+                _render_colored(layer, spec, color_path)
+                c_lo, c_hi = _stretch_range(layer, spec)
+                color_entries.append({
+                    **common,
+                    "file": color_path.name,
+                    "colormap": spec.cmap,
+                    "value_range": [round(c_lo, 4), round(c_hi, 4)],
+                    "range_method": spec.scale,
+                    "transparent_below": spec.transparent_below,
+                    "interpretation": spec.interpretation,
+                    "size_bytes": color_path.stat().st_size,
+                })
+                written.append(color_path)
         except Exception as exc:
             logger.exception("[M10] gagal render %s", spec.key)
             skipped.append({
@@ -757,11 +910,14 @@ def generate_previews(
             })
 
     # Komposit RGB hanya mungkin kalau VV dan VH dua-duanya berhasil dibaca.
-    if "s1_vv" in layers and "s1_vh" in layers:
-        rgb_path = color_dir / f"{S1_RGB_KEY}.png"
+    # Berlaku di kedua level: BRONZE S1 sudah terkalibrasi, jadi selisih
+    # VV-VH-nya tetap punya arti fisik yang sama, cuma belum di-despeckle.
+    composite_entries: list[dict] = []
+    if composite_dir is not None and "s1_vv" in layers and "s1_vh" in layers:
+        rgb_path = composite_dir / f"{S1_RGB_KEY}.png"
         try:
             if _render_s1_rgb(layers["s1_vv"], layers["s1_vh"], rgb_path) is not None:
-                color_entries.append({
+                composite_entries.append({
                     "key": S1_RGB_KEY,
                     "source": "sentinel1",
                     "band": "VV+VH",
@@ -784,11 +940,22 @@ def generate_previews(
                 "reason": f"gagal render: {exc}",
             })
 
-    gray_json = _write_json(gray_dir / "grayscale_info.json", _grayscale_info(gray_entries))
-    color_json = _write_json(color_dir / "colored_info.json", _colored_info(color_entries))
-    written += [gray_json, color_json]
+    kinds: dict[str, dict] = {}
+    for kind, kind_dir, entries, info_fn in (
+        ("grayscale", gray_dir, gray_entries, _grayscale_info),
+        ("colored", color_dir, color_entries, _colored_info),
+        ("composite", composite_dir, composite_entries, _composite_info),
+    ):
+        if kind_dir is None:
+            continue
+        written.append(_write_json(kind_dir / f"{kind}_info.json", info_fn(entries)))
+        kinds[kind] = {
+            "dir": kind,
+            "info": f"{kind}_info.json",
+            "files": [e["file"] for e in entries],
+        }
 
-    sources_present = sorted({e["source"] for e in gray_entries})
+    sources_present = sorted({e["source"] for e in gray_entries + color_entries})
     metadata = {
         "dataset_id": dataset_id,
         "dataset_name": dataset_name,
@@ -797,28 +964,23 @@ def generate_previews(
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "generator": MODULE,
         "tier": "PREVIEW",
-        "derived_from": "GOLD",
+        "processing_level": level,
+        # Tier asalnya, bukan konstanta "GOLD": preview level RAW dirender
+        # dari bronze/, dan menuliskan "GOLD" di situ akan membuat sidecar
+        # berbohong soal provenance-nya.
+        "derived_from": tier.upper(),
+        "options": sorted(wanted),
         "max_width_px": max_width,
         "png_compress_level": PNG_COMPRESS_LEVEL,
         "sources_present": sources_present,
         "counts": {
             "grayscale": len(gray_entries),
             "colored": len(color_entries),
-            "total_png": len(gray_entries) + len(color_entries),
+            "composite": len(composite_entries),
+            "total_png": len(gray_entries) + len(color_entries) + len(composite_entries),
             "skipped": len(skipped),
         },
-        "kinds": {
-            "grayscale": {
-                "dir": "grayscale",
-                "info": "grayscale_info.json",
-                "files": [e["file"] for e in gray_entries],
-            },
-            "colored": {
-                "dir": "colored",
-                "info": "colored_info.json",
-                "files": [e["file"] for e in color_entries],
-            },
-        },
+        "kinds": kinds,
         "skipped": skipped,
         "usage": {
             "grayscale": "Pembacaan ilmiah satu berkas; kontras dioptimalkan per berkas.",
@@ -826,13 +988,22 @@ def generate_previews(
             "not_for": "Analisis kuantitatif — pakai gold/*.tif atau fusion/*.h5.",
         },
     }
-    meta_path = _write_json(preview_dir / "preview_metadata.json", metadata)
-    written.append(meta_path)
+    # Sidecar per level, bukan satu per tanggal: dua level menulis ke folder
+    # tanggal yang sama, dan satu berkas bersama akan ditimpa oleh level yang
+    # dirender belakangan.
+    level_dir = fm.get_preview_level_dir(dataset_id, dataset_name, date_key, level)
+    level_dir.mkdir(parents=True, exist_ok=True)
+    written.append(_write_json(level_dir / "preview_metadata.json", metadata))
+    # Salinan di folder tanggal supaya pembaca lama (dan listing API yang
+    # belum menyebut level) tetap menemukan ringkasan yang valid.
+    written.append(_write_json(preview_dir / "preview_metadata.json", metadata))
 
     total_mb = sum(p.stat().st_size for p in written if p.exists()) / (1024 ** 2)
     logger.info(
-        "[M10] PREVIEW %s: %d grayscale + %d colored PNG (%d dilewati, %.2f MB)",
-        date_key, len(gray_entries), len(color_entries), len(skipped), total_mb,
+        "[M10] PREVIEW %s level=%s dari %s: %d grayscale + %d colored + %d komposit "
+        "PNG (%d dilewati, %.2f MB)",
+        date_key, level, tier, len(gray_entries), len(color_entries),
+        len(composite_entries), len(skipped), total_mb,
     )
 
     return {**metadata, "files": [str(p) for p in written], "total_size_mb": round(total_mb, 3)}

@@ -10,6 +10,22 @@ Output ditulis ke data/datasets/{id}_{slug}/silver/gpm/{YYYYMMDD}/ dan
 granule mentahnya di-cache di raw/gpm/. Cache-nya flat (bukan per-tanggal)
 karena satu granule harian ikut dipakai window 72h/7d tanggal-tanggal
 berikutnya — lihat folder_manager.get_granule_cache_dir.
+
+LEVEL PEMROSESAN (DOCS/ETL.md, "GPM IMERG Pipeline")
+    RAW        cuma curah hujan hari itu (window 24h = 1 granule) -> BRONZE.
+               Hari-hari sebelumnya TIDAK diunduh: yang membuat sebuah window
+               "akumulasi" justru granule tetangga itu, dan level RAW
+               didefinisikan sebagai "tanpa akumulasi multi-hari".
+    PROCESSED  window 24h + 72h + 7d -> SILVER (lalu COG GOLD lewat
+               module9_fusion._promote_aux_to_gold). Butuh hari target + 6
+               hari sebelumnya.
+
+Jumlah granule yang diunduh karena itu turun dari 7 menjadi 1 untuk dataset
+GPM RAW-only — penghematan yang justru jadi alasan level RAW ada.
+
+Dataset yang meminta KEDUANYA mendapat kedua artefak berdampingan: window 24h
+ditulis dua kali (bronze/ sebagai deliverable RAW, silver/ sebagai lapisan
+pertama jalur PROCESSED), tanpa build ulang.
 """
 
 from __future__ import annotations
@@ -17,6 +33,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import shutil
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -30,6 +47,8 @@ from shapely.geometry import box, mapping
 
 from etl import folder_manager as fm
 from etl.pipeline_logger import PipelineLogger
+from etl.processing_plan import GPM as GPM_SOURCE_NAME
+from etl.processing_plan import PROCESSED, SourcePlan, normalize_levels
 
 logger = logging.getLogger(__name__)
 
@@ -371,12 +390,33 @@ def _reproject_and_crop_to_s1_grid(
     return output_path
 
 
+def _window_targets(
+    dataset_id: int,
+    dataset_name: str,
+    window_name: str,
+    date_key: str,
+    targets: tuple[tuple[str, str], ...],
+) -> list[tuple[str, str, Path]]:
+    """(tier, processing_level, path) untuk satu window, tier tertinggi dulu.
+
+    Tier tertinggi dibangun; target lain diisi dengan menyalin berkas itu."""
+    ordered = sorted(targets, key=lambda t: 0 if t[0] == "SILVER" else 1)
+    out = []
+    for tier, level in ordered:
+        scene_dir = fm.ensure_scene_dir(
+            dataset_id, dataset_name, tier.lower(), "gpm", date_key
+        )
+        out.append((tier, level, scene_dir / band_filename(window_name, date_key)))
+    return out
+
+
 def download_gpm_scene(
     dataset_id: int,
     dataset_name: str,
     date: datetime,
     aoi_bbox: tuple[float, float, float, float] = JABODETABEK_BBOX,
     plog: PipelineLogger | None = None,
+    processing_levels=(PROCESSED,),
 ) -> tuple[list[str], dict]:
     """
     Build 24h/72h/7-day rainfall accumulation GeoTIFFs for `date` from NASA
@@ -389,6 +429,12 @@ def download_gpm_scene(
         data/datasets/{id}_{slug}/silver/{date}/gpm_rain_72h_{date}.tif
         data/datasets/{id}_{slug}/silver/{date}/gpm_rain_7d_{date}.tif
 
+    `processing_levels` (dari dataset_source_config) menentukan window mana
+    yang dibangun — dan karena itu berapa granule harian yang diunduh:
+        {"RAW"}              24h saja (1 granule)   -> bronze/gpm/{date}/
+        {"PROCESSED"}        24h+72h+7d (7 granule) -> silver/gpm/{date}/
+        {"RAW","PROCESSED"}  keduanya; 24h ada di bronze/ DAN silver/
+
     Each window (24h/72h/7d) is built independently: a window whose daily
     granules fail to download (after retries) is logged and skipped rather
     than aborting the other windows. Pass `plog` to also emit structured
@@ -397,12 +443,23 @@ def download_gpm_scene(
 
     Returns:
         (product_ids, metadata_dict) — product_ids covers only the windows
-        that succeeded; metadata_dict carries per-window output paths,
+        that succeeded; metadata_dict carries per-window output paths (with
+        the tier & processing_level of each copy under `windows[w]["targets"]`),
         checksums, the source daily granules each window was built from, and
         an overall `quality`/`failed_windows` summary.
     """
+    plan = SourcePlan(
+        source_name=GPM_SOURCE_NAME,
+        levels=normalize_levels(processing_levels) or (PROCESSED,),
+    )
+    window_targets = plan.targets()
+    wanted_windows = plan.gpm_windows()
+    logger.info(
+        "[M8] dataset_id=%s level=%s window=%s granule_hari=%d",
+        dataset_id, list(plan.levels), list(wanted_windows), plan.gpm_days(),
+    )
+
     date_key = date.strftime("%Y%m%d")
-    silver_dir = fm.ensure_scene_dir(dataset_id, dataset_name, "silver", "gpm", date_key)
     raw_dir = fm.get_granule_cache_dir(dataset_id, dataset_name, "gpm")
     raw_dir.mkdir(parents=True, exist_ok=True)
 
@@ -412,17 +469,44 @@ def download_gpm_scene(
     failed_windows: list[dict] = []
 
     for window_name, num_days in WINDOWS.items():
-        out_path = silver_dir / band_filename(window_name, date_key)
+        if window_name not in wanted_windows:
+            continue
+
+        targets = _window_targets(
+            dataset_id, dataset_name, window_name, date_key, window_targets[window_name]
+        )
+        build_tier, build_level, out_path = targets[0]
         product_id = f"GPM_3IMERGD.{window_name}.{date_key}.jabodetabek"
+
+        def _record(entry: dict, _out=out_path, _targets=targets,
+                    _tier=build_tier, _level=build_level) -> dict:
+            """Lengkapi entry window dengan salinan ke target lain."""
+            written = {
+                _tier: {
+                    "path": str(_out),
+                    "processing_level": _level,
+                    "checksum_md5": entry["checksum_md5"],
+                }
+            }
+            for tier, level, copy_path in _targets[1:]:
+                if not copy_path.exists():
+                    shutil.copy2(_out, copy_path)
+                written[tier] = {
+                    "path": str(copy_path),
+                    "processing_level": level,
+                    "checksum_md5": entry["checksum_md5"],
+                }
+            entry["targets"] = written
+            return entry
 
         if out_path.exists():
             logger.info("[M8] output sudah ada, skip: %s", out_path.name)
-            window_outputs[window_name] = {
+            window_outputs[window_name] = _record({
                 "path": str(out_path),
                 "checksum_md5": _md5(out_path),
                 "days_aggregated": num_days,
                 "skipped": True,
-            }
+            })
             product_ids.append(product_id)
             continue
 
@@ -446,14 +530,14 @@ def download_gpm_scene(
             continue
 
         runs_used = {entry["run"] for entry in source_checksums.values()}
-        window_outputs[window_name] = {
+        window_outputs[window_name] = _record({
             "path": str(out_path),
             "checksum_md5": _md5(out_path),
             "days_aggregated": num_days,
             "source_checksums": source_checksums,
             "runs_used": sorted(runs_used),
             "skipped": False,
-        }
+        })
         product_ids.append(product_id)
         _plog_event(
             plog, dataset_id, scene_label, "DOWNLOAD", "COMPLETED",
@@ -480,7 +564,7 @@ def download_gpm_scene(
         quality = "GOOD"
     _plog_event(
         plog, dataset_id, scene_label, "DOWNLOAD_SUMMARY", "COMPLETED",
-        f"GPM selesai: {len(window_outputs)}/{len(WINDOWS)} produk"
+        f"GPM selesai: {len(window_outputs)}/{len(wanted_windows)} produk"
         + (f", gagal: {', '.join(w['window'] for w in failed_windows)}" if failed_windows else ""),
         {
             "windows_ok": list(window_outputs.keys()),
@@ -490,6 +574,8 @@ def download_gpm_scene(
 
     metadata = {
         "product": "GPM_3IMERGD",
+        "processing_levels": list(plan.levels),
+        "windows_requested": list(wanted_windows),
         "dataset_id": dataset_id,
         "date": date.date().isoformat(),
         "aoi_bbox": aoi_bbox,
@@ -502,6 +588,6 @@ def download_gpm_scene(
 
     logger.info(
         "[M8] selesai: %d/%d produk rainfall dibuat untuk dataset_id=%s tanggal=%s",
-        len(window_outputs), len(WINDOWS), dataset_id, date.date().isoformat(),
+        len(window_outputs), len(wanted_windows), dataset_id, date.date().isoformat(),
     )
     return product_ids, metadata

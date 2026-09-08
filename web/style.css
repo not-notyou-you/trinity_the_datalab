@@ -58,6 +58,12 @@
     0 8px 32px rgba(0,0,0,0.28),
     0 0 46px rgba(0,240,255,0.4);
 }
+/* Sakelar tampil/sembunyi umum. Aturan berskop (.view.hidden, .map-ui.hidden,
+   dst.) di bawah dibiarkan apa adanya, tapi elemen baru -- panel wisaya, blok
+   klon config, baris error -- cukup memakai class ini: tanpa aturan umum,
+   classList.toggle('hidden') di JS tidak mengubah apa pun secara visual. */
+.hidden { display: none !important; }
+
 * { box-sizing: border-box; }
 html, body { margin: 0; padding: 0; }
 html { background: var(--ink); pointer-events: none; }
@@ -220,10 +226,7 @@ main { max-width: 1500px; margin: 0 auto; padding: 108px 28px 40px; pointer-even
 /* Panel samping selalu satu kolom, seramping mungkin */
 .loc-section .region-grid,
 .config-section .field-row,
-.config-section .field-row-3,
-.config-section .tier-group { grid-template-columns: 1fr; display: grid; gap: 10px; }
-.config-section .tier-group { margin-bottom: 16px; }
-.config-section .tier-pill { justify-content: flex-start; }
+.config-section .field-row-3 { grid-template-columns: 1fr; display: grid; gap: 10px; }
 
 /* Jendela peta: kotak 1:1 yang benar-benar bening (tidak tertutup apa pun) */
 .map-gap {
@@ -317,18 +320,6 @@ details.advanced { border: 1px solid var(--glass-border); border-radius: 8px; pa
 details.advanced summary { cursor: pointer; font-size: 13px; color: var(--text-dim); font-weight: 600; }
 details.advanced .field-row-3 { margin-top: 14px; }
 
-.tier-group { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 18px; }
-.tier-pill {
-  display: flex; align-items: center; gap: 6px;
-  border: 1px solid var(--glass-border);
-  background: rgba(255,255,255,0.03);
-  border-radius: 999px;
-  padding: 8px 14px;
-  cursor: pointer;
-  font-size: 13px;
-  user-select: none;
-}
-.tier-pill input { accent-color: var(--cyan); }
 
 /* ---- Panel "Pilih Lokasi": tombol tambah, pencarian, daftar lokasi ---- */
 .btn-add-loc {
@@ -731,7 +722,6 @@ details.advanced .field-row-3 { margin-top: 14px; }
 .config-section .field { margin-bottom: 12px; }
 .config-section .field label { font-size: 12px; }
 .config-section .field input, .config-section .field textarea { padding: 8px 10px; font-size: 13px; }
-.config-section .tier-pill { padding: 7px 12px; font-size: 12px; }
 .config-section details.advanced { padding: 10px 12px; margin-bottom: 14px; }
 
 
@@ -746,7 +736,6 @@ details.advanced .field-row-3 { margin-top: 14px; }
   color: var(--cyan);
 }
 .loc-section .region-name,
-.config-section .tier-pill { color: var(--text); }
 .loc-section input, .config-section input, .config-section textarea { color: var(--text); }
 .loc-section ::placeholder, .config-section ::placeholder { color: rgba(0,240,255,0.65); opacity: 1; }
 /* input[type=date] di Chromium mewarnai indikator kalender gelap-di-gelap */
@@ -942,11 +931,10 @@ details.advanced .field-row-3 { margin-top: 14px; }
 }
 
 /* ---------------------------------------------------------------------------
-   Opsi pipeline di form "Buat Dataset" (mis. "Buat Preview").
-   Bukan .tier-pill: pill itu untuk tier lineage yang saling setara dan muat
-   satu kata, sedangkan opsi di sini butuh baris penjelasan sendiri agar
-   konsekuensinya (waktu proses vs gambar untuk publikasi) terbaca sebelum
-   dicentang, bukan sesudah.
+   Opsi pipeline di wisaya "Buat Dataset": strategi fusi dan opsi preview.
+   Bukan pill sebaris seperti .master-toggle -- tiap opsi butuh baris penjelasan
+   sendiri agar konsekuensinya (tanggal mana yang ikut, waktu proses vs gambar
+   untuk publikasi) terbaca sebelum dicentang, bukan sesudah.
    --------------------------------------------------------------------------- */
 .option-row {
   display: flex; align-items: flex-start; gap: 10px;
@@ -984,4 +972,250 @@ details.advanced .field-row-3 { margin-top: 14px; }
 @media (max-width: 560px) {
   .option-row { padding: 10px; }
   .option-desc { font-size: 10.5px; }
+}
+
+/* ---------------------------------------------------------------------------
+   Wisaya "Buat Dataset": pra-wisaya (klon config), pip langkah, kartu satelit.
+   Semua permukaan di sini memakai glass-alt (bukan .glass penuh): panel
+   .config-section sudah jadi kaca berblur, dan menumpuk backdrop-filter kedua
+   di dalamnya membuat teks 11px kartu satelit kehilangan kontras terhadap peta
+   di belakangnya.
+   --------------------------------------------------------------------------- */
+
+/* ---- Pra-wisaya: "Pakai Config Sebelumnya" ---- */
+.clone-block { margin-bottom: 18px; }
+.btn-clone {
+  width: 100%;
+  justify-content: center;
+  gap: 8px;
+  background: rgba(0,240,255,0.10);
+  color: var(--cyan);
+  border: 1px dashed rgba(0,240,255,0.45);
+  padding: 9px 12px;
+}
+.btn-clone:hover { background: rgba(0,240,255,0.18); }
+.clone-preview {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--glass-border);
+  border-radius: 12px;
+  background: var(--glass-bg-alt);
+}
+.clone-preview-title {
+  margin: 0 0 6px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+.clone-line { font-size: 11.5px; line-height: 1.6; color: var(--text); overflow-wrap: anywhere; }
+/* Kegagalan klon tampil di tempat aksinya, bukan sebagai toast yang menghilang:
+   tombolnya tetap aktif, jadi pesannya harus bertahan sampai dicoba lagi. */
+.clone-error {
+  margin: 8px 0 0;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--coral);
+}
+
+/* ---- Pip langkah ---- */
+.wizard-steps {
+  display: flex;
+  gap: 6px;
+  list-style: none;
+  margin: 0 0 18px;
+  padding: 0;
+}
+.wizard-step-pip {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  opacity: 0.55;
+  cursor: pointer;
+  user-select: none;
+}
+.wizard-step-pip span {
+  display: grid;
+  place-items: center;
+  width: 18px; height: 18px;
+  flex-shrink: 0;
+  border: 1px solid var(--glass-border);
+  border-radius: 999px;
+  font-size: 10px;
+}
+.wizard-step-pip.done { opacity: 0.85; }
+.wizard-step-pip.done span { border-color: rgba(0,240,255,0.45); color: var(--cyan); }
+.wizard-step-pip.active { opacity: 1; color: var(--cyan); }
+.wizard-step-pip.active span { background: var(--cyan); color: var(--ink); border-color: var(--cyan); }
+
+.wizard-title {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  margin: 0 0 12px;
+}
+.wizard-title-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 12px; }
+.wizard-title-row .wizard-title { margin: 0; }
+#fusionGroup { margin-bottom: 6px; }
+
+/* Pembacaan wilayah: langkah 1 tidak memilih lokasi (itu tugas panel kiri),
+   hanya memastikan pilihan yang aktif terbaca tanpa harus melirik balik. */
+.wizard-region {
+  border: 1px solid rgba(0,240,255,0.35);
+  background: rgba(0,240,255,0.07);
+  border-radius: 12px;
+  padding: 10px 12px;
+  margin-bottom: 16px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.wizard-region.empty { border-color: var(--glass-border); background: rgba(255,255,255,0.03); color: var(--text-dim); }
+
+/* ---- Master toggle "Pilih Semua" ---- */
+.master-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  border: 1px solid rgba(0,240,255,0.45);
+  background: rgba(0,240,255,0.10);
+  border-radius: 999px;
+  padding: 8px 14px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  letter-spacing: 0.04em;
+  color: var(--cyan);
+  cursor: pointer;
+  user-select: none;
+}
+.master-toggle:hover { background: rgba(0,240,255,0.18); }
+.master-toggle input { accent-color: var(--cyan); width: 15px; height: 15px; }
+
+/* ---- Kartu satelit ---- */
+.satellite-list { display: flex; flex-direction: column; gap: 12px; }
+.satellite-card {
+  border: 1px solid var(--glass-border);
+  border-radius: 18px;
+  background: var(--glass-bg-alt);
+  padding: 13px 14px;
+  transition: background 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
+}
+.satellite-card:has(.sat-enable:checked) {
+  border-color: rgba(0,240,255,0.45);
+  background: rgba(0,240,255,0.07);
+  box-shadow: 0 0 22px rgba(0,240,255,0.12);
+}
+.satellite-card:has(.sat-enable:focus-visible) { outline: 2px solid var(--cyan); outline-offset: 2px; }
+.sat-head { display: flex; align-items: flex-start; gap: 10px; cursor: pointer; user-select: none; }
+.sat-head input { accent-color: var(--cyan); margin-top: 2px; flex-shrink: 0; width: 15px; height: 15px; }
+
+/* Sumber yang dimatikan: opsinya diciutkan DAN diabukan, bukan dihapus dari
+   DOM -- level yang sudah dipilih user tetap tersimpan, jadi mengaktifkan
+   ulang sumbernya mengembalikan pilihan yang sama, bukan kartu kosong. */
+.sat-body {
+  margin-top: 12px;
+  padding-top: 11px;
+  border-top: 1px solid var(--glass-border);
+  max-height: 320px;
+  overflow: hidden;
+  transition: max-height 0.22s ease, opacity 0.18s ease, margin 0.22s ease, padding 0.22s ease;
+}
+.satellite-card.is-off .sat-body {
+  max-height: 0;
+  margin-top: 0;
+  padding-top: 0;
+  border-top-color: transparent;
+  opacity: 0.35;
+  pointer-events: none;
+}
+.sat-body-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 9px; }
+.sat-body-head .mini-label {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+.mini-toggle {
+  display: flex; align-items: center; gap: 6px;
+  border: 1px solid var(--glass-border);
+  background: rgba(255,255,255,0.03);
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 11px;
+  color: var(--text-dim);
+  cursor: pointer;
+  user-select: none;
+}
+.mini-toggle:hover { background: rgba(255,255,255,0.07); }
+.mini-toggle input { accent-color: var(--cyan); }
+
+/* ---- Opsi pemrosesan per satelit ---- */
+.processing-option {
+  display: flex; align-items: flex-start; gap: 9px;
+  border: 1px solid var(--glass-border);
+  border-radius: 12px;
+  background: var(--glass-bg-alt);
+  padding: 9px 11px;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+.processing-option + .processing-option { margin-top: 8px; }
+.processing-option:hover { background: rgba(255,255,255,0.07); }
+.processing-option:has(input:checked) { border-color: rgba(0,240,255,0.45); background: rgba(0,240,255,0.09); }
+.processing-option:has(input:focus-visible) { outline: 2px solid var(--cyan); outline-offset: 2px; }
+.processing-option input { accent-color: var(--cyan); margin-top: 2px; flex-shrink: 0; }
+.processing-option .option-label { font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.04em; }
+
+.preview-opts .option-row, .fusion-list .option-row { margin-bottom: 10px; }
+.fusion-list .option-label { font-family: var(--font-mono); letter-spacing: 0.04em; }
+
+/* ---- Ringkasan langkah 4 ---- */
+.wizard-review {
+  border: 1px solid var(--glass-border);
+  border-radius: 12px;
+  background: var(--glass-bg-alt);
+  padding: 6px 12px;
+  margin-bottom: 16px;
+}
+.review-row {
+  display: flex; justify-content: space-between; gap: 12px;
+  padding: 8px 0;
+  font-size: 11.5px;
+  border-bottom: 1px solid var(--glass-border);
+}
+.review-row:last-child { border-bottom: none; }
+.review-row span:first-child { color: var(--text-dim); flex-shrink: 0; }
+.review-row span:last-child { text-align: right; overflow-wrap: anywhere; }
+
+/* ---- Navigasi & error ---- */
+.wizard-nav { display: flex; gap: 10px; }
+.wizard-nav .btn { flex: 1; }
+.wizard-error {
+  margin: 0 0 12px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--coral);
+  border: 1px solid rgba(239,100,97,0.45);
+  background: rgba(239,100,97,0.10);
+  border-radius: 10px;
+  padding: 9px 11px;
+}
+
+@media (max-width: 560px) {
+  .wizard-step-pip { font-size: 0; gap: 0; justify-content: center; }
+  .wizard-step-pip span { font-size: 10px; }
+  .satellite-card { padding: 11px 12px; }
 }

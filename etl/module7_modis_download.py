@@ -23,6 +23,19 @@ granule mentahnya di-cache di raw/modis/. Semuanya adalah input fusion
 Kegagalan satu produk tidak menjatuhkan produk lain: kalau MOD09GA hari itu
 belum tersedia di NRT archive tapi MCDWD ada, hari itu tetap menghasilkan
 FLOOD dan cuma kehilangan NDVI/NDWI.
+
+LEVEL PEMROSESAN (DOCS/ETL.md, "MODIS Pipeline")
+    RAW        cuma peta banjir MCDWD -> reproject -> crop -> tier BRONZE.
+               MOD09GA tidak diunduh sama sekali: NDVI/NDWI adalah indeks
+               turunan, dan level RAW justru didefinisikan sebagai "tanpa
+               indeks turunan".
+    PROCESSED  peta banjir + NDVI + NDWI -> tier SILVER (lalu COG GOLD lewat
+               module9_fusion._promote_aux_to_gold).
+
+Dataset yang meminta KEDUANYA mendapat kedua artefak berdampingan: FLOOD
+ditulis dua kali (bronze/ sebagai deliverable RAW, silver/ sebagai lapisan
+pertama jalur PROCESSED). Granule-nya cuma diunduh dan diproses sekali —
+salinan kedua adalah copy file, bukan build ulang.
 """
 
 from __future__ import annotations
@@ -30,6 +43,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import shutil
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -42,6 +56,8 @@ from rasterio.warp import calculate_default_transform, reproject
 
 from etl import folder_manager as fm
 from etl.pipeline_logger import PipelineLogger
+from etl.processing_plan import MODIS as MODIS_SOURCE_NAME
+from etl.processing_plan import PROCESSED, SourcePlan, normalize_levels
 
 logger = logging.getLogger(__name__)
 
@@ -469,6 +485,27 @@ def _build_band_for_date(
     }
 
 
+def _band_targets(
+    dataset_id: int,
+    dataset_name: str,
+    band: str,
+    date_key: str,
+    targets: tuple[tuple[str, str], ...],
+) -> list[tuple[str, str, Path]]:
+    """(tier, processing_level, path) untuk satu band, tier tertinggi dulu.
+
+    Tier tertinggi jadi yang pertama karena dialah yang dibangun; target lain
+    (kalau ada) diisi dengan menyalin berkas itu."""
+    ordered = sorted(targets, key=lambda t: 0 if t[0] == "SILVER" else 1)
+    out = []
+    for tier, level in ordered:
+        scene_dir = fm.ensure_scene_dir(
+            dataset_id, dataset_name, tier.lower(), "modis", date_key
+        )
+        out.append((tier, level, scene_dir / band_filename(band, date_key)))
+    return out
+
+
 def download_modis_scene(
     dataset_id: int,
     dataset_name: str,
@@ -477,6 +514,7 @@ def download_modis_scene(
     aoi_bbox: tuple[float, float, float, float] = JABODETABEK_BBOX,
     tiles: list[str] = MODIS_TILES,
     plog: PipelineLogger | None = None,
+    processing_levels=(PROCESSED,),
 ) -> tuple[str, dict]:
     """
     Download MODIS flood (MCDWD) + surface reflectance (MOD09GA) dari NASA
@@ -484,6 +522,12 @@ def download_modis_scene(
     reproject/crop tiap hari ke `aoi_bbox`, dan tulis GeoTIFF ke
     data/datasets/{id}_{slug}/silver/modis/{YYYYMMDD}/modis_{date}_{band}.tif
     (ini input fusion, dikonsumsi module9_fusion.py — bukan deliverable akhir).
+
+    `processing_levels` (dari dataset_source_config) menentukan band mana yang
+    dibangun dan ke tier mana ditulis:
+        {"RAW"}              FLOOD saja  -> bronze/modis/{date}/
+        {"PROCESSED"}        FLOOD+NDVI+NDWI -> silver/modis/{date}/
+        {"RAW","PROCESSED"}  keduanya; FLOOD ada di bronze/ DAN silver/
 
     Kegagalan diisolasi dua lapis: satu tile yang gagal masih menyisakan
     mosaic degraded dari tile lain, dan satu band yang gagal (mis. MOD09GA
@@ -495,8 +539,21 @@ def download_modis_scene(
     Returns:
         (product_id, metadata_dict) — product_id mengidentifikasi produk NASA
         sumber untuk lineage; metadata_dict membawa path output per band per
-        hari, checksum MD5, dan ringkasan `quality`/`failed_days`.
+        hari (termasuk tier & processing_level tiap salinan di
+        `outputs[i]["bands"][band]["targets"]`), checksum MD5, dan ringkasan
+        `quality`/`failed_days`.
     """
+    plan = SourcePlan(
+        source_name=MODIS_SOURCE_NAME,
+        levels=normalize_levels(processing_levels) or (PROCESSED,),
+    )
+    band_targets = plan.targets()
+    wanted_bands = plan.modis_bands()
+    logger.info(
+        "[M7] dataset_id=%s level=%s band=%s",
+        dataset_id, list(plan.levels), list(wanted_bands),
+    )
+
     raw_dir = fm.get_granule_cache_dir(dataset_id, dataset_name, "modis")
     raw_dir.mkdir(parents=True, exist_ok=True)
 
@@ -506,7 +563,6 @@ def download_modis_scene(
     for date in _daterange(date_start, date_end):
         date_key = date.strftime("%Y%m%d")
         scene_label = f"MODIS_{date_key}"
-        silver_dir = fm.ensure_scene_dir(dataset_id, dataset_name, "silver", "modis", date_key)
 
         bands: dict[str, dict] = {}
         band_errors: dict[str, str] = {}
@@ -516,11 +572,39 @@ def download_modis_scene(
             ("NDVI", MODIS_REFLECTANCE_PRODUCT),
             ("NDWI", MODIS_REFLECTANCE_PRODUCT),
         ):
-            out_path = silver_dir / band_filename(band, date_key)
+            if band not in wanted_bands:
+                continue
+
+            # Target pertama = tier tertinggi; di situlah band dibangun.
+            # Sisanya salinan (lihat _band_targets).
+            targets = _band_targets(
+                dataset_id, dataset_name, band, date_key, band_targets[band]
+            )
+            build_tier, build_level, out_path = targets[0]
+
+            def _record(entry: dict) -> dict:
+                """Lengkapi entry band dengan salinan ke target lain."""
+                written = {
+                    build_tier: {
+                        "path": str(out_path),
+                        "processing_level": build_level,
+                        "checksum_md5": entry["checksum_md5"],
+                    }
+                }
+                for tier, level, copy_path in targets[1:]:
+                    if not copy_path.exists():
+                        shutil.copy2(out_path, copy_path)
+                    written[tier] = {
+                        "path": str(copy_path),
+                        "processing_level": level,
+                        "checksum_md5": entry["checksum_md5"],
+                    }
+                entry["targets"] = written
+                return entry
 
             if out_path.exists():
                 logger.info("[M7] output sudah ada, skip: %s", out_path.name)
-                bands[band] = {
+                bands[band] = _record({
                     "band": band,
                     "product": product,
                     "path": str(out_path),
@@ -528,15 +612,15 @@ def download_modis_scene(
                     "skipped": True,
                     "degraded": False,
                     "failed_tiles": [],
-                }
+                })
                 continue
 
             try:
-                bands[band] = _build_band_for_date(
+                bands[band] = _record(_build_band_for_date(
                     band=band, product=product, date=date, date_key=date_key,
                     tiles=tiles, raw_dir=raw_dir, out_path=out_path, aoi_bbox=aoi_bbox,
                     plog=plog, dataset_id=dataset_id, scene_label=scene_label,
-                )
+                ))
             except Exception as exc:
                 logger.warning(
                     "[M7] band %s gagal tanggal %s: %s", band, date.date().isoformat(), exc
@@ -566,6 +650,10 @@ def download_modis_scene(
         degraded = bool(band_errors) or any(b.get("degraded") for b in bands.values())
         daily_outputs.append({
             "date": date.date().isoformat(),
+            # `products` = path tier tertinggi per band, dipertahankan untuk
+            # pemanggil yang cuma butuh "satu file per band". Registrasi
+            # data_products memakai `bands[band]["targets"]` supaya tiap
+            # salinan tercatat dengan tier & processing_level-nya sendiri.
             "products": {band: b["path"] for band, b in bands.items()},
             "checksums": {band: b["checksum_md5"] for band, b in bands.items()},
             "bands": bands,
@@ -576,7 +664,7 @@ def download_modis_scene(
         _plog_event(
             plog, dataset_id, scene_label, "DOWNLOAD", "COMPLETED",
             f"MODIS {date_key}: {'selesai (degraded)' if degraded else 'selesai'} "
-            f"({len(bands)}/{len(MODIS_PRODUCT_TYPES)} band)",
+            f"({len(bands)}/{len(wanted_bands)} band)",
             {
                 "date": date.date().isoformat(),
                 "bands_ok": sorted(bands), "bands_failed": sorted(band_errors),
@@ -612,7 +700,12 @@ def download_modis_scene(
     )
     metadata = {
         "product": MODIS_PRODUCT,
-        "products": [MODIS_FLOOD_PRODUCT, MODIS_REFLECTANCE_PRODUCT],
+        "products": (
+            [MODIS_FLOOD_PRODUCT, MODIS_REFLECTANCE_PRODUCT]
+            if plan.has_processed else [MODIS_FLOOD_PRODUCT]
+        ),
+        "processing_levels": list(plan.levels),
+        "bands_requested": list(wanted_bands),
         "dataset_id": dataset_id,
         "date_start": date_start.date().isoformat(),
         "date_end": date_end.date().isoformat(),

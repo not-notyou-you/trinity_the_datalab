@@ -33,4 +33,13 @@ const ICONS = {
     '<rect x="3" y="4" width="18" height="16" rx="2"/>' +
     '<circle cx="8.5" cy="9.5" r="1.5"/>' +
     '<path d="M21 15l-5-4-4.5 5L9 14l-6 5"/></svg>',
+
+  // Tombol "Pakai Config Sebelumnya": roda gigi = konfigurasi tersimpan yang
+  // dipakai ulang, bukan aksi baru.
+  gear:
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" ' +
+    'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+    '<circle cx="12" cy="12" r="3.2"/>' +
+    '<path d="M12 2.6v2.2M12 19.2v2.2M4.4 12H2.2M21.8 12h-2.2' +
+    'M6.6 6.6L5 5M19 19l-1.6-1.6M17.4 6.6L19 5M5 19l1.6-1.6"/></svg>',
 };

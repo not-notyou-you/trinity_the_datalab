@@ -29,6 +29,8 @@ from sqlalchemy import (
     create_engine,
     event,
     func,
+    null,
+    select,
     text,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, INET, JSONB, UUID
@@ -170,6 +172,240 @@ class LiveSourceNameEnum(str, PyEnum):
     SENTINEL1 = "SENTINEL1"
     MODIS = "MODIS"
     GPM = "GPM"
+
+
+class ProcessingLevelEnum(str, PyEnum):
+    """Level pemrosesan yang diminta user untuk SATU sumber.
+
+    Artinya berbeda per satelit (DOCS/DESIGN.md, tabel "What RAW vs
+    PROCESSED means per satellite"): untuk S1 RAW = kalibrasi + crop tanpa
+    Lee filter, untuk GPM RAW = curah hujan harian tanpa akumulasi. Yang
+    sama di semua sumber: RAW berhenti di BRONZE, PROCESSED lanjut ke
+    SILVER/GOLD. Berbeda dari ProductTierEnum, yang menyatakan posisi
+    artefak di lineage, bukan konfigurasi yang diminta."""
+    RAW = "RAW"
+    PROCESSED = "PROCESSED"
+
+
+class FusionStrategyEnum(str, PyEnum):
+    CO_OCCURRENCE = "CO_OCCURRENCE"
+    FULL_COVERAGE = "FULL_COVERAGE"
+    HYBRID = "HYBRID"
+
+
+class PreviewOptionEnum(str, PyEnum):
+    GRAYSCALE = "GRAYSCALE"
+    COLORED = "COLORED"
+    COMPOSITE = "COMPOSITE"
+
+
+class DatasetSourceNameEnum(str, PyEnum):
+    """Sumber yang bisa dikonfigurasi per dataset.
+
+    Terpisah dari ProductSourceEnum (yang punya FUSION -- hasil, bukan
+    sumber yang bisa dipilih) dan dari LiveSourceNameEnum (sakelar ingest
+    live global, tabel lain). Nilainya sengaja dijaga sama dengan CHECK
+    chk_source_config_source_name di migrasi 017."""
+    SENTINEL1 = "SENTINEL1"
+    MODIS = "MODIS"
+    GPM = "GPM"
+
+
+# Urutan kanonik sumber. Dipakai untuk mengurutkan hasil query dan payload
+# API supaya stabil (S1 dulu: dia yang menjadi jangkar tanggal fusi).
+SOURCE_NAME_ORDER: tuple[str, ...] = (
+    DatasetSourceNameEnum.SENTINEL1.value,
+    DatasetSourceNameEnum.MODIS.value,
+    DatasetSourceNameEnum.GPM.value,
+)
+
+# API memakai key huruf kecil ("sentinel1"), database memakai huruf besar
+# ("SENTINEL1") -- lihat DOCS/API.md bagian "Create Dataset". Pemetaan ada di
+# satu tempat supaya tidak ada .upper()/.lower() yang tersebar.
+API_KEY_TO_SOURCE_NAME: dict[str, str] = {name.lower(): name for name in SOURCE_NAME_ORDER}
+SOURCE_NAME_TO_API_KEY: dict[str, str] = {name: name.lower() for name in SOURCE_NAME_ORDER}
+
+
+def normalize_source_configs(sources: dict) -> dict[str, list[str]]:
+    """Ubah objek `sources` gaya API menjadi {SOURCE_NAME: [levels]}.
+
+    Menerima dua bentuk supaya pemanggil internal (ETL, tes) tidak perlu
+    membungkus levels dalam dict:
+        {"sentinel1": {"processing": ["RAW", "PROCESSED"]}}   <- payload API
+        {"SENTINEL1": ["RAW", "PROCESSED"]}                   <- bentuk ringkas
+
+    Validasi di sini bersifat fail-fast: ValueError dilempar SEBELUM ada
+    satu pun baris ditulis, jadi payload yang salah tidak pernah membuka
+    transaksi. CHECK constraint di database tetap ada sebagai jaring
+    pengaman untuk penulis lain (SQL mentah, ORM langsung).
+
+    Raises:
+        ValueError: sources kosong, nama sumber tidak dikenal, level tidak
+            dikenal, atau daftar level kosong.
+    """
+    if not isinstance(sources, dict) or not sources:
+        raise ValueError("sources wajib berisi minimal 1 sumber")
+
+    valid_levels = {level.value for level in ProcessingLevelEnum}
+    normalized: dict[str, list[str]] = {}
+
+    for raw_key, raw_value in sources.items():
+        key = str(raw_key).strip()
+        source_name = API_KEY_TO_SOURCE_NAME.get(key.lower())
+        if source_name is None:
+            raise ValueError(
+                f"source tidak dikenal: {raw_key!r} "
+                f"(pilihan: {', '.join(sorted(API_KEY_TO_SOURCE_NAME))})"
+            )
+        if source_name in normalized:
+            raise ValueError(f"source ganda dalam payload: {source_name}")
+
+        if isinstance(raw_value, dict):
+            levels = raw_value.get("processing")
+        else:
+            levels = raw_value
+        if isinstance(levels, str):
+            levels = [levels]
+        if not levels:
+            raise ValueError(
+                f"sources.{SOURCE_NAME_TO_API_KEY[source_name]}.processing "
+                "must contain at least one value"
+            )
+
+        seen: list[str] = []
+        for raw_level in levels:
+            level = str(raw_level).strip().upper()
+            if level not in valid_levels:
+                raise ValueError(
+                    f"processing level tidak dikenal untuk "
+                    f"{SOURCE_NAME_TO_API_KEY[source_name]}: {raw_level!r} "
+                    f"(pilihan: {', '.join(sorted(valid_levels))})"
+                )
+            if level not in seen:      # duplikat dibuang, bukan ditolak
+                seen.append(level)
+        # Urutan level dinormalkan supaya dua payload yang setara menghasilkan
+        # baris yang identik -- perbandingan array di SQL peka urutan.
+        normalized[source_name] = [
+            lv.value for lv in ProcessingLevelEnum if lv.value in seen
+        ]
+
+    # Diurutkan, bukan difilter: nama di luar SOURCE_NAME_ORDER tidak boleh
+    # hilang diam-diam dari hasil. Nama seperti itu tidak bisa lolos dari loop
+    # di atas hari ini, tapi kalau daftar sumber dan urutannya sempat
+    # berbeda, membuang baris tanpa suara akan membuat dataset dibuat dengan
+    # sumber yang lebih sedikit dari yang diminta user.
+    return dict(sorted(
+        normalized.items(),
+        key=lambda item: SOURCE_NAME_ORDER.index(item[0])
+        if item[0] in SOURCE_NAME_ORDER else len(SOURCE_NAME_ORDER),
+    ))
+
+
+def source_configs_to_api(configs: "list[DatasetSourceConfig]") -> dict[str, dict]:
+    """Bentuk objek `sources` gaya API dari baris dataset_source_config."""
+    ordered = sorted(
+        configs,
+        key=lambda c: SOURCE_NAME_ORDER.index(c.source_name)
+        if c.source_name in SOURCE_NAME_ORDER else len(SOURCE_NAME_ORDER),
+    )
+    return {
+        SOURCE_NAME_TO_API_KEY.get(c.source_name, c.source_name.lower()):
+            {"processing": list(c.processing_levels or [])}
+        for c in ordered
+    }
+
+
+# Tier yang dihasilkan tiap processing level. RAW dan BRONZE muncul di
+# keduanya: download selalu menghasilkan artefak RAW, dan crop/kalibrasi
+# selalu menghasilkan BRONZE. Yang membedakan adalah lanjutan ke SILVER/GOLD.
+# Urutannya mengikuti TIER_ORDER di etl/dataset_manager.py -- keduanya harus
+# sepakat, karena compute_max_tier() di sana mengindeks daftar ini.
+_TIERS_BY_LEVEL: dict[str, tuple[str, ...]] = {
+    ProcessingLevelEnum.RAW.value: ("RAW", "BRONZE"),
+    ProcessingLevelEnum.PROCESSED.value: ("RAW", "BRONZE", "SILVER", "GOLD"),
+}
+_TIER_SORT_ORDER = ("RAW", "BRONZE", "SILVER", "GOLD", "FUSION")
+
+
+def derive_required_tiers(
+    configs: dict[str, list[str]], with_fusion: bool = False
+) -> list[str]:
+    """Turunkan `datasets.required_tiers` dari konfigurasi per-sumber.
+
+    `required_tiers` bukan lagi input user (DOCS/PROTOTYPE_CHANGELOG.md:
+    "`tiers` is no longer user-facing -- derived internally"), tapi kolomnya
+    NOT NULL dan masih dipakai orchestrator untuk memutuskan tahap mana yang
+    dilewati. Fungsi ini yang menjembatani keduanya.
+
+    FUSION hanya ikut kalau ada strategi fusi DAN ada sumber yang PROCESSED:
+    fusi menyusun stack dari artefak GOLD, jadi dataset yang semua sumbernya
+    RAW-only tidak punya bahan untuk difusikan.
+    """
+    tiers: set[str] = set()
+    for levels in configs.values():
+        for level in levels:
+            tiers.update(_TIERS_BY_LEVEL.get(level, ()))
+    if with_fusion and "GOLD" in tiers:
+        tiers.add("FUSION")
+    return [tier for tier in _TIER_SORT_ORDER if tier in tiers]
+
+
+def _validate_fusion_strategy(value, source_count: int) -> "str | None":
+    """Validasi fusion_strategy terhadap jumlah sumber yang dikonfigurasi.
+
+    Aturannya (DOCS/API.md, bagian Validation) tidak bisa jadi CHECK
+    constraint: jumlah sumber ada di tabel lain, dan CHECK tidak boleh
+    membaca tabel lain. Jadi di sinilah aturan itu ditegakkan.
+
+    Returns:
+        Strategi dalam huruf besar, atau None untuk dataset satu sumber.
+
+    Raises:
+        ValueError: strategi tidak dikenal, hilang padahal sumbernya >1, atau
+            terisi padahal sumbernya cuma 1.
+    """
+    strategy = None if value is None else str(value).strip().upper()
+    if strategy == "":
+        strategy = None
+
+    if source_count > 1:
+        if strategy is None:
+            raise ValueError("fusion_strategy required when multiple sources configured")
+    elif strategy is not None:
+        raise ValueError("fusion_strategy must be null when only 1 source configured")
+
+    valid = {s.value for s in FusionStrategyEnum}
+    if strategy is not None and strategy not in valid:
+        raise ValueError(
+            f"fusion_strategy tidak dikenal: {value!r} (pilihan: {', '.join(sorted(valid))})"
+        )
+    return strategy
+
+
+def _validate_preview_options(value) -> list[str]:
+    """Normalkan preview_options. None -> semua varian, [] -> tidak ada.
+
+    None dan [] sengaja DIBEDAKAN: None berarti "user tidak menyebutkan"
+    (pakai default kolom, yaitu ketiga varian), [] berarti "user sengaja
+    tidak mau preview apa pun". Kalau keduanya disamakan, mematikan preview
+    jadi mustahil lewat jalur ini.
+    """
+    if value is None:
+        return [opt.value for opt in PreviewOptionEnum]
+    if isinstance(value, str):
+        value = [value]
+
+    valid = {opt.value for opt in PreviewOptionEnum}
+    seen: list[str] = []
+    for raw in value:
+        option = str(raw).strip().upper()
+        if option not in valid:
+            raise ValueError(
+                f"preview option tidak dikenal: {raw!r} (pilihan: {', '.join(sorted(valid))})"
+            )
+        if option not in seen:
+            seen.append(option)
+    return [opt.value for opt in PreviewOptionEnum if opt.value in seen]
 
 
 class Base(DeclarativeBase):
@@ -319,6 +555,16 @@ class ProcessingJob(Base):
 
 class DataProduct(Base):
     __tablename__ = "data_products"
+    __table_args__ = (
+        # Dicerminkan dari chk_dprods_processing_level (migrasi 017) supaya
+        # database uji hasil create_all menegakkan aturan yang sama dengan
+        # produksi.
+        CheckConstraint(
+            "processing_level IS NULL OR processing_level IN ('RAW', 'PROCESSED')",
+            name="chk_dprods_processing_level",
+        ),
+        Index("idx_dprods_dataset_level", "dataset_id", "processing_level"),
+    )
     product_id = Column(BigInteger, primary_key=True, autoincrement=True)
     product_uuid = Column(UUID(as_uuid=True), nullable=False, unique=True,
                            server_default=text("uuid_generate_v4()"))
@@ -332,8 +578,21 @@ class DataProduct(Base):
         nullable=False
     )
     source = Column(String(20), nullable=False, default=ProductSourceEnum.SENTINEL1.value)
+    # Berbeda dari product_tier: tier adalah posisi artefak di lineage,
+    # processing_level adalah level yang diminta user untuk sumbernya di
+    # dataset_source_config (migrasi 017). NULL hanya untuk baris warisan.
+    processing_level = Column(
+        String(20), nullable=True,
+        server_default=text("'PROCESSED'"),
+        default=ProcessingLevelEnum.PROCESSED.value,
+    )
     product_type = Column(String(50), nullable=False)
-    band_name = Column(String(10), nullable=False)
+    # VARCHAR(20), bukan (10) seperti quality_metrics: produk tier FUSION
+    # menamai band-nya per level ("FUSION_PROCESSED", 16 karakter) supaya dua
+    # stack tanggal yang sama tidak saling menandai usang lewat dedup
+    # is_latest, yang berjalan atas (scene_id, band_name, tier, dataset_id).
+    # Lihat migrasi 018.
+    band_name = Column(String(20), nullable=False)
     file_name = Column(String(255), nullable=False)
     file_path = Column(Text, nullable=False)
     file_size_mb = Column(Numeric(12, 3), nullable=False)
@@ -549,6 +808,20 @@ class DatasetVersion(Base):
 
 class Dataset(Base):
     __tablename__ = "datasets"
+    # CATATAN MODEL LAMA: `selected_satellites` dan `processing_level` tidak
+    # pernah ada di tabel ini (lihat migrasi 004), jadi tidak ada yang perlu
+    # dihapus dari pemetaan ini. Konfigurasi per-satelit tinggal di
+    # DatasetSourceConfig -- satu baris per (dataset, sumber), karena tiap
+    # pasangan punya atributnya sendiri (processing_levels). Migrasi 017 tetap
+    # men-DROP kedua kolom itu secara defensif untuk database yang pernah
+    # ditambal manual.
+    __table_args__ = (
+        CheckConstraint(
+            "fusion_strategy IS NULL OR fusion_strategy IN "
+            "('CO_OCCURRENCE', 'FULL_COVERAGE', 'HYBRID')",
+            name="chk_datasets_fusion_strategy",
+        ),
+    )
     dataset_id = Column(Integer, primary_key=True, autoincrement=True)
     dataset_uuid = Column(UUID(as_uuid=True), nullable=False, unique=True,
                            server_default=text("uuid_generate_v4()"))
@@ -560,7 +833,18 @@ class Dataset(Base):
     bbox_wkt = Column(Text, nullable=False)
     date_start = Column(Date, nullable=False)
     date_end = Column(Date, nullable=False)
+    # Diturunkan dari source_configs, bukan diisi user (DOCS/DESIGN.md).
     required_tiers = Column(ARRAY(String), nullable=False)
+    # NULL = dataset satu sumber, tidak ada yang perlu difusikan. Aturan
+    # "harus NULL kalau sumbernya cuma 1" tidak bisa jadi CHECK (jumlah sumber
+    # ada di tabel lain), jadi ditegakkan di create_dataset_with_sources().
+    fusion_strategy = Column(String(20), server_default=text("'FULL_COVERAGE'"))
+    # Varian PNG yang dirender tahap PREVIEW. Array kosong = tidak ada varian;
+    # sakelar on/off tahapnya tetap `generate_preview` di bawah.
+    preview_options = Column(
+        ARRAY(Text),
+        server_default=text("ARRAY['GRAYSCALE', 'COLORED', 'COMPOSITE']::TEXT[]"),
+    )
     quality_settings = Column(JSONB, nullable=False, default={})
     dataset_kind = Column(String(10), nullable=False, default="STANDARD")
     status = Column(String(20), nullable=False, default="DRAFT")
@@ -583,9 +867,93 @@ class Dataset(Base):
     region = relationship("RegionOfInterest", back_populates="datasets")
     jobs = relationship("DatasetJob", back_populates="dataset", cascade="all, delete-orphan")
     products = relationship("DataProduct", back_populates="dataset")
+    # delete-orphan: baris konfigurasi tidak punya arti tanpa datasetnya.
+    # ON DELETE CASCADE di database menangani DELETE lewat SQL mentah; cascade
+    # ORM ini menangani jalur session (sess.delete(dataset), atau mencabut satu
+    # config dari koleksi). Keduanya perlu -- yang satu tidak menggantikan yang
+    # lain. lazy="selectin": pemanggil hampir selalu butuh configs bersama
+    # datasetnya (kartu dataset, detail, ETL), dan lazy default akan meledak
+    # jadi N+1 query di list_datasets.
+    source_configs = relationship(
+        "DatasetSourceConfig",
+        back_populates="dataset",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+        order_by="DatasetSourceConfig.config_id",
+    )
 
     def __repr__(self) -> str:
         return f"<Dataset id={self.dataset_id} name={self.name} kind={self.dataset_kind} status={self.status}>"
+
+
+class DatasetSourceConfig(Base):
+    """Konfigurasi pemrosesan per-satelit untuk sebuah dataset.
+
+    Satu baris per (dataset, sumber). ETL membaca tabel ini untuk menentukan
+    sumber mana yang dijalankan dan sampai level apa (DOCS/ETL.md). Constraint
+    di __table_args__ sengaja dicerminkan dari migrasi 017 supaya database uji
+    yang dibuat lewat Base.metadata.create_all() menegakkan aturan yang sama
+    dengan produksi -- tanpa itu, tes tidak akan pernah melihat kegagalan CHECK
+    yang di produksi menjaga integritas.
+    """
+
+    __tablename__ = "dataset_source_config"
+    __table_args__ = (
+        UniqueConstraint("dataset_id", "source_name",
+                          name="uq_source_config_dataset_source"),
+        # array_length() atas array kosong mengembalikan NULL, bukan 0 --
+        # karena itu IS NOT NULL, bukan cuma > 0.
+        CheckConstraint(
+            "array_length(processing_levels, 1) IS NOT NULL "
+            "AND array_length(processing_levels, 1) > 0",
+            name="chk_source_config_levels_not_empty",
+        ),
+        CheckConstraint(
+            "processing_levels <@ ARRAY['RAW', 'PROCESSED']::TEXT[]",
+            name="chk_source_config_levels_valid",
+        ),
+        CheckConstraint(
+            "source_name IN ('SENTINEL1', 'MODIS', 'GPM')",
+            name="chk_source_config_source_name",
+        ),
+        Index("idx_source_config_dataset", "dataset_id"),
+    )
+
+    config_id = Column(Integer, primary_key=True, autoincrement=True)
+    dataset_id = Column(Integer, ForeignKey("datasets.dataset_id", ondelete="CASCADE"),
+                         nullable=False)
+    source_name = Column(String(20), nullable=False)
+    # TEXT[], bukan JSON: nilainya terbatas dan di-CHECK di database.
+    processing_levels = Column(
+        ARRAY(Text), nullable=False,
+        server_default=text("ARRAY['PROCESSED']::TEXT[]"),
+    )
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=text("NOW()"))
+    updated_at = Column(DateTime(timezone=True), nullable=False, server_default=text("NOW()"))
+
+    dataset = relationship("Dataset", back_populates="source_configs")
+
+    @property
+    def api_key(self) -> str:
+        """Nama sumber dalam ejaan API ("sentinel1"), lihat DOCS/API.md."""
+        return SOURCE_NAME_TO_API_KEY.get(self.source_name, self.source_name.lower())
+
+    def has_level(self, level: str) -> bool:
+        """True kalau sumber ini diminta diproses sampai `level`."""
+        return str(level).upper() in set(self.processing_levels or [])
+
+    def to_dict(self) -> dict:
+        return {
+            "config_id": self.config_id,
+            "dataset_id": self.dataset_id,
+            "source": self.api_key,
+            "source_name": self.source_name,
+            "processing": list(self.processing_levels or []),
+        }
+
+    def __repr__(self) -> str:
+        return (f"<DatasetSourceConfig id={self.config_id} dataset={self.dataset_id} "
+                f"source={self.source_name} levels={list(self.processing_levels or [])}>")
 
 
 class DatasetJob(Base):
@@ -826,6 +1194,212 @@ class DatabaseClient:
         Base.metadata.create_all(self._engine)
         logger.info("All ORM tables created (or already exist)")
 
+    # -----------------------------------------------------------------------
+    # Konfigurasi per-satelit (dataset_source_config)
+    # -----------------------------------------------------------------------
+    # Objek yang dikembalikan di bawah sudah lepas dari session (detached).
+    # Itu aman karena sessionmaker di kelas ini memakai expire_on_commit=False:
+    # atribut yang sudah dimuat tetap terbaca setelah session ditutup. Relasi
+    # yang belum dimuat TIDAK bisa di-lazy-load setelahnya, jadi apa pun yang
+    # perlu dibaca pemanggil harus dimuat di dalam blok session (lihat
+    # lazy="selectin" pada Dataset.source_configs).
+
+    def get_dataset_source_config(
+        self, dataset_id: int, source_name: str
+    ) -> "DatasetSourceConfig | None":
+        """Ambil satu baris konfigurasi untuk (dataset, sumber).
+
+        `source_name` menerima ejaan API maupun database ("sentinel1" atau
+        "SENTINEL1"). Nama yang tidak dikenal mengembalikan None, bukan
+        melempar: pemanggilnya adalah ETL yang bertanya "apakah sumber ini
+        dikonfigurasi?" dan untuk nama asing jawabannya memang "tidak".
+        """
+        canonical = API_KEY_TO_SOURCE_NAME.get(str(source_name).strip().lower())
+        if canonical is None:
+            logger.debug("get_dataset_source_config: source tidak dikenal %r", source_name)
+            return None
+        with self.session() as sess:
+            return sess.scalar(
+                select(DatasetSourceConfig).where(
+                    DatasetSourceConfig.dataset_id == dataset_id,
+                    DatasetSourceConfig.source_name == canonical,
+                )
+            )
+
+    def list_dataset_source_configs(self, dataset_id: int) -> "list[DatasetSourceConfig]":
+        """Semua konfigurasi sumber sebuah dataset, urut S1 -> MODIS -> GPM."""
+        with self.session() as sess:
+            rows = list(sess.scalars(
+                select(DatasetSourceConfig).where(
+                    DatasetSourceConfig.dataset_id == dataset_id
+                )
+            ))
+        return sorted(
+            rows,
+            key=lambda c: SOURCE_NAME_ORDER.index(c.source_name)
+            if c.source_name in SOURCE_NAME_ORDER else len(SOURCE_NAME_ORDER),
+        )
+
+    def upsert_dataset_source_config(
+        self, dataset_id: int, source_name: str, processing_levels
+    ) -> "DatasetSourceConfig":
+        """Buat atau perbarui konfigurasi satu sumber.
+
+        Dipakai jalur edit: mengubah level satu satelit tanpa menyentuh yang
+        lain. Validasinya memakai normalize_source_configs() yang sama dengan
+        jalur create, jadi tidak ada aturan yang cuma berlaku di satu jalur.
+
+        Raises:
+            ValueError: nama sumber atau level tidak dikenal, atau daftar
+                level kosong.
+        """
+        normalized = normalize_source_configs({source_name: processing_levels})
+        canonical, levels = next(iter(normalized.items()))
+        with self.session() as sess:
+            row = sess.scalar(
+                select(DatasetSourceConfig).where(
+                    DatasetSourceConfig.dataset_id == dataset_id,
+                    DatasetSourceConfig.source_name == canonical,
+                )
+            )
+            if row is None:
+                row = DatasetSourceConfig(
+                    dataset_id=dataset_id,
+                    source_name=canonical,
+                    processing_levels=levels,
+                )
+                sess.add(row)
+            else:
+                row.processing_levels = levels
+                row.updated_at = func.now()
+            sess.flush()
+        logger.info("[SOURCE_CONFIG] dataset_id=%s %s -> %s", dataset_id, canonical, levels)
+        return row
+
+    def create_dataset_with_sources(
+        self, dataset_dict: dict, sources_dict: dict
+    ) -> "Dataset":
+        """Buat dataset beserta konfigurasi per-satelitnya dalam SATU transaksi.
+
+        Dataset tanpa baris dataset_source_config adalah dataset yang tidak
+        bisa diproses ETL -- tidak ada satu pun sumber yang dinyatakan. Karena
+        itu keduanya harus jadi atau tidak sama sekali: satu session, satu
+        commit. Kalau langkah mana pun gagal, session() melakukan rollback dan
+        tidak ada baris `datasets` yatim yang tertinggal.
+
+        Args:
+            dataset_dict: kolom tabel `datasets`. `required_tiers`,
+                `fusion_strategy`, dan `preview_options` opsional --
+                required_tiers diturunkan dari sources kalau tidak diisi.
+            sources_dict: objek `sources` gaya API, mis.
+                {"sentinel1": {"processing": ["RAW", "PROCESSED"]},
+                 "modis": {"processing": ["PROCESSED"]}}
+
+        Returns:
+            Dataset yang sudah tersimpan, dengan `source_configs` terisi.
+
+        Raises:
+            ValueError: sources kosong/tidak valid, kolom dataset tidak
+                dikenal, fusion_strategy tidak sesuai jumlah sumber, atau
+                preview_options tidak dikenal.
+        """
+        # Semua validasi selesai SEBELUM session dibuka: payload yang salah
+        # tidak perlu menyentuh database sama sekali. CHECK constraint di
+        # database tetap ada sebagai jaring pengaman untuk penulis lain.
+        configs = normalize_source_configs(sources_dict)
+
+        payload = dict(dataset_dict or {})
+        unknown = set(payload) - set(Dataset.__table__.columns.keys())
+        if unknown:
+            raise ValueError(f"kolom dataset tidak dikenal: {sorted(unknown)}")
+
+        fusion_strategy = _validate_fusion_strategy(
+            payload.get("fusion_strategy"), source_count=len(configs)
+        )
+        # null(), bukan None: kolomnya punya server_default 'FULL_COVERAGE',
+        # dan SQLAlchemy tidak bisa membedakan "diisi None" dari "tidak diisi"
+        # -- keduanya membuat kolom dihilangkan dari INSERT sehingga server
+        # default yang terpakai. Dataset satu sumber akan berakhir punya
+        # strategi fusi yang tidak pernah diminta. null() memaksa NULL eksplisit.
+        payload["fusion_strategy"] = fusion_strategy if fusion_strategy is not None else null()
+        payload["preview_options"] = _validate_preview_options(
+            payload.get("preview_options")
+        )
+        if not payload.get("required_tiers"):
+            payload["required_tiers"] = derive_required_tiers(
+                configs, with_fusion=fusion_strategy is not None
+            )
+
+        with self.session() as sess:
+            dataset = Dataset(**payload)
+            # Baris config ditempel lewat relasi, bukan INSERT terpisah:
+            # SQLAlchemy yang mengisi dataset_id-nya setelah flush, jadi tidak
+            # ada jendela di mana dataset sudah ada tapi configs belum.
+            dataset.source_configs = [
+                DatasetSourceConfig(source_name=name, processing_levels=levels)
+                for name, levels in configs.items()
+            ]
+            sess.add(dataset)
+            sess.flush()
+            # refresh: tarik nilai yang diisi server (dataset_uuid, created_at,
+            # dan fusion_strategy yang tadi dikirim sebagai null()) supaya objek
+            # yang dikembalikan -- yang lepas dari session dan tidak bisa
+            # lazy-load lagi -- membawa isi baris yang sebenarnya, bukan
+            # placeholder SQL.
+            sess.refresh(dataset)
+            dataset_id = dataset.dataset_id
+        logger.info(
+            "[DATASET] created dataset_id=%s sources=%s fusion=%s tiers=%s",
+            dataset_id, configs, fusion_strategy, payload["required_tiers"],
+        )
+        return dataset
+
+    def get_last_dataset_config(self) -> dict:
+        """Konfigurasi dataset terakhir yang dibuat, untuk tombol "Pakai Config
+        Sebelumnya" (DOCS/DECISIONS.md D13, DOCS/API.md GET
+        /api/datasets/last-config).
+
+        Sengaja HANYA mengembalikan field konfigurasi -- bukan `name` atau
+        rentang tanggal. Itu keputusan produk: user harus sadar mengisi ulang
+        nama dan tanggal supaya tidak tanpa sengaja menduplikasi dataset.
+
+        Dataset yang sudah di-soft-delete dilewati: config yang dikembalikan
+        harus mencerminkan sesuatu yang masih dianggap ada oleh user.
+
+        Returns:
+            dict berisi region_id, region_name, sources, fusion_strategy,
+            preview_options, created_from_dataset_id, created_at. Dict KOSONG
+            kalau belum ada dataset sama sekali -- route API menerjemahkannya
+            jadi 404.
+        """
+        with self.session() as sess:
+            dataset = sess.scalar(
+                select(Dataset)
+                .where(Dataset.deleted_at.is_(None))
+                # dataset_id sebagai pemecah seri: dua dataset bisa dibuat pada
+                # timestamp yang sama, dan "terakhir" harus deterministik.
+                .order_by(Dataset.created_at.desc(), Dataset.dataset_id.desc())
+                .limit(1)
+            )
+            if dataset is None:
+                return {}
+            region_name = None
+            if dataset.region_id is not None:
+                region_name = sess.scalar(
+                    select(RegionOfInterest.name).where(
+                        RegionOfInterest.region_id == dataset.region_id
+                    )
+                )
+            return {
+                "region_id": dataset.region_id,
+                "region_name": region_name,
+                "sources": source_configs_to_api(list(dataset.source_configs)),
+                "fusion_strategy": dataset.fusion_strategy,
+                "preview_options": list(dataset.preview_options or []),
+                "created_from_dataset_id": dataset.dataset_id,
+                "created_at": dataset.created_at,
+            }
+
     def dispose(self) -> None:
         self._engine.dispose()
         logger.info("DatabaseClient disposed. All connections closed.")
@@ -836,7 +1410,15 @@ class FusionProduct(Base):
 
     __tablename__ = "fusion_products"
     __table_args__ = (
-        UniqueConstraint("feature_date", "region_id", name="uq_fusion_date_region"),
+        # processing_level ikut kunci unik: dataset yang meminta sebuah sumber
+        # RAW **dan** PROCESSED menghasilkan DUA stack untuk tanggal yang sama
+        # (DOCS/ETL.md, "Which input tier does fusion use?"). Dengan kunci lama
+        # (feature_date, region_id) stack kedua akan menimpa yang pertama dan
+        # ablation study-nya kehilangan salah satu sisi perbandingan.
+        UniqueConstraint(
+            "feature_date", "region_id", "processing_level",
+            name="uq_fusion_date_region_level",
+        ),
     )
 
     fusion_id          = Column(BigInteger, primary_key=True, autoincrement=True)
@@ -851,7 +1433,17 @@ class FusionProduct(Base):
                                                         ondelete="SET NULL"))
     days_since_s1      = Column(Integer, nullable=False)
     feature_stack_path = Column(Text, nullable=False)
+    # Kolom metadata fusi (migrasi 017). Sebelumnya ada di database tapi tidak
+    # di model ini, jadi ORM tidak bisa membaca/menulisnya sama sekali.
+    fusion_strategy    = Column(String(20))
+    # RAW | PROCESSED -- level input yang dipakai stack ini, bukan tier-nya.
+    processing_level   = Column(String(20), server_default=text("'PROCESSED'"))
+    temporal_offset_modis = Column(Integer)
+    temporal_offset_gpm   = Column(Integer)
     created_at         = Column(DateTime(timezone=True), nullable=False, server_default=text("NOW()"))
 
     def __repr__(self) -> str:
-        return f"<FusionProduct id={self.fusion_id} date={self.feature_date} path={self.feature_stack_path}>"
+        return (
+            f"<FusionProduct id={self.fusion_id} date={self.feature_date} "
+            f"level={self.processing_level} path={self.feature_stack_path}>"
+        )

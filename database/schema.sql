@@ -243,11 +243,18 @@ CREATE TABLE IF NOT EXISTS data_products (
     cols               INTEGER,
     band_count         SMALLINT            NOT NULL DEFAULT 1,
     storage_location   storage_location_enum NOT NULL DEFAULT 'LOCAL',
+    -- Level pemrosesan yang diminta user untuk sumber ini (migrasi 017).
+    -- Berbeda dari product_tier: tier = posisi di lineage, processing_level =
+    -- konfigurasi per-satelit di dataset_source_config yang memproduksinya.
+    processing_level   VARCHAR(20)         DEFAULT 'PROCESSED',
     is_valid           BOOLEAN             NOT NULL DEFAULT TRUE,
     is_latest          BOOLEAN             NOT NULL DEFAULT TRUE,
     created_at         TIMESTAMPTZ         NOT NULL DEFAULT NOW(),
     updated_at         TIMESTAMPTZ         NOT NULL DEFAULT NOW(),
-    CONSTRAINT chk_dprods_source CHECK (source IN ('SENTINEL1', 'MODIS', 'GPM', 'FUSION'))
+    CONSTRAINT chk_dprods_source CHECK (source IN ('SENTINEL1', 'MODIS', 'GPM', 'FUSION')),
+    CONSTRAINT chk_dprods_processing_level CHECK (
+        processing_level IS NULL OR processing_level IN ('RAW', 'PROCESSED')
+    )
 );
 
 CREATE INDEX IF NOT EXISTS idx_dprods_scene_id    ON data_products (scene_id);
@@ -257,11 +264,14 @@ CREATE INDEX IF NOT EXISTS idx_dprods_hash        ON data_products (data_hash_sh
 CREATE INDEX IF NOT EXISTS idx_dprods_latest      ON data_products (is_latest, product_tier) WHERE is_latest = TRUE;
 CREATE INDEX IF NOT EXISTS idx_dprods_created_at  ON data_products (created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_dprods_tier_source ON data_products (product_tier, source);
-CREATE INDEX IF NOT EXISTS idx_dprods_dataset_tier_source ON data_products (dataset_id, product_tier, source) WHERE is_latest = TRUE;
+-- idx_dprods_dataset_tier_source dipindah ke bagian "MODEL PEMROSESAN
+-- PER-SATELIT" di akhir berkas: kolomnya (dataset_id) baru ada setelah
+-- migrasi 004, jadi di posisi ini statement-nya selalu gagal.
 
 COMMENT ON TABLE  data_products IS 'Output artifact registry. Tracks every file produced by each ETL stage (COG, filtered TIFF, etc.).';
 COMMENT ON COLUMN data_products.data_hash_sha256 IS 'SHA-256 hash of file content. Used for deduplication and integrity validation.';
 COMMENT ON COLUMN data_products.product_tier IS 'Lakehouse tier: RAW (original), BRONZE (cropped ke AOI), SILVER (processed per-source), GOLD (analysis-ready per-source COG), FUSION (HDF5 multi-modal gabungan).';
+COMMENT ON COLUMN data_products.processing_level IS 'Level pemrosesan yang menghasilkan artefak ini (RAW | PROCESSED). RAW berhenti di BRONZE; PROCESSED lanjut ke SILVER/GOLD. NULL hanya untuk baris warisan sebelum migrasi 017.';
 COMMENT ON COLUMN data_products.source IS 'Sensor asal produk: SENTINEL1 | MODIS | GPM, atau FUSION untuk stack gabungan. Sama dengan level {source} di path on-disk (etl/folder_manager.py).';
 
 -- =============================================================================
@@ -643,6 +653,111 @@ JOIN processing_stages ps ON ps.stage_id = pj.stage_id
 ORDER BY ss.acquisition_datetime DESC, ps.stage_order;
 
 COMMENT ON VIEW vw_pipeline_status IS 'Full ETL pipeline execution status per scene × stage.';
+
+-- =============================================================================
+-- MODEL PEMROSESAN PER-SATELIT (migrasi 017)
+-- =============================================================================
+-- Bagian ini bergantung pada tabel `datasets` (migrasi 004) dan
+-- `fusion_products` (migrasi 003), yang TIDAK didefinisikan di berkas ini --
+-- berkas ini hanya memuat 11 tabel master dasar dan dijalankan sebagai
+-- docker-entrypoint-initdb.d/01_schema.sql pada database yang masih kosong.
+--
+-- Karena itu seluruh bagian ini dibungkus penjaga to_regclass: pada instalasi
+-- baru (datasets belum ada) bagian ini dilewati tanpa error, lalu migrasi
+-- 003/004/017 yang membuatnya. Pada database yang sudah dimigrasi, bagian ini
+-- idempoten dan aman dijalankan ulang.
+--
+-- Definisinya identik dengan 017_add_dataset_source_config.sql; yang ini ada
+-- supaya schema.sql tetap menjadi gambaran skema yang utuh dan terbaca.
+
+DO $$
+BEGIN
+    IF to_regclass('public.datasets') IS NULL THEN
+        RAISE NOTICE 'Lewati bagian per-satelit: tabel datasets belum ada (jalankan database/migrations/003, 004, lalu 017).';
+        RETURN;
+    END IF;
+
+    -- -----------------------------------------------------------------------
+    -- dataset_source_config -- konfigurasi pemrosesan per (dataset, satelit)
+    -- -----------------------------------------------------------------------
+    -- Junction table, bukan kolom array di datasets: relasi dataset:sumber
+    -- adalah 1:N DAN tiap pasangan punya atributnya sendiri
+    -- (processing_levels), yang tidak bisa dibawa sebuah array tanpa berubah
+    -- jadi JSON tanpa constraint.
+    CREATE TABLE IF NOT EXISTS dataset_source_config (
+        config_id          SERIAL       PRIMARY KEY,
+        dataset_id         INTEGER      NOT NULL
+                           REFERENCES datasets(dataset_id) ON DELETE CASCADE,
+        source_name        VARCHAR(20)  NOT NULL,   -- SENTINEL1 | MODIS | GPM
+        processing_levels  TEXT[]       NOT NULL DEFAULT ARRAY['PROCESSED']::TEXT[],
+        created_at         TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+        updated_at         TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_source_config_dataset
+        ON dataset_source_config (dataset_id);
+
+    -- -----------------------------------------------------------------------
+    -- Kolom per-satelit di tabel yang dibuat migrasi lain
+    -- -----------------------------------------------------------------------
+    -- CATATAN: `selected_satellites` dan `datasets.processing_level` dari
+    -- model lama tidak pernah ada di skema ini (lihat migrasi 004), jadi tidak
+    -- ada yang perlu dihapus di sini. Migrasi 017 tetap men-DROP-nya secara
+    -- defensif untuk database yang pernah ditambal manual.
+    ALTER TABLE datasets
+        ADD COLUMN IF NOT EXISTS fusion_strategy VARCHAR(20) DEFAULT 'FULL_COVERAGE',
+        ADD COLUMN IF NOT EXISTS preview_options TEXT[]
+            DEFAULT ARRAY['GRAYSCALE', 'COLORED', 'COMPOSITE']::TEXT[];
+
+    ALTER TABLE fusion_products
+        ADD COLUMN IF NOT EXISTS fusion_strategy       VARCHAR(20) DEFAULT 'FULL_COVERAGE',
+        ADD COLUMN IF NOT EXISTS processing_level      VARCHAR(20) DEFAULT 'PROCESSED',
+        ADD COLUMN IF NOT EXISTS temporal_offset_modis INTEGER,
+        ADD COLUMN IF NOT EXISTS temporal_offset_gpm   INTEGER;
+
+    -- Migrasi 018: satu stack fusion per (tanggal, region, LEVEL). Sumber yang
+    -- diminta RAW + PROCESSED menghasilkan dua stack sehari; kunci tanpa level
+    -- membuat yang kedua menimpa yang pertama.
+    UPDATE fusion_products SET processing_level = 'PROCESSED'
+    WHERE  processing_level IS NULL;
+
+    ALTER TABLE fusion_products
+        DROP CONSTRAINT IF EXISTS uq_fusion_date_region;
+    ALTER TABLE fusion_products
+        DROP CONSTRAINT IF EXISTS uq_fusion_date_region_level;
+    ALTER TABLE fusion_products
+        ADD CONSTRAINT uq_fusion_date_region_level
+        UNIQUE (feature_date, region_id, processing_level);
+
+    CREATE INDEX IF NOT EXISTS idx_fusion_region_date_level
+        ON fusion_products (region_id, feature_date, processing_level);
+
+    -- Migrasi 018: muat 'FUSION_PROCESSED' (16 karakter). Level ikut ke
+    -- band_name supaya dedup is_latest -- (scene_id, band_name, product_tier,
+    -- dataset_id) -- tidak membuat stack RAW menandai dirinya usang begitu
+    -- stack PROCESSED tanggal yang sama didaftarkan.
+    ALTER TABLE data_products
+        ALTER COLUMN band_name TYPE VARCHAR(20);
+
+    -- Migrasi 018: array kosong = "user tidak mau preview"; NULL tidak boleh
+    -- lagi bermakna sama, karena pipeline sekarang membaca kolom ini.
+    UPDATE datasets
+    SET    preview_options = ARRAY['GRAYSCALE', 'COLORED', 'COMPOSITE']::TEXT[]
+    WHERE  preview_options IS NULL;
+
+    ALTER TABLE datasets
+        ALTER COLUMN preview_options SET NOT NULL;
+
+    -- Index data_products yang bergantung pada dataset_id (migrasi 004).
+    CREATE INDEX IF NOT EXISTS idx_dprods_dataset_tier_source
+        ON data_products (dataset_id, product_tier, source) WHERE is_latest = TRUE;
+    CREATE INDEX IF NOT EXISTS idx_dprods_dataset_level
+        ON data_products (dataset_id, processing_level);
+END $$;
+
+-- Constraint-nya hidup di database/constraints.sql supaya bisa dipasang ulang
+-- / diverifikasi kapan saja:
+--     psql "$DATABASE_URL" -f database/constraints.sql
 
 -- =============================================================================
 -- SCHEMA VERSION TRACKING

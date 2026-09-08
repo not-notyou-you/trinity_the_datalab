@@ -70,19 +70,27 @@ class TestRendering:
 
         gray = fm.get_preview_kind_dir(DATASET_ID, DATASET_NAME, DATE_KEY, "grayscale")
         color = fm.get_preview_kind_dir(DATASET_ID, DATASET_NAME, DATE_KEY, "colored")
+        composite = fm.get_preview_kind_dir(DATASET_ID, DATASET_NAME, DATE_KEY, "composite")
 
         assert sorted(p.name for p in gray.glob("*.png")) == ["s1_vh.png", "s1_vv.png"]
-        # colored/ punya satu berkas ekstra: komposit RGB VV/VH/(VV-VH).
-        assert sorted(p.name for p in color.glob("*.png")) == [
-            "s1_rgb_composite.png", "s1_vh.png", "s1_vv.png",
+        assert sorted(p.name for p in color.glob("*.png")) == ["s1_vh.png", "s1_vv.png"]
+        # Komposit RGB punya foldernya sendiri: isinya tiga band digabung,
+        # bukan satu band yang diberi colormap, jadi tidak bisa dijelaskan
+        # skema yang sama dengan colored_info.json.
+        assert sorted(p.name for p in composite.glob("*.png")) == [
+            "s1_rgb_composite.png",
         ]
         assert (gray / "grayscale_info.json").exists()
         assert (color / "colored_info.json").exists()
+        assert (composite / "composite_info.json").exists()
         assert (fm.get_preview_dir(DATASET_ID, DATASET_NAME, DATE_KEY)
                 / "preview_metadata.json").exists()
 
         assert result["counts"]["grayscale"] == 2
-        assert result["counts"]["colored"] == 3
+        assert result["counts"]["colored"] == 2
+        assert result["counts"]["composite"] == 1
+        assert result["processing_level"] == "PROCESSED"
+        assert result["derived_from"] == "GOLD"
 
     def test_sentinel1_converted_to_db(self, data_root):
         """GOLD menyimpan sigma0 linear; tanpa konversi dB, stretch persentil

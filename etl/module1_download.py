@@ -1,4 +1,19 @@
 # etl/module1_download.py
+"""
+Tahap DOWNLOAD Sentinel-1: discovery CDSE + unduh SAFE ZIP + ekstrak VV/VH.
+
+TAHAP INI TIDAK BERCABANG PER LEVEL. DOWNLOAD, CALIBRATE (module1b), dan CROP
+(module2) jalan sama persis untuk level RAW maupun PROCESSED: nilai DN mentah
+tanpa LUT sigma-nought tidak punya arti fisik, jadi "RAW" untuk SAR pun berarti
+terkalibrasi dan ter-crop (DOCS/ETL.md, "What RAW means for Sentinel-1").
+
+Percabangan level Sentinel-1 ada satu lapis di atas, di mana urutan tahap
+memang disusun:
+    keputusan  -> etl/processing_plan.py (SourcePlan.s1_skip_stages)
+    eksekusi   -> etl/module5_orchestrator.py (_run_s1_chain)
+LEE_FILTER, QUALITY_ANALYTICS, dan GOLD_EXPORT-lah yang dilewati saat SENTINEL1
+dikonfigurasi RAW-only; modul ini tidak perlu tahu levelnya sama sekali.
+"""
 from __future__ import annotations
 
 import hashlib

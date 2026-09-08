@@ -189,7 +189,11 @@ class LiveScheduler:
                 self._db, dataset_id, live["name"], live["region_id"],
                 bbox_tuple, d, plog=self._plog,
             )
-            registered += len(produced["SILVER"])
+            # Dihitung lintas tier, bukan cuma SILVER: sumber yang
+            # dikonfigurasi RAW menulis ke BRONZE dan tidak pernah menyentuh
+            # SILVER, jadi menghitung SILVER saja akan melaporkan "tidak ada
+            # data baru" untuk ingest yang sebenarnya berhasil.
+            registered += sum(len(paths) for paths in produced.values())
             d += timedelta(days=1)
 
         if registered:
@@ -218,7 +222,8 @@ class LiveScheduler:
             self._db, dataset_id, live["name"], live["region_id"],
             bbox_tuple, today.date(), plog=self._plog,
         )
-        registered = len(produced["SILVER"])
+        # Lintas tier — lihat catatan di _check_and_ingest_modis.
+        registered = sum(len(paths) for paths in produced.values())
 
         if registered:
             self._update_source_check("GPM", last_ingest=_now())
