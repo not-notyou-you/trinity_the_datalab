@@ -1021,14 +1021,14 @@ details.advanced .field-row-3 { margin-top: 14px; }
 
 /* ---- Pip langkah ---- */
 .wizard-steps {
-  display: flex;
-  gap: 6px;
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 6px 10px;
   list-style: none;
   margin: 0 0 18px;
   padding: 0;
 }
 .wizard-step-pip {
-  flex: 1;
   display: flex;
   align-items: center;
   gap: 6px;

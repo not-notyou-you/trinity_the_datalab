@@ -110,7 +110,6 @@ Note: `selected_satellites` and `processing_level` are NOT on this table — the
 | product_tier | VARCHAR(20) | `RAW`, `BRONZE`, `SILVER`, `GOLD`, `PREVIEW`, `FUSION` |
 | source | VARCHAR(20) | `SENTINEL1`, `MODIS`, `GPM`, `FUSION` |
 | ★ processing_level | VARCHAR(20) | `RAW` or `PROCESSED` — which level produced this artifact |
-| band_name | VARCHAR(20) | `VV`, `NDVI`, `RAIN_24H`, … and for tier FUSION: `FUSION_RAW` / `FUSION_PROCESSED` |
 | file_path | TEXT | Relative to DATA_DIR |
 | size_bytes | BIGINT | |
 | format | VARCHAR(20) | `GEOTIFF`, `COG`, `HDF5`, `PNG`, `JSON` |
@@ -145,11 +144,6 @@ Note: `selected_satellites` and `processing_level` are NOT on this table — the
 | ★ temporal_offset_modis | INT | Days offset from S1 date |
 | ★ temporal_offset_gpm | INT | Days offset from S1 date |
 
-**Constraint**: `UNIQUE (fusion_date, region_id, processing_level)`. The level is
-part of the key because a dataset that requests a source at both RAW and
-PROCESSED produces two stacks for the same date; without it, the second
-overwrites the first (migration 018).
-
 ### quality_metrics — Per-band quality scores (Sentinel-1 only)
 
 | Column | Type | Notes |
@@ -176,6 +170,27 @@ overwrites the first (migration 018).
 - **cleanup_operations**: Tier deletion progress tracking
 - **api_access_logs**: API audit trail (hypertable if TimescaleDB available)
 
+## Tier Definitions
+
+| Tier | Purpose | When Created | Sentinel-1 | MODIS | GPM |
+|---|---|---|---|---|---|
+| RAW | Original download, unprocessed | DOWNLOAD stage | N/A | N/A | N/A |
+| BRONZE | Cropped to AOI, minimum usable | CROP stage (S1 RAW) | Calibrated + cropped, no filter | Flood map extracted, no indices | Rainfall extracted, no accum |
+| SILVER | Filtered/derived, ready for analysis | LEE_FILTER stage (S1) or COMPUTE_* (MODIS/GPM) | Lee-filtered, QA-scored | NDVI/NDWI computed | 24h/72h/7d accum computed |
+| GOLD | Cloud-Optimized GeoTIFF, production-ready | GOLD_EXPORT stage | COG with overviews | COG with overviews | COG with overviews |
+| PREVIEW | PNG visualizations for human inspection | PREVIEW stage | Grayscale/Colored/Composite per processing level | Grayscale/Colored per processing level | Typically not created (coarse res) |
+| FUSION | HDF5 multi-source stacks, ML-ready | FUSION stage | Multi-source per processing level | Multi-source per processing level | Multi-source per processing level |
+
+**Mapping to folder structure**: `data/datasets/{id}/{source}/{processing_level}/{tier}/`
+- `sentinel1/raw/bronze/` → S1 RAW-level artifacts at BRONZE tier
+- `sentinel1/processed/silver/` → S1 PROCESSED-level artifacts at SILVER tier
+- `modis/processed/gold/` → MODIS PROCESSED-level artifacts at GOLD tier
+- `gpm/raw/bronze/` → GPM RAW-level artifacts at BRONZE tier
+- `fusion/raw/` → HDF5 fusions using RAW inputs
+- `fusion/processed/` → HDF5 fusions using PROCESSED inputs
+
+**RAW tier quirk**: There is no "RAW" folder tier. The minimum tier for RAW-level processing is BRONZE (cropped unfiltered data). This is because you can't meaningfully use uncropped, uncalibrated rasters. The folder structure uses `{source}/raw/bronze/` not `{source}/raw/raw/`.
+
 ## Key Indexes
 
 ```sql
@@ -184,7 +199,6 @@ CREATE INDEX idx_data_products_dataset_tier ON data_products(dataset_id, product
 CREATE INDEX idx_data_products_level ON data_products(dataset_id, processing_level);
 CREATE INDEX idx_scenes_dataset_date ON satellite_scenes(dataset_id, acquisition_datetime);
 CREATE INDEX idx_fusion_dataset_date ON fusion_products(dataset_id, fusion_date);
-CREATE INDEX idx_fusion_region_date_level ON fusion_products(region_id, fusion_date, processing_level);
 CREATE INDEX idx_lineage_target ON data_lineage(target_product_id);
 CREATE INDEX idx_lineage_source ON data_lineage(source_product_id);
 ```

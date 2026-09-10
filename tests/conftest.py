@@ -78,11 +78,16 @@ def db_client():
     _guard_not_production(TEST_DB_URL)
     client = DatabaseClient(TEST_DB_URL, pool_size=2, max_overflow=2)
 
-    # Tabel memakai kolom PostGIS, jadi ekstensinya harus ada sebelum create_all.
-    # Di database uji yang baru dibuat ekstensi ini belum tentu terpasang.
+    # Tabel memakai kolom PostGIS dan server_default uuid_generate_v4(), jadi
+    # kedua ekstensinya harus ada sebelum create_all. Di database uji yang baru
+    # dibuat ekstensi ini belum tentu terpasang. uuid-ossp ikut di sini, bukan
+    # cuma postgis: banyak tabel (satellite_scenes, datasets, ...) memakai
+    # DEFAULT uuid_generate_v4(), dan tanpa ekstensinya create_all gagal di
+    # CREATE TABLE pertama -- bukan di tes yang butuh UUID.
     try:
         with client.session() as sess:
             sess.execute(text("CREATE EXTENSION IF NOT EXISTS postgis"))
+            sess.execute(text('CREATE EXTENSION IF NOT EXISTS "uuid-ossp"'))
     except Exception as exc:  # pragma: no cover - hanya jalur pesan error
         pytest.exit(
             f"Tidak bisa menyiapkan database uji {TEST_DB_URL!r}: {exc}\n"

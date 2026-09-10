@@ -42,6 +42,7 @@ import rasterio
 from rasterio.enums import Resampling
 from rasterio.io import MemoryFile
 from rasterio.mask import mask
+from rasterio.transform import array_bounds
 from rasterio.warp import calculate_default_transform, reproject
 from shapely.geometry import box, mapping
 
@@ -336,9 +337,16 @@ def _reproject_and_crop_to_s1_grid(
     aoi_bbox: tuple[float, float, float, float],
     output_path: Path,
 ) -> Path:
-    """Reproject the accumulated rainfall grid to the Sentinel-1 target
-    resolution/CRS and crop it to the AOI, matching module7's mosaic/crop
-    pattern for MODIS."""
+    """Crop the accumulated rainfall grid to the AOI, then reproject the
+    (small) cropped grid to the Sentinel-1 target resolution/CRS.
+
+    Cropping must happen BEFORE reprojecting to the 10 m Sentinel-1 grid:
+    the raw GPM accumulation covers a much larger extent than the AOI, and
+    resampling that full extent straight to a 10 m pixel size produces a
+    raster with billions of pixels (GDAL's free-disk-space check then
+    aborts with a multi-petabyte "required space" figure). Cropping first
+    bounds the reprojection to the AOI's ~tens-of-millions of pixels.
+    """
     height, width = accum.shape
 
     with MemoryFile() as memfile:
@@ -349,9 +357,25 @@ def _reproject_and_crop_to_s1_grid(
         ) as tmp:
             tmp.write(accum, 1)
 
+        geom = mapping(box(*aoi_bbox))
         with memfile.open() as src:
+            crop_image, crop_transform = mask(src, [geom], crop=True, nodata=DEFAULT_NODATA)
+            crop_crs = src.crs
+
+    crop_height, crop_width = crop_image.shape[1], crop_image.shape[2]
+    crop_bounds = array_bounds(crop_height, crop_width, crop_transform)
+
+    with MemoryFile() as cropped_memfile:
+        with cropped_memfile.open(
+            driver="GTiff", height=crop_height, width=crop_width, count=1,
+            dtype="float64", crs=crop_crs, transform=crop_transform,
+            nodata=DEFAULT_NODATA,
+        ) as tmp:
+            tmp.write(crop_image)
+
+        with cropped_memfile.open() as src:
             dst_transform, dst_width, dst_height = calculate_default_transform(
-                src.crs, DST_CRS, src.width, src.height, *src.bounds,
+                src.crs, DST_CRS, src.width, src.height, *crop_bounds,
                 resolution=S1_RESOLUTION_DEG,
             )
             kwargs = src.meta.copy()
@@ -362,8 +386,7 @@ def _reproject_and_crop_to_s1_grid(
                 "width": dst_width,
                 "height": dst_height,
             })
-            reproj_path = output_path.with_name(output_path.stem + "_reproj.tif")
-            with rasterio.open(reproj_path, "w", **kwargs) as dst:
+            with rasterio.open(output_path, "w", **kwargs) as dst:
                 reproject(
                     source=rasterio.band(src, 1),
                     destination=rasterio.band(dst, 1),
@@ -374,19 +397,6 @@ def _reproject_and_crop_to_s1_grid(
                     resampling=Resampling.bilinear,
                 )
 
-    geom = mapping(box(*aoi_bbox))
-    with rasterio.open(reproj_path) as src:
-        out_image, crop_transform = mask(src, [geom], crop=True, nodata=DEFAULT_NODATA)
-        crop_meta = src.meta.copy()
-        crop_meta.update({
-            "height": out_image.shape[1],
-            "width": out_image.shape[2],
-            "transform": crop_transform,
-        })
-        with rasterio.open(output_path, "w", **crop_meta) as dst:
-            dst.write(out_image)
-
-    reproj_path.unlink(missing_ok=True)
     return output_path
 
 

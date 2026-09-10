@@ -247,18 +247,15 @@ The `.option-row` component: `border: 1px solid var(--glass-border); border-radi
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│  ┌────┐  Dataset Name                         PROCESSING    │
-│  │ring│  Region · Date Range                                │
-│  │SVG │  ┌─────┬──────┬──────┬────────┐                     │
-│  └────┘  │ RAW │ GOLD │FUSION│        │  ← tier chips       │
-│          └─────┴──────┴──────┴────────┘                     │
+│  Dataset Name                              PROCESSING        │
+│  Region · Date Range                                         │
+│  ┌──────────┬──────────┬──────────┐                          │
+│  │ S1[R+P]  │ MODIS[P] │ GPM[R]   │  ← per-source processing│
+│  └──────────┴──────────┴──────────┘                          │
 │                                                              │
-│  ┌──────────┬──────────┬──────────┬──────────┐              │
-│  │  5       │  3       │  0       │  2.4 GB  │  ← stat grid │
-│  │  scene   │  selesai │  gagal   │  ukuran  │              │
-│  └──────────┴──────────┴──────────┴──────────┘              │
-│                                                              │
-│  Config: S1[RAW+PROC] · MODIS[PROC] · GPM[RAW] · HYBRID     │
+│  Strategi Fusi: HYBRID                                       │
+│  S1: 5 scene · MODIS: 30 scene · GPM: 30 scene              │
+│  Storage: 2.4 GB (S1: 1.2G | MODIS: 0.8G | GPM: 0.4G)      │
 │                                                              │
 │  Live Logs (terbaru)                                        │
 │  ┌──────────────────────────────────────────────────────┐   │
@@ -271,32 +268,74 @@ The `.option-row` component: `border: 1px solid var(--glass-border); border-radi
 └──────────────────────────────────────────────────────────────┘
 ```
 
-**Progress ring**: SVG with concentric circles per tier. Each ring = tier color at 16% opacity (track) + full opacity arc (progress). Colors:
-```
-RAW: #9070E8, BRONZE: #C4762E, SILVER: #4A8CE0, GOLD: #2FA07E, FUSION: #B565D8
-```
-Active datasets get a spinning conic-gradient sweep behind the ring (`animation: sweep 3.6s linear infinite`).
+**Key changes from Prototype**:
+- ❌ Removed tier chips (RAW, BRONZE, SILVER, GOLD, FUSION)
+- ✅ Source + processing level chips: `S1[R+P]`, `MODIS[P]`, `GPM[R]`
+  - `R` = RAW configured, `P` = PROCESSED configured, `[R+P]` = both selected
+  - Only show sources actually configured in dataset
+- ❌ Removed ring progress with tier colors
+- ✅ Replaced with per-source scene count (e.g., "S1: 5 scene · MODIS: 30 scene")
+- ✅ Per-source storage breakdown in parentheses (S1: 1.2G | MODIS: 0.8G | GPM: 0.4G)
+- ✅ Fusion strategy label
+- ✅ Live logs still show per-stage progress
 
-**Stat grid**: 4 cells, `grid-template-columns: repeat(4, 1fr)`, glass-alt background, monospace numbers.
-
-**Log panel**: dark background (`rgba(0,0,0,0.25)`), monospace rows with time/scene/stage/status columns. Status colors: COMPLETED = cyan, RUNNING = amber, FAILED = coral.
+**Card styling**: `.dataset-card` (glass surface, 18px radius, cyan border gradient on hover)
 
 ### Expandable Panels
 
-- **Detail**: scene table with product_identifier, current stage, status badge, last error
-- **Struktur**: storage breakdown per tier × source (stacked bar segments colored by source), quality per source, file listing, and preview gallery
+**Detail panel**:
+- Scene list per source (S1 scenes, MODIS granules, GPM daily)
+- Per-scene: product_identifier, current stage, status, last error
+- Scene status colors: COMPLETED = cyan, RUNNING = amber, FAILED = coral
+
+**Struktur panel**:
+- Storage tree (collapsible per source, then per processing level, then per tier):
+  ```
+  SENTINEL-1
+    ├─ RAW: 150 MB (BRONZE ██ + PREVIEW █)
+    └─ PROCESSED: 600 MB (BRONZE ██ + SILVER ██ + GOLD ██ + PREVIEW █)
+  MODIS
+    └─ PROCESSED: 250 MB (BRONZE █ + SILVER ██ + GOLD ██ + PREVIEW █)
+  GPM
+    └─ RAW: 60 MB (BRONZE █ + PREVIEW ░)
+  ```
+- No horizontal bar chart; use nested list with indentation + byte counts
+- Quality metrics per source (only for S1 PROCESSED): nodata%, speckle, score
+- File browser: browse by source/processing_level/tier/date
+- Preview gallery: separate tabs per source+processing_level combo
 
 ### Preview Gallery (Inside Struktur Panel)
 
-Date tabs + kind tabs (Grayscale / Berwarna). Image cards in auto-fill grid (`minmax(190px, 1fr)`). Thumbnails have checkerboard background for transparent NoData pixels. Each card shows: label, colormap tag, value range, interpretation note (clamped to 3 lines).
+Structure:
+```
+SENTINEL-1 RAW          [Date selector: 2024-01-15 ↕]
+Grayscale / Colored
+[Image grid 190px min]
+
+SENTINEL-1 PROCESSED   [Date selector: 2024-01-15 ↕]
+Grayscale / Colored
+[Image grid 190px min]
+
+MODIS PROCESSED        [Date selector: 2024-01-15 ↕]
+Grayscale / Colored
+[Image grid 190px min]
+```
+
+Each image card: thumbnail + label (band name), colormap tag, value range, interpretation note (3 lines max). Checkerboard for NoData.
 
 ## Tab 3: Live (Live Ingestion)
 
 - Master toggle (`.switch` — capsule slider, cyan when ON)
-- Per-source enable rows (dot indicator + source name + last check/ingest timestamps)
-- Storage size, last checked timestamp
+- Per-source enable rows (dot indicator + source name + processing level + last check/ingest timestamps)
+  - E.g., "Sentinel-1 [RAW+PROCESSED] · Last check: 2 hours ago · Last ingest: 1 hour ago"
+- Total storage size, overall last checked timestamp
 - Backfill form (date range + submit)
-- Recent scenes table (date, tier chip, size)
+- Recent ingested scenes table:
+  | Date | Source | Processing | Stage | Status | Size |
+  |---|---|---|---|---|---|
+  | 2024-09-08 | Sentinel-1 | PROCESSED | GOLD_EXPORT | COMPLETED | 125 MB |
+  | 2024-09-08 | MODIS | PROCESSED | LEE_FILTER | COMPLETED | 48 MB |
+  | 2024-09-07 | Sentinel-1 | RAW | CROP | COMPLETED | 65 MB |
 
 ## Modals
 

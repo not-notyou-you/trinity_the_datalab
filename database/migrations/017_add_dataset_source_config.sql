@@ -199,3 +199,62 @@ VALUES ('017', 'Per-satellite processing: dataset_source_config junction table +
 ON CONFLICT (version) DO NOTHING;
 
 COMMIT;
+
+-- =============================================================================
+-- KUERI VERIFIKASI (jalankan manual SETELAH migrasi; bukan bagian transaksi)
+-- =============================================================================
+-- Semuanya sudah dijalankan di database bersih `trinity_datalab_test` dengan
+-- urutan: schema.sql -> migrasi 001..018. Hasil yang diharapkan ada di bawah
+-- tiap kueri.
+--
+-- 1. Backfill: satu baris per (dataset, sumber) -> 3 x jumlah dataset.
+--    SELECT (SELECT COUNT(*) FROM dataset_source_config) AS config_rows,
+--           (SELECT COUNT(*) * 3 FROM datasets)          AS expected;
+--    -> config_rows = expected
+--
+-- 2. Isi backfill = perilaku prototipe (3 sumber, selalu PROCESSED):
+--    SELECT dataset_id, source_name, processing_levels
+--    FROM   dataset_source_config ORDER BY dataset_id, source_name;
+--    -> tiap dataset punya GPM/MODIS/SENTINEL1, semuanya {PROCESSED}
+--
+-- 3. UNIQUE(dataset_id, source_name) -- pakai dataset_id yang MEMANG ADA;
+--    dataset_id yang tidak ada gagal lebih dulu di foreign key, jadi
+--    UNIQUE-nya tidak pernah teruji:
+--    INSERT INTO dataset_source_config (dataset_id, source_name, processing_levels)
+--    VALUES (1, 'MODIS', ARRAY['RAW']);
+--    -> ERROR: duplicate key ... "uq_source_config_dataset_source"
+--
+-- 4. Array kosong ditolak:
+--    INSERT INTO dataset_source_config (dataset_id, source_name, processing_levels)
+--    VALUES (1, 'GPM', '{}');
+--    -> ERROR: ... "chk_source_config_levels_not_empty"
+--
+-- 5. Level di luar {RAW, PROCESSED} ditolak:
+--    INSERT ... VALUES (1, 'GPM', ARRAY['GOLD']);
+--    -> ERROR: ... "chk_source_config_levels_valid"
+--
+-- 6. Sumber tanpa modul ETL ditolak:
+--    INSERT ... VALUES (1, 'LANDSAT', ARRAY['RAW']);
+--    -> ERROR: ... "chk_source_config_source_name"
+--
+-- 7. Konfigurasi multi-level yang sah diterima:
+--    INSERT INTO dataset_source_config (dataset_id, source_name, processing_levels)
+--    VALUES (1, 'SENTINEL1', ARRAY['RAW', 'PROCESSED'])
+--    ON CONFLICT (dataset_id, source_name)
+--    DO UPDATE SET processing_levels = EXCLUDED.processing_levels;
+--    -> INSERT 0 1
+--
+-- 8. Hapus dataset ikut menghapus konfigurasinya (ON DELETE CASCADE):
+--    DELETE FROM datasets WHERE dataset_id = <id>;
+--    SELECT COUNT(*) FROM dataset_source_config WHERE dataset_id = <id>;  -> 0
+--
+-- 9. Bentuk akhir tabel:  \d datasets   \d data_products
+--                         \d fusion_products   \d dataset_source_config
+--    -> datasets        : fusion_strategy, preview_options ada; TIDAK ada
+--                         selected_satellites / processing_level
+--    -> data_products   : processing_level DEFAULT 'PROCESSED'
+--    -> fusion_products : fusion_strategy, processing_level,
+--                         temporal_offset_modis, temporal_offset_gpm
+--
+-- 10. Idempotensi: jalankan ulang berkas ini -- harus sukses tanpa perubahan
+--     (semua DDL pakai IF EXISTS/IF NOT EXISTS, backfill pakai ON CONFLICT).

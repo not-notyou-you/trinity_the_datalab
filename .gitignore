@@ -25,6 +25,7 @@ recovered_temp/*
 !recovered_temp/.gitkeep
 
 # Processed outputs (COG, filtered TIFFs)
+data/*
 processed/bronze/*
 processed/silver/*
 processed/gold/*

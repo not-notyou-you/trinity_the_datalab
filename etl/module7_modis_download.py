@@ -63,8 +63,23 @@ logger = logging.getLogger(__name__)
 
 LAADS_NRT_BASE = "https://nrt3.modaps.eosdis.nasa.gov/archive/allData/61"
 
+# Standard (science-quality, reprocessed) archive. NRT collections only keep
+# a rolling retention window (days-to-weeks) before granules are pulled from
+# nrt3.modaps.eosdis.nasa.gov; backfill jobs for older dates land past that
+# window and must fall back here instead.
+LAADS_STANDARD_BASE = "https://ladsweb.modaps.eosdis.nasa.gov/archive/allData/61"
+
 MODIS_FLOOD_PRODUCT = "MCDWD_L3_F2_NRT"
 MODIS_REFLECTANCE_PRODUCT = "MOD09GA_NRT"
+
+# NRT product -> standard-archive equivalent. MCDWD's standard archive is a
+# single consolidated "MCDWD_L3" product (the 1-day/2-day/3-day composites
+# that are separate NRT products live as subdatasets inside one granule);
+# MOD09GA's standard equivalent just drops the "_NRT" suffix.
+MODIS_STANDARD_PRODUCT = {
+    MODIS_FLOOD_PRODUCT: "MCDWD_L3",
+    MODIS_REFLECTANCE_PRODUCT: "MOD09GA",
+}
 
 # Nama produk "utama" modul ini — dipakai untuk product_id lineage dan
 # etl/constants.py:MODIS_PRODUCT_SHORT_NAME.
@@ -154,13 +169,15 @@ def _md5(path: Path, chunk: int = 8 * 1024 * 1024) -> str:
     return h.hexdigest()
 
 
-def _discover_tile_files(date: datetime, tiles: list[str], product: str) -> list[dict]:
+def _discover_tile_files(
+    date: datetime, tiles: list[str], product: str, base: str = LAADS_NRT_BASE
+) -> list[dict]:
     """List available granules of `product` for `date` by scraping the LAADS
     directory index, one entry per requested tile."""
     import requests
 
     doy = date.timetuple().tm_yday
-    url = f"{LAADS_NRT_BASE}/{product}/{date.year}/{doy:03d}/"
+    url = f"{base}/{product}/{date.year}/{doy:03d}/"
     resp = requests.get(url, headers=_auth_headers(), timeout=30)
     if resp.status_code != 200:
         raise RuntimeError(f"gagal listing LAADS ({resp.status_code}): {url}")
@@ -170,11 +187,50 @@ def _discover_tile_files(date: datetime, tiles: list[str], product: str) -> list
         for line in resp.text.splitlines():
             if tile not in line or ".hdf" not in line or ".hdf.xml" in line:
                 continue
-            fname = line.split('"')[1] if '"' in line else None
-            if fname:
-                found.append({"tile": tile, "file_name": fname, "download_url": url + fname})
-                break
+            href = line.split('"')[1] if '"' in line else None
+            if not href:
+                continue
+            # nrt3's index uses relative hrefs ("FILE.hdf"); ladsweb's
+            # (standard archive) uses absolute ones (full "https://...").
+            fname = href.rsplit("/", 1)[-1]
+            download_url = href if href.startswith("http") else url + href
+            found.append({"tile": tile, "file_name": fname, "download_url": download_url})
+            break
     return found
+
+
+def _discover_tile_files_with_fallback(
+    date: datetime, tiles: list[str], product: str
+) -> tuple[list[dict], str]:
+    """Try the NRT archive first (lowest latency), then fall back to the
+    standard/reprocessed archive if NRT has nothing for `date` — this is the
+    normal case for backfill jobs on dates past the NRT retention window.
+
+    Returns (items, product_used)."""
+    try:
+        items = _discover_tile_files(date, tiles, product, base=LAADS_NRT_BASE)
+        if items:
+            return items, product
+    except RuntimeError as exc:
+        nrt_error = exc
+    else:
+        nrt_error = RuntimeError(f"tidak ada granule NRT {product} untuk {date.date().isoformat()}")
+
+    std_product = MODIS_STANDARD_PRODUCT.get(product)
+    if not std_product:
+        raise nrt_error
+
+    try:
+        items = _discover_tile_files(date, tiles, std_product, base=LAADS_STANDARD_BASE)
+    except RuntimeError as exc:
+        raise RuntimeError(f"{nrt_error}; fallback standar juga gagal: {exc}") from exc
+
+    if not items:
+        raise RuntimeError(
+            f"{nrt_error}; fallback standar {std_product} juga tidak punya granule "
+            f"untuk {date.date().isoformat()}"
+        )
+    return items, std_product
 
 
 def _download_with_retry(
@@ -437,9 +493,14 @@ def _build_band_for_date(
     Mengembalikan dict hasil. Melempar RuntimeError kalau band ini tidak bisa
     dibangun sama sekali untuk tanggal tsb; pemanggil memutuskan apakah itu
     fatal (tidak, per band) atau tidak."""
-    items = _discover_tile_files(date, tiles, product)
+    items, product_used = _discover_tile_files_with_fallback(date, tiles, product)
     if not items:
         raise RuntimeError(f"tidak ada granule {product} untuk {date.date().isoformat()}")
+    if product_used != product:
+        logger.info(
+            "[M7] %s tanggal %s: NRT tidak tersedia, pakai arsip standar %s",
+            band, date.date().isoformat(), product_used,
+        )
 
     tile_tifs: list[Path] = []
     source_checksums: dict[str, str] = {}
@@ -475,7 +536,7 @@ def _build_band_for_date(
 
     return {
         "band": band,
-        "product": product,
+        "product": product_used,
         "path": str(out_path),
         "checksum_md5": _md5(out_path),
         "source_tiles": source_checksums,
