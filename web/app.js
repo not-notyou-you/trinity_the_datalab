@@ -33,7 +33,7 @@ const ACTIVE_STATUSES = new Set(['QUEUED','PREPARING','DOWNLOADING','PROCESSING'
 
 const state = {
   datasets: [], progress: {}, logs: {}, pollTimer: null, livePollTimer: null,
-  openScenes: new Set(), openStructure: new Set(),
+  openScenes: new Set(), openStructure: new Set(), structureHTML: {}, cardElements: {},
   // Galeri preview per dataset: payload /api/datasets/{id}/preview, plus
   // tanggal dan jenis yang sedang dipilih (bertahan saat panel digambar ulang
   // oleh polling).
@@ -1225,24 +1225,46 @@ async function refreshProgress() {
 }
 function startDatasetPolling() {
   stopDatasetPolling();
-  state.pollTimer = setInterval(async () => { await loadDatasetsQuiet(); await refreshProgress(); }, 2000);
+  state.pollTimer = setInterval(async () => { await loadDatasetsQuiet(); await refreshProgress(); }, 10000);
 }
 function stopDatasetPolling() { if (state.pollTimer) clearInterval(state.pollTimer); state.pollTimer = null; }
 document.getElementById('refreshDatasets').addEventListener('click', loadDatasets);
 
+// Kartu dataset dulu dibongkar total (container.innerHTML = '') dan dibangun
+// ulang dari nol tiap polling, walau datanya sama persis -- itu yang bikin
+// seluruh list "berkedip" tiap beberapa detik. Sekarang elemen kartu per
+// dataset_id dipertahankan (state.cardElements) dan hanya bagian yang
+// datanya beda saja yang ditulis ulang isinya lewat updateCardShell().
 function renderDatasets() {
   const container = document.getElementById('datasetList');
   if (state.datasets.length === 0) {
     container.innerHTML = '<div class="empty">Belum ada dataset. Buat satu di tab Buat Dataset.</div>';
+    state.cardElements = {};
     return;
   }
-  container.innerHTML = '';
-  state.datasets.forEach(ds => container.appendChild(renderDatasetCard(ds)));
+  const seen = new Set();
+  state.datasets.forEach((ds, idx) => {
+    seen.add(String(ds.dataset_id));
+    let el = state.cardElements[ds.dataset_id];
+    if (!el) {
+      el = createDatasetCard(ds);
+      state.cardElements[ds.dataset_id] = el;
+    } else {
+      updateDatasetCard(el, ds);
+    }
+    const atPos = container.children[idx];
+    if (atPos !== el) container.insertBefore(el, atPos || null);
+  });
+  Object.keys(state.cardElements).forEach(id => {
+    if (!seen.has(id)) {
+      state.cardElements[id].remove();
+      delete state.cardElements[id];
+      delete state.structureHTML[id];
+    }
+  });
 }
 
-function renderDatasetCard(ds) {
-  const el = document.createElement('div');
-  el.className = 'card';
+function cardShellHTML(ds) {
   const prog = state.progress[ds.dataset_id];
   const scenes = prog ? prog.scenes : [];
   const ratios = tierCompletionRatios(scenes, ds.required_tiers);
@@ -1254,7 +1276,7 @@ function renderDatasetCard(ds) {
   const canCancel = ['DOWNLOADING', 'PROCESSING'].includes(ds.status);
   const canDownload = ds.total_size_bytes > 0;
   const spinning = ACTIVE_STATUSES.has(ds.status) && ds.status !== 'PAUSED';
-  el.innerHTML =
+  return (
     '<div class="card-head">' +
       '<div class="card-ring' + (spinning ? ' spinning' : '') + '">' + ringHTML + '</div>' +
       '<div class="card-info">' +
@@ -1282,13 +1304,45 @@ function renderDatasetCard(ds) {
       '<button class="btn btn-danger" data-action="delete">Hapus</button>' +
       '<button class="btn btn-ghost" data-action="toggle-scenes">Detail</button>' +
       (canDownload ? '<button class="btn btn-ghost" data-action="toggle-structure">Struktur</button>' : '') +
-    '</div>' +
+    '</div>'
+  );
+}
+
+function createDatasetCard(ds) {
+  const el = document.createElement('div');
+  el.className = 'card';
+  el._shellHTML = cardShellHTML(ds);
+  el.innerHTML =
+    '<div class="card-shell">' + el._shellHTML + '</div>' +
     '<div class="card-scenes' + (state.openScenes.has(ds.dataset_id) ? '' : ' hidden') + '" id="scenes-' + ds.dataset_id + '"></div>' +
     '<div class="card-structure' + (state.openStructure.has(ds.dataset_id) ? '' : ' hidden') + '" id="structure-' + ds.dataset_id + '"></div>';
-  el.querySelectorAll('[data-action]').forEach(btn => btn.addEventListener('click', () => handleCardAction(btn.dataset.action, ds.dataset_id)));
+  bindCardShell(el, ds.dataset_id);
   if (state.openScenes.has(ds.dataset_id)) renderSceneTable(el.querySelector('.card-scenes'), ds.dataset_id);
   if (state.openStructure.has(ds.dataset_id)) renderStructurePanel(el.querySelector('.card-structure'), ds.dataset_id);
   return el;
+}
+
+function bindCardShell(el, id) {
+  el.querySelectorAll('.card-shell [data-action]').forEach(btn => btn.addEventListener('click', () => handleCardAction(btn.dataset.action, id)));
+}
+
+// Hanya menulis ulang bagian "shell" (ring/status/stats/log/tombol) kalau
+// isinya benar-benar beda -- kalau tidak ada perubahan, DOM tidak disentuh
+// sama sekali sehingga tidak ada kedipan. Panel scenes/structure tetap
+// elemen yang sama antar-render, jadi isinya juga tidak sempat hilang dulu
+// sebelum data baru muncul.
+function updateDatasetCard(el, ds) {
+  const nextHTML = cardShellHTML(ds);
+  // Dibandingkan dengan string terakhir yang kita tulis, bukan shell.innerHTML:
+  // browser menormalkan hasil baca innerHTML (mis. &middot; jadi ·), jadi
+  // perbandingan ke DOM selalu "beda" dan kartu tetap ditulis ulang tiap poll.
+  if (el._shellHTML !== nextHTML) {
+    el._shellHTML = nextHTML;
+    el.querySelector('.card-shell').innerHTML = nextHTML;
+    bindCardShell(el, ds.dataset_id);
+  }
+  if (state.openScenes.has(ds.dataset_id)) renderSceneTable(el.querySelector('.card-scenes'), ds.dataset_id);
+  if (state.openStructure.has(ds.dataset_id)) renderStructurePanel(el.querySelector('.card-structure'), ds.dataset_id);
 }
 
 function renderLogPanel(id) {
@@ -1370,10 +1424,14 @@ async function handleCardAction(action, id) {
 
 function renderSceneTable(box, id) {
   const prog = state.progress[id];
-  if (!prog || prog.scenes.length === 0) { box.innerHTML = '<div class="empty-small">Belum ada scene</div>'; return; }
-  box.innerHTML = '<table class="scene-table"><thead><tr><th>Scene</th><th>Tahap</th><th>Status</th><th>Catatan</th></tr></thead><tbody>' +
-    prog.scenes.map(s => '<tr><td class="mono">' + escapeHTML(s.product_identifier) + '</td><td>' + (s.current_stage || '-') + '</td><td><span class="badge ' + statusToClass(s.stage_status) + '">' + s.stage_status + '</span></td><td class="mono small">' + escapeHTML(s.last_error || '') + '</td></tr>').join('') +
-    '</tbody></table>';
+  const html = (!prog || prog.scenes.length === 0)
+    ? '<div class="empty-small">Belum ada scene</div>'
+    : '<table class="scene-table"><thead><tr><th>Scene</th><th>Tahap</th><th>Status</th><th>Catatan</th></tr></thead><tbody>' +
+      prog.scenes.map(s => '<tr><td class="mono">' + escapeHTML(s.product_identifier) + '</td><td>' + (s.current_stage || '-') + '</td><td><span class="badge ' + statusToClass(s.stage_status) + '">' + s.stage_status + '</span></td><td class="mono small">' + escapeHTML(s.last_error || '') + '</td></tr>').join('') +
+      '</tbody></table>';
+  if (box._html === html) return;
+  box._html = html;
+  box.innerHTML = html;
 }
 
 let pendingDeleteId = null;
@@ -1494,13 +1552,24 @@ function sourceColor(src) { return SOURCE_COLORS[src] || 'var(--text-dim)'; }
 function sourceLabel(src) { return SOURCE_LABELS[src] || src; }
 
 async function renderStructurePanel(box, id) {
-  box.innerHTML = '<div class="empty-small">Memuat struktur…</div>';
+  // Kartu dataset digambar ulang tiap polling, jadi `box` selalu elemen baru
+  // yang kosong. Isi dulu dari cache (kalau ada) supaya panel tidak berkedip
+  // ke "Memuat struktur..." tiap beberapa detik sementara fetch terbaru jalan
+  // di belakang -- sama seperti pola yang dipakai renderPreviewGallery.
+  // Box-nya sendiri sekarang elemen yang sama antar-polling (lihat
+  // createDatasetCard/updateDatasetCard), jadi kalau sudah pernah terisi
+  // tidak perlu disentuh sampai data baru benar-benar siap.
+  const cached = state.structureHTML[id];
+  if (!box.innerHTML) {
+    box.innerHTML = cached || '<div class="empty-small">Memuat struktur…</div>';
+    if (cached) bindStructurePanel(box, id);
+  }
 
   let storage;
   try {
     storage = await api('/api/datasets/' + id + '/storage/summary');
   } catch (e) {
-    box.innerHTML = '<div class="empty-small">' + escapeHTML(e.message) + '</div>';
+    if (!cached) box.innerHTML = '<div class="empty-small">' + escapeHTML(e.message) + '</div>';
     return;
   }
 
@@ -1509,20 +1578,29 @@ async function renderStructurePanel(box, id) {
   let quality = { sources: [] };
   try { quality = await api('/api/quality/dataset/' + id + '/by-source'); } catch (e) {}
 
-  box.innerHTML =
+  const html =
     renderStorageBreakdown(id, storage) +
     renderQualityBySource(quality) +
     '<div class="struct-files" id="structfiles-' + id + '"></div>' +
     '<div class="preview-section" id="preview-' + id + '"></div>';
-
-  box.querySelectorAll('[data-tier-files]').forEach(btn => {
-    btn.addEventListener('click', () => loadTierFiles(id, btn.dataset.tierFiles));
-  });
+  // Ganti langsung isinya kalau ada perubahan saja -- kalau datanya sama
+  // persis dengan sebelumnya, DOM tidak disentuh sama sekali.
+  if (html !== state.structureHTML[id]) {
+    state.structureHTML[id] = html;
+    box.innerHTML = html;
+    bindStructurePanel(box, id);
+  }
 
   // Galeri di-fetch terpisah dan tidak di-await: rincian storage sudah bisa
   // dibaca sementara daftar preview masih jalan, dan dataset yang tier
   // preview-nya kosong tidak menahan apa pun.
   renderPreviewGallery(id);
+}
+
+function bindStructurePanel(box, id) {
+  box.querySelectorAll('[data-tier-files]').forEach(btn => {
+    btn.addEventListener('click', () => loadTierFiles(id, btn.dataset.tierFiles));
+  });
 }
 
 
@@ -1552,7 +1630,8 @@ async function renderPreviewGallery(id) {
   }
   if (!data.scenes || data.scenes.length === 0) {
     delete state.previews[id];
-    box.innerHTML = renderPreviewEmpty(id);
+    const emptyHTML = renderPreviewEmpty(id);
+    if (box._html !== emptyHTML) { box._html = emptyHTML; box.innerHTML = emptyHTML; }
     return;
   }
 
@@ -1668,13 +1747,18 @@ function drawPreviewGallery(id) {
         escapeHTML(scene.skipped.map(s => s.key).join(', ')) + '</p>'
     : '';
 
-  box.innerHTML =
+  const html =
     '<div class="struct-title preview-title">' +
       '<span class="preview-title-icon">' + ICONS.image + '</span>Preview' +
       '<span class="preview-size">' + humanBytes(data.total_size_bytes) + '</span>' +
     '</div>' +
     '<div class="preview-bar">' + dateTabs + kindTabs + '</div>' +
     blurb + cards + missing;
+  // Menulis ulang <img loading="lazy"> yang sama membuat gambar kosong sesaat
+  // lalu muncul lagi; kalau isinya tidak berubah, biarkan DOM apa adanya.
+  if (box._html === html) return;
+  box._html = html;
+  box.innerHTML = html;
 
   box.querySelectorAll('[data-preview-scene]').forEach(btn => {
     btn.addEventListener('click', () => {

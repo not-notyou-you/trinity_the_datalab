@@ -652,7 +652,7 @@ def _cleanup_scene_tiers(
         return
     for tier in tiers_to_delete:
         # Satu tier sekarang bisa berisi beberapa folder scene sekaligus
-        # (silver/sentinel1/{pid}, silver/modis/{date}, silver/gpm/{date}),
+        # ({date}/silver/sentinel1/{pid}, {date}/silver/modis, {date}/silver/gpm),
         # jadi folder induknya dikumpulkan semua — bukan cuma yang terakhir.
         scene_dirs: set[Path] = set()
         deleted_paths: list[str] = []
@@ -717,7 +717,7 @@ def _download_worker(jc: _JobContext, scenes: list[dict], download_queue: Queue)
             break
         pid = scene_meta["product_identifier"]
         state = jc.dsmgr.get_scene_job_state(jc.job_id, pid)
-        if state and state["stage_status"] == "COMPLETED":
+        if state and DatasetManager.scene_is_done(state.get("current_stage"), state.get("stage_status")):
             continue
         try:
             jc.dsmgr.upsert_scene_job_state(
@@ -857,7 +857,7 @@ def _run_aux_only(jc: _JobContext, date_from: date, date_to: date) -> None:
 
     ok_days = 0
     failed_days = 0
-    with dataset_log_file(jc.dataset_name) as run_log_path:
+    with dataset_log_file(jc.dataset_id, jc.dataset_name) as run_log_path:
         jc.log_path = run_log_path
         day = date_from
         while day <= date_to:
@@ -1006,6 +1006,9 @@ def run_dataset_job(db: DatabaseClient, job_id: int) -> None:
     )
 
     dsmgr.set_job_status(job_id, "PREPARING", started_at=_now())
+    # Counter & last_error per eksekusi, bukan akumulasi semua retry/resume --
+    # status akhir di bawah dibaca dari failed_count.
+    dsmgr.begin_job_run(job_id)
 
     date_from = (
         datetime.combine(date_range_start, datetime.min.time(), tzinfo=timezone.utc)
@@ -1054,7 +1057,7 @@ def run_dataset_job(db: DatabaseClient, job_id: int) -> None:
     download_queue: Queue = Queue(maxsize=3)
     cleanup_queue: Queue = Queue()
 
-    with dataset_log_file(dataset["name"]) as run_log_path:
+    with dataset_log_file(dataset_id, dataset["name"]) as run_log_path:
         # Worker threads read this to enrol in the run's log scope.
         jc.log_path = run_log_path
         logger.info(

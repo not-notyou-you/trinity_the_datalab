@@ -13,11 +13,11 @@ band-band itu sudah final.
   - Sentinel-1 GOLD (VV/VH) dicari lewat tabel `data_products` dan menentukan
     grid referensi.
   - MODIS/GPM GOLD dicari di disk di bawah
-    data/datasets/{id}_{slug}/gold/{modis,gpm}/{YYYYMMDD}/, dicocokkan ke
+    data/datasets/{id}_{slug}/{YYYYMMDD}/gold/{modis,gpm}/, dicocokkan ke
     waktu akuisisi S1 dalam jendela 24 jam, direproject ke grid S1, dan
     didaftarkan sebagai baris `nasa_scenes`.
 
-Hasilnya ditulis ke data/datasets/{id}_{slug}/fusion/{date}/ sebagai .h5 +
+Hasilnya ditulis ke data/datasets/{id}_{slug}/{date}/fusion/ sebagai .h5 +
 metadata JSON, dicatat sebagai baris `fusion_products` (untuk lineage
 `fusion_id`) dan baris `data_products` (tier=FUSION, source=FUSION).
 
@@ -1254,8 +1254,8 @@ def create_fusion_stack(
     kedua level.
 
     Menulis, untuk tiap level:
-        data/datasets/{id}_{slug}/fusion/{date}/fusion_{date}_{level}.h5
-        data/datasets/{id}_{slug}/fusion/{date}/fusion_metadata_{level}.json
+        data/datasets/{id}_{slug}/{date}/fusion/fusion_{date}_{level}.h5
+        data/datasets/{id}_{slug}/{date}/fusion/fusion_metadata_{level}.json
 
     Args:
         plan: ProcessingPlan dataset. Boleh None; kalau begitu dibaca dari

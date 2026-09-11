@@ -1,22 +1,25 @@
 # etl/migrate_data_structure.py
 """
-Migrasi struktur folder data/datasets/... ke layout tier-source-scene.
+Migrasi struktur folder data/datasets/... ke layout dataset-tanggal-tier.
 
 Layout tujuan (lihat etl/folder_manager.py):
 
     data/datasets/{dataset_id}_{slug_nama}/
-        {raw,bronze,silver,gold}/{source}/{scene}/...
-        fusion/{scene}/...
+        {YYYYMMDD}/{raw,bronze,silver,gold}/{source}/[{scene S1}/]...
+        {YYYYMMDD}/fusion/...
+        _granule_cache/{modis,gpm}/...
 
-Script ini menerima dua layout asal sekaligus, jadi bisa dijalankan dari
+Script ini menerima tiga layout asal sekaligus, jadi bisa dijalankan dari
 mana pun instalasi berada:
 
   L1 (paling lama)  data/datasets/{dataset_id}/{YYYYMMDD}/{tier}/*
-  L2 (sebelumnya)   data/datasets/{dataset_id}_{slug}/{tier}/{scene}/*
+  L2                data/datasets/{dataset_id}_{slug}/{tier}/{scene}/*
+  L3 (sebelumnya)   data/datasets/{dataset_id}_{slug}/{tier}/{source}/{scene}/*
 
-Perbedaan L2 -> layout sekarang: sisipan folder `{source}` di bawah tiap
-tier, dan stack fusion pindah dari `gold/{tanggal}/` ke tier `fusion/`
-sendiri (arti GOLD berubah -- lihat database/migrations/013).
+Layout tujuan dibangun seluruhnya lewat folder_manager, jadi file cukup
+dipindah ke path yang dikembalikannya. Stack fusion lama di `gold/{tanggal}/`
+ikut pindah ke tier `fusion/` (arti GOLD berubah -- lihat
+database/migrations/013).
 
 Kunci scene:
   - Produk Sentinel-1 memakai `product_identifier` scene tsb, diambil dari
@@ -281,8 +284,8 @@ def _migrate_untracked_files(
             dst = fm.get_fusion_dir(dataset_id, dataset_name, scene_key) / meta_path.name
             counts[_move_untracked(meta_path, dst, dry_run)] += 1
 
-        # Cache granule mentah MODIS/GPM: L1 memakai raw/{source}/, L2 memakai
-        # raw/_aux_{source}/. Keduanya jadi raw/{source}/ di layout sekarang.
+        # Cache granule mentah MODIS/GPM: L1/L3 memakai raw/{source}/, L2
+        # memakai raw/_aux_{source}/. Keduanya jadi _granule_cache/{source}/.
         for source in ("modis", "gpm"):
             new_cache = fm.get_granule_cache_dir(dataset_id, dataset_name, source)
             for legacy in (root / "raw" / f"_aux_{source}", root / "raw" / source):
@@ -454,7 +457,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
             "Migrasi data/datasets/... ke layout "
-            "{id}_{slug}/{tier}/{source}/{scene}/ + fusion/{scene}/"
+            "{id}_{slug}/{tanggal}/{tier}/{source}/ + _granule_cache/"
         )
     )
     parser.add_argument("--dataset-id", type=int, default=None, help="Migrasi satu dataset saja")

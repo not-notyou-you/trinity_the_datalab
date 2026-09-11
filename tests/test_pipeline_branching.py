@@ -223,8 +223,9 @@ def tiers(rows) -> set[str]:
 
 
 def files_in(dataset_id, dataset_name, tier, source, scene_key) -> list[str]:
-    d = fm.get_dataset_root(dataset_id, dataset_name) / tier / source / scene_key
-    return sorted(p.name for p in d.iterdir()) if d.exists() else []
+    return sorted(
+        p.name for p in fm.get_scene_files(dataset_id, dataset_name, tier, source, scene_key)
+    )
 
 
 # ---------------------------------------------------------------------------

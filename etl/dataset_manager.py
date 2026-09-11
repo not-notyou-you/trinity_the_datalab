@@ -606,6 +606,45 @@ class DatasetManager:
             sess.flush()
             return row.id
 
+    @staticmethod
+    def scene_is_done(current_stage: str | None, stage_status: str | None) -> bool:
+        """Scene benar-benar selesai hanya di CLEANUP/COMPLETED (tahap terakhir
+        _cleanup_worker). stage_status COMPLETED saja tidak cukup: nilai itu
+        juga ditulis di akhir tiap tahap antara (CROP, GOLD_EXPORT, ...), jadi
+        scene yang terputus sesudah tahap seperti itu dulu dilewati selamanya."""
+        return current_stage == "CLEANUP" and stage_status == "COMPLETED"
+
+    def begin_job_run(self, job_id: int) -> int:
+        """Siapkan counter & state untuk satu eksekusi run_dataset_job.
+
+        Counter job/dataset dulu hanya bertambah dan tidak pernah di-reset saat
+        retry/resume, sehingga kegagalan eksekusi lama (mis. MemoryError)
+        terbawa selamanya: status akhir tetap FAILED walau semua scene sudah
+        berhasil, dan UI menampilkan "4 gagal" untuk dataset 2 scene. Counter
+        diturunkan ulang dari scene yang sudah selesai dan error lama
+        dibersihkan; kegagalan di eksekusi ini menambah counter seperti biasa.
+
+        Returns: jumlah scene yang sudah selesai."""
+        with self._db.session() as sess:
+            job = sess.get(DatasetJob, job_id)
+            if job is None:
+                return 0
+            rows = sess.scalars(
+                select(SceneJobState).where(SceneJobState.job_id == job_id)
+            ).all()
+            done = sum(1 for r in rows if self.scene_is_done(r.current_stage, r.stage_status))
+            for r in rows:
+                r.last_error = None
+            job.downloaded_count = done
+            job.processed_count = done
+            job.cleaned_count = done
+            job.failed_count = 0
+            dataset = sess.get(Dataset, job.dataset_id)
+            if dataset:
+                dataset.completed_scenes = done
+                dataset.failed_scenes = 0
+        return done
+
     def increment_job_counters(
         self,
         job_id: int,

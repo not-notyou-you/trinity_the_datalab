@@ -266,8 +266,8 @@ def _run_modis(levels, tmp_path):
 
 
 def _written(dataset_id, name, tier, source, date_key):
-    d = fm.get_dataset_root(dataset_id, name) / tier / source / date_key
-    return sorted(p.name for p in d.iterdir()) if d.exists() else []
+    d = fm.get_dataset_root(dataset_id, name) / date_key / tier / source
+    return sorted(p.name for p in d.iterdir() if p.is_file()) if d.exists() else []
 
 
 class TestModisBranching:

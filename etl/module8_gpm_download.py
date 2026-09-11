@@ -6,8 +6,8 @@ published in Final), aggregates it into 24h/72h/7-day accumulation windows,
 reprojects/crops it to the dataset AOI at the Sentinel-1 grid resolution, and
 writes one GeoTIFF per window for lineage tracking.
 
-Output ditulis ke data/datasets/{id}_{slug}/silver/gpm/{YYYYMMDD}/ dan
-granule mentahnya di-cache di raw/gpm/. Cache-nya flat (bukan per-tanggal)
+Output ditulis ke data/datasets/{id}_{slug}/{YYYYMMDD}/silver/gpm/ dan
+granule mentahnya di-cache di _granule_cache/gpm/. Cache-nya flat (bukan per-tanggal)
 karena satu granule harian ikut dipakai window 72h/7d tanggal-tanggal
 berikutnya — lihat folder_manager.get_granule_cache_dir.
 
@@ -33,7 +33,9 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import re
 import shutil
+import threading
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -59,15 +61,25 @@ GES_DISC_ROOT = "https://gpm1.gesdisc.eosdis.nasa.gov/data/GPM_L3"
 IMERG_SUBDATASET = "precipitation"  # mm, HDF5/NetCDF variable name
 
 # IMERG Final Run (GPM_3IMERGDF) is the primary, gauge-calibrated product but
-# is published with ~3-4 months of latency. For dates not yet covered by
-# Final, fall back to Late Run (GPM_3IMERGDL, ~14h latency, satellite-only).
-# Falling back is recorded per-day/window so downstream consumers know the
-# accumulation isn't built purely from the calibrated product.
+# is published with months of latency (per Sep 2026, V07 Final on GES DISC
+# ends at 2025-09). For dates not covered by Final, fall back to Late Run
+# (GPM_3IMERGDL, ~14h latency, satellite-only), then Early Run (GPM_3IMERGDE,
+# ~4h latency). Falling back is recorded per-day/window so downstream
+# consumers know the accumulation isn't built purely from the calibrated
+# product.
 IMERG_RUNS = {
     "F": {"product": "GPM_3IMERGDF", "file_infix": ""},
     "L": {"product": "GPM_3IMERGDL", "file_infix": "-L"},
+    "E": {"product": "GPM_3IMERGDE", "file_infix": "-E"},
 }
-IMERG_RUN_ORDER = ["F", "L"]
+IMERG_RUN_ORDER = ["F", "L", "E"]
+
+# Listing folder bulanan GES DISC di-cache per proses: satu window 7d
+# menyentuh folder yang sama sampai 7 hari x 3 run. TTL supaya granule yang
+# baru terbit (live scheduler harian) tetap terlihat.
+_LISTING_TTL_S = 3600
+_listing_cache: dict[tuple[str, int, int], tuple[float, frozenset[str]]] = {}
+_listing_lock = threading.Lock()
 
 # Jabodetabek bounding box, WGS84 (min_lon, min_lat, max_lon, max_lat)
 JABODETABEK_BBOX = (106.4, -6.7, 107.2, -5.9)
@@ -137,16 +149,88 @@ class _GranuleNotFound(Exception):
     exist for that run/date, so retrying the same URL is pointless."""
 
 
-def _daily_granule_filename(date: datetime, run: str) -> str:
+def _daily_granule_filename(date: datetime, run: str, minor: str = "B") -> str:
+    """Nama granule dengan huruf minor versi TEBAKAN. Hanya dipakai sebagai
+    cadangan kalau listing folder gagal — lihat _resolve_daily_granule."""
     date_str = date.strftime("%Y%m%d")
     infix = IMERG_RUNS[run]["file_infix"]
-    return f"3B-DAY{infix}.MS.MRG.3IMERG.{date_str}-S000000-E235959.V{IMERG_VERSION}B.nc4"
+    return f"3B-DAY{infix}.MS.MRG.3IMERG.{date_str}-S000000-E235959.V{IMERG_VERSION}{minor}.nc4"
+
+
+def _run_base_url(run: str) -> str:
+    return f"{GES_DISC_ROOT}/{IMERG_RUNS[run]['product']}.{IMERG_VERSION}"
 
 
 def _daily_granule_url(date: datetime, run: str) -> str:
-    product = IMERG_RUNS[run]["product"]
-    base = f"{GES_DISC_ROOT}/{product}.{IMERG_VERSION}"
-    return f"{base}/{date.year}/{date.month:02d}/{_daily_granule_filename(date, run)}"
+    return f"{_run_base_url(run)}/{date.year}/{date.month:02d}/{_daily_granule_filename(date, run)}"
+
+
+def _granule_pattern(date: datetime, run: str) -> re.Pattern:
+    infix = re.escape(IMERG_RUNS[run]["file_infix"])
+    return re.compile(
+        rf"^3B-DAY{infix}\.MS\.MRG\.3IMERG\.{date:%Y%m%d}-S000000-E235959"
+        rf"\.V{IMERG_VERSION}([A-Z])\.nc4$"
+    )
+
+
+def _list_month_granules(run: str, year: int, month: int) -> frozenset[str]:
+    """Nama berkas .nc4 di folder bulanan GES DISC untuk satu run. Folder
+    yang 404 (run itu belum/tidak menerbitkan bulan tsb) = himpunan kosong."""
+    import requests
+
+    key = (run, year, month)
+    now = time.monotonic()
+    with _listing_lock:
+        hit = _listing_cache.get(key)
+        if hit and now - hit[0] < _LISTING_TTL_S:
+            return hit[1]
+
+    resp = requests.get(
+        f"{_run_base_url(run)}/{year}/{month:02d}/", headers=_auth_headers(), timeout=60
+    )
+    if resp.status_code == 404:
+        names: frozenset[str] = frozenset()
+    else:
+        resp.raise_for_status()
+        names = frozenset(re.findall(r'href="(?:[^"]*/)?([^"/?#]+\.nc4)"', resp.text))
+    with _listing_lock:
+        _listing_cache[key] = (now, names)
+    return names
+
+
+def _resolve_daily_granule(date: datetime, run: str, raw_dir: Path) -> tuple[str, str] | None:
+    """(nama berkas, URL) granule harian `run` untuk `date`, atau None kalau
+    run itu memang belum menerbitkannya.
+
+    Huruf minor versi TIDAK di-hardcode: GES DISC mengganti V07B -> V07C di
+    awal Maret 2026, dan nama tebakan "V07B" membuat Final maupun Late 404
+    untuk semua tanggal sesudahnya walau datanya ada. Nama dibaca dari listing
+    folder bulanannya; kalau satu hari punya beberapa minor, yang terbaru
+    dipakai. Granule yang sudah ada di cache lokal dipakai tanpa listing."""
+    import requests
+
+    pat = _granule_pattern(date, run)
+    month_url = f"{_run_base_url(run)}/{date.year}/{date.month:02d}"
+
+    local = sorted(
+        (m.group(1), p.name) for p in raw_dir.glob("3B-DAY*.nc4") if (m := pat.match(p.name))
+    )
+    if local:
+        return local[-1][1], f"{month_url}/{local[-1][1]}"
+
+    try:
+        names = _list_month_granules(run, date.year, date.month)
+    except requests.RequestException as exc:
+        guess = _daily_granule_filename(date, run)
+        logger.warning(
+            "[M8] listing %s gagal (%s), coba nama tebakan %s", month_url, exc, guess
+        )
+        return guess, f"{month_url}/{guess}"
+
+    candidates = sorted((m.group(1), n) for n in names if (m := pat.match(n)))
+    if not candidates:
+        return None
+    return candidates[-1][1], f"{month_url}/{candidates[-1][1]}"
 
 
 def _download_with_retry(
@@ -252,15 +336,45 @@ def _download_with_retry(
 def _read_daily_precip(nc4_path: Path):
     """Read the daily precipitation band (mm/day) from an IMERG NetCDF granule.
     Nodata pixels are filled with 0 mm so they contribute nothing to the
-    accumulation sums downstream."""
-    src_path = f'NETCDF:"{nc4_path}":{IMERG_SUBDATASET}'
-    with rasterio.open(src_path) as src:
-        data = src.read(1).astype("float64")
-        transform = src.transform
-        crs = str(src.crs) if src.crs else DST_CRS
-        nodata = src.nodata if src.nodata is not None else DEFAULT_NODATA
-        data[data == nodata] = 0.0
-    return data, transform, crs
+    accumulation sums downstream.
+
+    Dibaca lewat h5py dari koordinat lat/lon file, bukan driver NETCDF GDAL:
+    variabel IMERG berdimensi (time, lon, lat), dan GDAL membacanya tanpa
+    geotransform (matriks identitas, CRS kosong) serta tertransposisi
+    3600x1800 — crop ke AOI lalu selalu gagal "Input shapes do not overlap
+    raster"."""
+    import h5py
+    import numpy as np
+    from rasterio.transform import from_origin
+
+    with h5py.File(nc4_path, "r") as h5:
+        var = h5[IMERG_SUBDATASET]
+        arr = var[0] if var.ndim == 3 else var[()]
+        lat = h5["lat"][:].astype("float64")
+        lon = h5["lon"][:].astype("float64")
+
+    data = np.asarray(arr, dtype="float64")
+    if data.shape == (lon.size, lat.size) and lon.size != lat.size:
+        data = data.T  # (lon, lat) -> (lat, lon)
+    elif data.shape != (lat.size, lon.size):
+        raise RuntimeError(
+            f"dimensi {IMERG_SUBDATASET} {data.shape} tidak cocok dengan "
+            f"lat={lat.size} lon={lon.size} di {nc4_path.name}"
+        )
+    if lat[0] < lat[-1]:  # utara di atas
+        data = data[::-1]
+        lat = lat[::-1]
+    if lon[0] > lon[-1]:
+        data = data[:, ::-1]
+        lon = lon[::-1]
+
+    res_x = abs(lon[-1] - lon[0]) / (lon.size - 1)
+    res_y = abs(lat[0] - lat[-1]) / (lat.size - 1)
+    transform = from_origin(lon[0] - res_x / 2, lat[0] + res_y / 2, res_x, res_y)
+
+    # _FillValue IMERG = -9999.9; curah hujan tidak pernah negatif.
+    data[~np.isfinite(data) | (data < 0)] = 0.0
+    return np.ascontiguousarray(data), transform, DST_CRS
 
 
 def _fetch_daily_precip(
@@ -272,28 +386,39 @@ def _fetch_daily_precip(
     scene_id: str = "",
     window_name: str = "",
 ) -> tuple:
-    """Try each run in `IMERG_RUN_ORDER` (Final, then Late) for `date`,
-    falling through to the next run only when the granule genuinely doesn't
-    exist (404) for the previous one."""
+    """Try each run in `IMERG_RUN_ORDER` (Final, Late, Early) for `date`,
+    falling through to the next run only when the previous one genuinely
+    hasn't published the granule (absent from its monthly listing, or 404).
+    A run that hasn't published is not a failure, so it isn't attempted —
+    and therefore never logged as a FAILED download."""
     not_found_reasons = []
     for run in IMERG_RUN_ORDER:
-        filename = _daily_granule_filename(date, run)
+        resolved = _resolve_daily_granule(date, run, raw_dir)
+        if resolved is None:
+            not_found_reasons.append(f"{run}: belum terbit di {IMERG_RUNS[run]['product']}")
+            continue
+        filename, url = resolved
         nc4_path = raw_dir / filename
         try:
             checksum = _download_with_retry(
-                _daily_granule_url(date, run), nc4_path,
+                url, nc4_path,
                 plog=plog, dataset_id=dataset_id, scene_id=scene_id,
                 item_label=f"{window_name} day {date.date().isoformat()} ({run})",
             )
         except _GranuleNotFound as exc:
             not_found_reasons.append(f"{run}: {exc}")
             continue
+        if not_found_reasons:
+            logger.info(
+                "[M8] %s: %s -> pakai %s",
+                date.date().isoformat(), "; ".join(not_found_reasons), filename,
+            )
         data, transform, crs = _read_daily_precip(nc4_path)
         return data, transform, crs, checksum, run
 
     raise RuntimeError(
-        f"tidak ada produk IMERG (Final/Late) untuk tanggal {date.date().isoformat()}: "
-        + "; ".join(not_found_reasons)
+        f"tidak ada produk IMERG ({'/'.join(IMERG_RUN_ORDER)}) untuk tanggal "
+        f"{date.date().isoformat()}: " + "; ".join(not_found_reasons)
     )
 
 
@@ -359,7 +484,12 @@ def _reproject_and_crop_to_s1_grid(
 
         geom = mapping(box(*aoi_bbox))
         with memfile.open() as src:
-            crop_image, crop_transform = mask(src, [geom], crop=True, nodata=DEFAULT_NODATA)
+            # all_touched: sel IMERG 0.1 derajat jauh lebih besar dari AOI; tanpa
+            # ini sel tepi yang pusatnya di luar bbox jadi nodata padahal
+            # sebagian AOI ada di dalamnya (terukur 12.5% AOI kosong).
+            crop_image, crop_transform = mask(
+                src, [geom], crop=True, all_touched=True, nodata=DEFAULT_NODATA
+            )
             crop_crs = src.crs
 
     crop_height, crop_width = crop_image.shape[1], crop_image.shape[2]
@@ -435,9 +565,9 @@ def download_gpm_scene(
 
     Writes (fusion *inputs*, consumed by module9_fusion.py — not a GOLD
     deliverable themselves):
-        data/datasets/{id}_{slug}/silver/{date}/gpm_rain_24h_{date}.tif
-        data/datasets/{id}_{slug}/silver/{date}/gpm_rain_72h_{date}.tif
-        data/datasets/{id}_{slug}/silver/{date}/gpm_rain_7d_{date}.tif
+        data/datasets/{id}_{slug}/{date}/silver/gpm/gpm_rain_24h_{date}.tif
+        data/datasets/{id}_{slug}/{date}/silver/gpm/gpm_rain_72h_{date}.tif
+        data/datasets/{id}_{slug}/{date}/silver/gpm/gpm_rain_7d_{date}.tif
 
     `processing_levels` (dari dataset_source_config) menentukan window mana
     yang dibangun — dan karena itu berapa granule harian yang diunduh:
@@ -562,9 +692,10 @@ def download_gpm_scene(
         )
 
     used_late_run = any(
-        "L" in output.get("runs_used", [])
+        run in ("L", "E")
         for output in window_outputs.values()
         if not output.get("skipped")
+        for run in output.get("runs_used", [])
     )
     if failed_windows:
         quality = "DEGRADED"

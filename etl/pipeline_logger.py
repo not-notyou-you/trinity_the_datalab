@@ -4,7 +4,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import re
 import threading
 import time
 import traceback
@@ -16,17 +15,13 @@ import psutil
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 
+from etl import folder_manager as fm
 from etl.database_client import DatabaseClient, ProcessingLog
 
 logger = logging.getLogger(__name__)
 
 _SAMPLE_INTERVAL_SEC = 0.5
 _TRACEBACK_MAX_CHARS = 4000
-
-
-def _slug_filename(name: str) -> str:
-    slug = re.sub(r"[^A-Za-z0-9_.-]", "_", name).strip("_")
-    return slug or "dataset"
 
 
 # The whole `etl` package logger, not just this module's. Stage transitions
@@ -42,11 +37,11 @@ _scope_lock = threading.Lock()
 _thread_scopes: dict[int, Path] = {}
 _scope_depth = 0
 _saved_level: int | None = None
-# One FileHandler per log path, reference-counted. Two runs can resolve to the
-# same file (the path is derived from the dataset *name*, so re-creating a
-# deleted dataset under the same name collides), and attaching a second
-# handler to the same path made the `etl` logger write every record twice --
-# the scope filter matches on path, so it cannot tell the handlers apart.
+# One FileHandler per log path, reference-counted. Two runs of the same
+# dataset (a job and a live MODIS/GPM ingest) resolve to the same file, and
+# attaching a second handler to the same path made the `etl` logger write
+# every record twice -- the scope filter matches on path, so it cannot tell
+# the handlers apart.
 _path_handlers: dict[Path, tuple[logging.Handler, int]] = {}
 
 
@@ -72,16 +67,23 @@ def adopt_dataset_log_scope(log_path: Path) -> None:
         _thread_scopes[threading.get_ident()] = log_path
 
 
-def dataset_log_path(dataset_name: str, logs_dir: str | None = None) -> Path:
-    """Resolve the .txt path a dataset's run log is appended to."""
+def dataset_log_path(
+    dataset_id: int, dataset_name: str, logs_dir: str | None = None
+) -> Path:
+    """Resolve the .txt path a dataset's run log is appended to:
+    {LOGS_DIR}/{dataset_id}_{slug}.txt -- the same name as the dataset's data
+    folder, so one dataset has exactly one log file and two datasets sharing
+    a name never share a log."""
     logs_dir = logs_dir or os.getenv("LOGS_DIR", "logs_pipeline")
     log_dir_path = Path(logs_dir)
     log_dir_path.mkdir(parents=True, exist_ok=True)
-    return log_dir_path / f"{_slug_filename(dataset_name)}.txt"
+    return log_dir_path / f"{fm.dataset_dir_name(dataset_id, dataset_name)}.txt"
 
 
 @contextmanager
-def dataset_log_file(dataset_name: str, logs_dir: str | None = None) -> Iterator[Path]:
+def dataset_log_file(
+    dataset_id: int, dataset_name: str, logs_dir: str | None = None
+) -> Iterator[Path]:
     """Attach a per-dataset FileHandler to the `etl` package logger for the
     duration of a batch run, so every [PLOG] event (download progress and
     stage transitions alike) plus any module traceback is appended to one .txt
@@ -94,7 +96,7 @@ def dataset_log_file(dataset_name: str, logs_dir: str | None = None) -> Iterator
     contained FAILED lines only, or nothing at all."""
     global _scope_depth, _saved_level
 
-    log_path = dataset_log_path(dataset_name, logs_dir)
+    log_path = dataset_log_path(dataset_id, dataset_name, logs_dir)
 
     etl_logger = logging.getLogger(_ETL_LOGGER_NAME)
     with _scope_lock:

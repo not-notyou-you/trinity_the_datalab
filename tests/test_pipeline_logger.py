@@ -101,7 +101,7 @@ class TestStageContextManager:
 
 
 class TestDatasetLogFile:
-    """Regression cover for the run-log .txt files (logs/<dataset>.txt).
+    """Regression cover for the run-log .txt files (logs/<id>_<dataset>.txt).
 
     These were empty (or FAILED-only): dataset_log_file attached its handler
     to the `etl.pipeline_logger` logger, which is NOTSET and so inherited
@@ -115,7 +115,7 @@ class TestDatasetLogFile:
         from etl.pipeline_logger import dataset_log_file
 
         plog_logger = logging.getLogger("etl.pipeline_logger")
-        with dataset_log_file("DS_INFO", logs_dir=str(tmp_path)) as path:
+        with dataset_log_file(1, "DS_INFO", logs_dir=str(tmp_path)) as path:
             plog_logger.info("[PLOG] %s", '{"stage": "DOWNLOAD", "status": "STARTED"}')
 
         text = path.read_text(encoding="utf-8")
@@ -128,7 +128,7 @@ class TestDatasetLogFile:
         from etl.pipeline_logger import dataset_log_file
 
         orch_logger = logging.getLogger("etl.module5_orchestrator")
-        with dataset_log_file("DS_TRACE", logs_dir=str(tmp_path)) as path:
+        with dataset_log_file(2, "DS_TRACE", logs_dir=str(tmp_path)) as path:
             try:
                 raise ValueError("boom")
             except ValueError:
@@ -147,8 +147,8 @@ class TestDatasetLogFile:
         plog_logger = logging.getLogger("etl.pipeline_logger")
         paths: dict[str, object] = {}
 
-        def run(name: str, marker: str) -> None:
-            with dataset_log_file(name, logs_dir=str(tmp_path)) as path:
+        def run(dataset_id: int, name: str, marker: str) -> None:
+            with dataset_log_file(dataset_id, name, logs_dir=str(tmp_path)) as path:
                 paths[name] = path
 
                 def worker() -> None:
@@ -160,8 +160,8 @@ class TestDatasetLogFile:
                 t.join()
 
         threads = [
-            threading.Thread(target=run, args=("DS_A", "MARKER_A")),
-            threading.Thread(target=run, args=("DS_B", "MARKER_B")),
+            threading.Thread(target=run, args=(10, "DS_A", "MARKER_A")),
+            threading.Thread(target=run, args=(11, "DS_B", "MARKER_B")),
         ]
         for t in threads:
             t.start()
@@ -180,6 +180,6 @@ class TestDatasetLogFile:
 
         etl_logger = logging.getLogger("etl")
         before = etl_logger.level
-        with dataset_log_file("DS_LEVEL", logs_dir=str(tmp_path)):
+        with dataset_log_file(3, "DS_LEVEL", logs_dir=str(tmp_path)):
             assert etl_logger.isEnabledFor(logging.INFO)
         assert etl_logger.level == before

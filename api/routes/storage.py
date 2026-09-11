@@ -53,17 +53,20 @@ def _dataset_roots() -> list[Path]:
 
 
 def _get_tier_paths() -> dict[str, list[Path]]:
-    """Folder per tier di layout tier-source-scene sekarang, dikumpulkan dari
-    seluruh dataset: data/datasets/{id}_{slug}/{tier}/.
+    """Folder per tier di layout dataset-tanggal-tier sekarang, dikumpulkan
+    dari seluruh dataset: data/datasets/{id}_{slug}/{tanggal}/{tier}/ untuk
+    tiap tanggal, ditambah _granule_cache/ untuk tier raw.
 
     Sebelumnya fungsi ini menunjuk `processed/{bronze,silver,gold}` dan
     `recovered_temp/` -- layout sebelum refactor tier/source, yang sudah
     tidak pernah ditulis lagi. Akibatnya seluruh router ini melaporkan 0 byte
     untuk semua tier dan cleanup-nya tidak pernah menghapus apa pun."""
     roots = _dataset_roots()
-    paths = {tier: [r / tier for r in roots] for tier in fm.TIERS}
-    paths["partial"] = [r / tier for r in roots for tier in fm.TIERS]
-    paths["all"] = [r / tier for r in roots for tier in _DERIVED_TIERS]
+    paths = {
+        tier: [d for r in roots for d in fm.tier_dirs_under(r, tier)] for tier in fm.TIERS
+    }
+    paths["partial"] = [d for tier in fm.TIERS for d in paths[tier]]
+    paths["all"] = [d for tier in _DERIVED_TIERS for d in paths[tier]]
     return paths
 
 

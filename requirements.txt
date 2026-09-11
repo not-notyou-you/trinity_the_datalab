@@ -13,6 +13,9 @@ rasterio==1.4.3
 shapely==2.0.6
 pyproj==3.7.0
 h5py==3.12.1
+# pyhdf: baca granule MODIS HDF4-EOS (etl/module7_modis_download.py). Wheel
+# rasterio dari pip tidak menyertakan driver HDF4 GDAL.
+pyhdf==0.11.7
 numpy==2.1.3
 scipy==1.14.1
 xarray==2024.11.0

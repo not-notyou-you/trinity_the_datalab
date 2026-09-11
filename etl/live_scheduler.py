@@ -108,7 +108,7 @@ class LiveScheduler:
         # MODIS/GPM never pass through run_dataset_job, so without this wrapper
         # their events reached processing_logs only and never the .txt file.
         if name in ("MODIS", "GPM"):
-            with dataset_log_file(live["name"]):
+            with dataset_log_file(live["dataset_id"], live["name"]):
                 logger.info("[LIVE] %s: mulai cek & ingest dataset=%r", name, live["name"])
                 if name == "MODIS":
                     return self._check_and_ingest_modis(live, source)

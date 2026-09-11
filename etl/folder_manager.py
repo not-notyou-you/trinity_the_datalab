@@ -2,44 +2,57 @@
 """
 Path management utility untuk struktur penyimpanan data per dataset.
 
-Layout on-disk:
+Layout on-disk — dikelompokkan per dataset, lalu per tanggal akuisisi, lalu
+per tier:
+
     data/datasets/{dataset_id}_{slug(dataset_name)}/
         metadata.json
-        raw/
-            sentinel1/{scene}/          # .SAFE.zip + TIFF hasil ekstrak per band
-            modis/                      # cache granule .hdf mentah (flat, lintas tanggal)
-            gpm/                        # cache granule .nc4 mentah (flat, lintas tanggal)
-        bronze/
-            sentinel1/{scene}/
-            modis/{scene}/               # hanya kalau MODIS dikonfigurasi RAW
-            gpm/{scene}/                 # hanya kalau GPM dikonfigurasi RAW
-        silver/
-            sentinel1/{scene}/
-            modis/{scene}/
-            gpm/{scene}/
-        gold/
-            sentinel1/{scene}/
-            modis/{scene}/
-            gpm/{scene}/
-        fusion/
-            {scene}/                    # lintas-source, jadi tidak punya level source
-        preview/
-            {scene}/                    # lintas-source juga
+        {YYYYMMDD}/
+            raw/
+                sentinel1/{scene}/      # .SAFE.zip + TIFF hasil ekstrak per band
+            bronze/
+                sentinel1/{scene}/
+                modis/                  # hanya kalau MODIS dikonfigurasi RAW
+                gpm/                    # hanya kalau GPM dikonfigurasi RAW
+            silver/
+                sentinel1/{scene}/
+                modis/
+                gpm/
+            gold/
+                sentinel1/{scene}/
+                modis/
+                gpm/
+            fusion/                     # lintas-source, jadi tidak punya level source
+            preview/                    # lintas-source juga
                 {PROCESSING_LEVEL}/     # RAW (dirender dari BRONZE) | PROCESSED (dari GOLD)
                     grayscale/          # PNG stretch persentil, 1 kanal + alpha
                     colored/            # PNG colormap RGBA
                     composite/          # PNG false-color RGB (VV/VH/VV-VH)
+        _granule_cache/
+            modis/                      # cache granule .hdf mentah (flat, lintas tanggal)
+            gpm/                        # cache granule .nc4 mentah (flat, lintas tanggal)
+        _work/{scene}/                  # scratch kalibrasi, dihapus setelah CROP
 
-`{scene}` untuk file Sentinel-1 adalah product_identifier scene tersebut
-(sudah unik termasuk jam:menit:detik). Untuk artefak yang tidak terikat ke
-satu scene S1 tertentu (MODIS/GPM harian, dan output fusion yang di-dedup per
-tanggal — lihat module9_fusion.py), `{scene}` adalah tanggal akuisisi dalam
-format YYYYMMDD.
+`{scene}` untuk Sentinel-1 adalah product_identifier scene tersebut (sudah
+unik termasuk jam:menit:detik) — satu tanggal bisa punya lebih dari satu
+scene S1, jadi folder scene tetap ada di bawah folder source. Untuk artefak
+yang tidak terikat ke satu scene S1 (MODIS/GPM harian, fusion, preview),
+kunci scene-nya adalah tanggal YYYYMMDD itu sendiri, jadi file-nya duduk
+langsung di folder source/tier tanpa folder tanggal kedua.
+
+Folder tanggal diturunkan dari kunci scene: tanggal YYYYMMDD apa adanya, atau
+tanggal akuisisi pertama di dalam product_identifier S1
+(`S1A_IW_GRDH_1SDV_20240115T...`). Kunci tanpa tanggal ditolak — lebih baik
+gagal keras daripada diam-diam menulis ke folder yang salah.
 
 Level `{source}` ada di setiap tier kecuali `fusion` dan `preview`: keduanya
 justru *gabungan* dari semua source, jadi memberinya satu folder source akan
 menyesatkan. Semua fungsi di sini menolak kombinasi tier/source yang tidak
 valid alih-alih diam-diam menulis ke tempat yang salah.
+
+Cache granule MODIS/GPM sengaja di luar folder tanggal: satu granule GPM
+harian ikut dipakai window 72h/7d tanggal berikutnya, jadi tidak bisa
+dimiliki satu tanggal saja. Dia tetap dihitung sebagai tier `raw`.
 
 `preview` adalah tier turunan (PNG hasil render dari gold/) — dia ikut di
 `TIERS` supaya terhitung di `storage_breakdown` dan bisa dilisting API, tapi
@@ -65,9 +78,7 @@ SOURCES: tuple[str, ...] = ("sentinel1", "modis", "gpm")
 # lintas-source.
 # bronze dipakai SEMUA source sejak model per-satelit (DOCS/ETL.md): dia tempat
 # artefak level RAW tiap sumber berhenti — S1 hasil crop AOI, MODIS peta banjir
-# tanpa indeks turunan, GPM curah hujan harian tanpa window akumulasi. Sebelum
-# itu MODIS/GPM memang langsung dari granule di raw/ ke produk harian di
-# silver/, karena satu-satunya jalur yang ada adalah jalur penuh.
+# tanpa indeks turunan, GPM curah hujan harian tanpa window akumulasi.
 TIER_SOURCES: dict[str, tuple[str, ...]] = {
     "raw": SOURCES,
     "bronze": SOURCES,
@@ -77,26 +88,33 @@ TIER_SOURCES: dict[str, tuple[str, ...]] = {
     "fusion": (),
 }
 
-# Tier yang tidak punya level source: langsung {tier}/{scene}/.
+# Tier yang tidak punya level source: langsung {tanggal}/{tier}/.
 SOURCELESS_TIERS: tuple[str, ...] = tuple(t for t, s in TIER_SOURCES.items() if not s)
 
 # Subfolder di dalam satu scene preview. Urutannya ikut dipakai
 # module10_generate_preview.py sebagai urutan tampil.
 PREVIEW_KINDS: tuple[str, ...] = ("grayscale", "colored", "composite")
 
-# Level pemrosesan yang bisa jadi nama folder di dalam preview/{scene}/.
+# Level pemrosesan yang bisa jadi nama folder di dalam {tanggal}/preview/.
 # Sama dengan etl.processing_plan.LEVEL_ORDER, tapi ditulis ulang di sini
 # supaya folder_manager tetap bisa diimpor tanpa menarik modul ETL lain
 # (dia dipakai API dan skrip perawatan yang tidak butuh pipeline-nya).
 PREVIEW_LEVELS: tuple[str, ...] = ("RAW", "PROCESSED")
 DEFAULT_PREVIEW_LEVEL = "PROCESSED"
 
-# Source yang file mentahnya berupa cache granule flat (bukan per-scene):
+# Source yang file mentahnya berupa cache granule flat (bukan per-tanggal):
 # satu granule GPM harian ikut dipakai window 72h/7d tanggal berikutnya, jadi
 # tidak bisa dimiliki satu folder tanggal saja.
 FLAT_RAW_SOURCES: frozenset[str] = frozenset({"modis", "gpm"})
 
 DATA_ROOT = Path("data") / "datasets"
+
+# Folder di root dataset yang bukan folder tanggal.
+GRANULE_CACHE_DIRNAME = "_granule_cache"
+SCRATCH_DIRNAME = "_work"
+
+# Label scene semu untuk cache granule di listing berkas API.
+GRANULE_CACHE_LABEL = "(granule cache)"
 
 # Nama folder source <-> nilai kolom data_products.source.
 SOURCE_DB_VALUES: dict[str, str] = {
@@ -106,11 +124,16 @@ SOURCE_DB_VALUES: dict[str, str] = {
 }
 FUSION_DB_SOURCE = "FUSION"
 
+_DATE_DIR_RE = re.compile(r"^\d{8}$")
+# Tanggal pertama di product_identifier S1, mis. "..._1SDV_20240115T111407_...".
+# Batas non-digit di kedua sisi supaya timestamp panjang tidak ikut terbaca.
+_DATE_IN_KEY_RE = re.compile(r"(?<!\d)(\d{8})(?!\d)")
+
 
 def slugify(name: str) -> str:
     """Nama dataset -> slug aman-filesystem, mis. "hakim d1" -> "hakim_d1".
-    Sama persis dengan etl/pipeline_logger.py:_slug_filename supaya nama
-    folder dataset & nama file log tetap konsisten."""
+    Dipakai untuk nama folder dataset dan nama file log run-nya
+    (etl/pipeline_logger.py), jadi keduanya selalu konsisten."""
     slug = re.sub(r"[^A-Za-z0-9_.-]", "_", name).strip("_")
     return slug or "dataset"
 
@@ -136,6 +159,30 @@ def date_key(d: date | datetime | str) -> str:
     return s
 
 
+def _valid_date(s: str) -> bool:
+    try:
+        datetime.strptime(s, "%Y%m%d")
+    except ValueError:
+        return False
+    return True
+
+
+def scene_date_key(scene_key: str) -> str:
+    """Folder tanggal untuk sebuah kunci scene.
+
+    scene_date_key("20240115")                               -> "20240115"
+    scene_date_key("S1A_IW_GRDH_1SDV_20240115T111407_...")   -> "20240115"
+    """
+    key = str(scene_key)
+    for candidate in _DATE_IN_KEY_RE.findall(key):
+        if _valid_date(candidate):
+            return candidate
+    raise ValueError(
+        f"Kunci scene {scene_key!r} tidak mengandung tanggal YYYYMMDD — "
+        "folder tanggalnya tidak bisa ditentukan."
+    )
+
+
 def normalize_tier(tier: str) -> str:
     t = str(tier).lower()
     if t not in TIERS:
@@ -153,6 +200,24 @@ def normalize_source(source: str) -> str:
 def sources_for_tier(tier: str) -> tuple[str, ...]:
     """Source yang absah untuk satu tier. Kosong untuk `fusion` (lintas-source)."""
     return TIER_SOURCES[normalize_tier(tier)]
+
+
+def validate_tier_source(tier: str, source: str) -> tuple[str, str]:
+    """Normalisasi + validasi pasangan tier/source. Menolak source untuk tier
+    lintas-source dan source yang tidak dipakai tier itu."""
+    tier = normalize_tier(tier)
+    source = normalize_source(source)
+    allowed = TIER_SOURCES[tier]
+    if not allowed:
+        raise ValueError(
+            f"Tier {tier!r} tidak punya level source (dia gabungan semua "
+            f"source). Pakai get_fusion_dir()/get_preview_dir()."
+        )
+    if source not in allowed:
+        raise ValueError(
+            f"Source {source!r} tidak dipakai di tier {tier!r}. Valid: {allowed}"
+        )
+    return tier, source
 
 
 def db_source(source: str) -> str:
@@ -174,41 +239,60 @@ def get_dataset_metadata_path(dataset_id: int, dataset_name: str) -> Path:
     return get_dataset_root(dataset_id, dataset_name) / "metadata.json"
 
 
-def get_tier_dir(dataset_id: int, dataset_name: str, tier: str) -> Path:
-    """Path folder satu tier. Untuk tier ber-source, isinya subfolder per
-    source; untuk `fusion`, langsung subfolder per scene."""
-    return get_dataset_root(dataset_id, dataset_name) / normalize_tier(tier)
+def get_date_dir(dataset_id: int, dataset_name: str, date: date | datetime | str) -> Path:
+    """Folder satu tanggal akuisisi: {id}_{slug}/{YYYYMMDD}/."""
+    return get_dataset_root(dataset_id, dataset_name) / date_key(date)
 
 
-def get_source_dir(dataset_id: int, dataset_name: str, tier: str, source: str) -> Path:
-    """Path folder satu source di dalam satu tier, mis. silver/modis/."""
-    tier = normalize_tier(tier)
-    source = normalize_source(source)
-    allowed = TIER_SOURCES[tier]
-    if not allowed:
-        raise ValueError(
-            f"Tier {tier!r} tidak punya level source (dia gabungan semua "
-            f"source). Pakai get_fusion_dir()."
-        )
-    if source not in allowed:
-        raise ValueError(
-            f"Source {source!r} tidak dipakai di tier {tier!r}. Valid: {allowed}"
-        )
-    return get_tier_dir(dataset_id, dataset_name, tier) / source
+def list_date_dirs(dataset_root: Path) -> list[Path]:
+    """Folder tanggal di bawah satu root dataset, urut kronologis. Menerima
+    path langsung supaya bisa dipakai pemanggil yang menyapu data/datasets/
+    tanpa tahu id/nama dataset (api/routes/storage.py)."""
+    if not dataset_root.is_dir():
+        return []
+    return sorted(
+        d for d in dataset_root.iterdir() if d.is_dir() and _DATE_DIR_RE.match(d.name)
+    )
+
+
+def list_dates(dataset_id: int, dataset_name: str) -> list[str]:
+    """Tanggal (YYYYMMDD) yang punya folder di disk untuk dataset ini."""
+    return [d.name for d in list_date_dirs(get_dataset_root(dataset_id, dataset_name))]
+
+
+def get_tier_dir(
+    dataset_id: int, dataset_name: str, date: date | datetime | str, tier: str
+) -> Path:
+    """Folder satu tier pada satu tanggal: {YYYYMMDD}/{tier}/."""
+    return get_date_dir(dataset_id, dataset_name, date) / normalize_tier(tier)
+
+
+def get_source_dir(
+    dataset_id: int, dataset_name: str, date: date | datetime | str, tier: str, source: str
+) -> Path:
+    """Folder satu source pada satu tier dan tanggal: {YYYYMMDD}/{tier}/{source}/."""
+    tier, source = validate_tier_source(tier, source)
+    return get_tier_dir(dataset_id, dataset_name, date, tier) / source
 
 
 def get_scene_dir(
     dataset_id: int, dataset_name: str, tier: str, source: str, scene_key: str
 ) -> Path:
     """
-    Path folder satu scene, di dalam satu source, di dalam satu tier.
+    Path folder satu scene. Tanggal diturunkan dari kunci scene-nya.
 
-    get_scene_dir(2, "Hakim D1", "silver", "sentinel1", "S1A_IW_GRDH_...")
-        -> data/datasets/2_hakim_d1/silver/sentinel1/S1A_IW_GRDH_...
+    get_scene_dir(2, "Hakim D1", "silver", "sentinel1", "S1A_IW_GRDH_1SDV_20240115T...")
+        -> data/datasets/2_Hakim_D1/20240115/silver/sentinel1/S1A_IW_GRDH_1SDV_20240115T...
     get_scene_dir(2, "Hakim D1", "gold", "modis", "20240115")
-        -> data/datasets/2_hakim_d1/gold/modis/20240115
+        -> data/datasets/2_Hakim_D1/20240115/gold/modis
     """
-    return get_source_dir(dataset_id, dataset_name, tier, source) / scene_slug(scene_key)
+    source_dir = get_source_dir(
+        dataset_id, dataset_name, scene_date_key(scene_key), tier, source
+    )
+    slug = scene_slug(scene_key)
+    # Kunci scene yang memang tanggal itu sendiri (MODIS/GPM harian) tidak
+    # diberi folder kedua — {tanggal}/gold/modis/{tanggal}/ cuma redundan.
+    return source_dir if _DATE_DIR_RE.match(slug) else source_dir / slug
 
 
 def ensure_scene_dir(
@@ -221,10 +305,10 @@ def ensure_scene_dir(
 
 
 def get_fusion_dir(dataset_id: int, dataset_name: str, scene_key: str) -> Path:
-    """Folder output fusion untuk satu tanggal: fusion/{YYYYMMDD}/.
+    """Folder output fusion untuk satu tanggal: {YYYYMMDD}/fusion/.
     Tier fusion tidak punya level source — isinya justru gabungan
     sentinel1 + modis + gpm."""
-    return get_tier_dir(dataset_id, dataset_name, "fusion") / scene_slug(scene_key)
+    return get_tier_dir(dataset_id, dataset_name, scene_date_key(scene_key), "fusion")
 
 
 def ensure_fusion_dir(dataset_id: int, dataset_name: str, scene_key: str) -> Path:
@@ -234,12 +318,12 @@ def ensure_fusion_dir(dataset_id: int, dataset_name: str, scene_key: str) -> Pat
 
 
 def get_preview_dir(dataset_id: int, dataset_name: str, scene_key: str) -> Path:
-    """Folder preview untuk satu tanggal: preview/{YYYYMMDD}/.
+    """Folder preview untuk satu tanggal: {YYYYMMDD}/preview/.
 
     Sama seperti fusion, tier ini lintas-source: satu folder tanggal memuat
     render dari sentinel1 + modis + gpm sekaligus, jadi tidak punya level
-    {source}. Di dalamnya ada subfolder per `PREVIEW_KINDS`."""
-    return get_tier_dir(dataset_id, dataset_name, "preview") / scene_slug(scene_key)
+    {source}. Di dalamnya ada subfolder per level lalu per `PREVIEW_KINDS`."""
+    return get_tier_dir(dataset_id, dataset_name, scene_date_key(scene_key), "preview")
 
 
 def ensure_preview_dir(dataset_id: int, dataset_name: str, scene_key: str) -> Path:
@@ -264,7 +348,7 @@ def get_preview_level_dir(
     dataset_id: int, dataset_name: str, scene_key: str,
     processing_level: str | None = None,
 ) -> Path:
-    """Folder satu level pemrosesan: preview/{YYYYMMDD}/{RAW|PROCESSED}/.
+    """Folder satu level pemrosesan: {YYYYMMDD}/preview/{RAW|PROCESSED}/.
 
     Level ikut ke path, bukan cuma ke nama berkas: dataset yang meminta sebuah
     sumber di kedua level me-render DUA set PNG untuk tanggal yang sama, dari
@@ -281,7 +365,7 @@ def get_preview_kind_dir(
     processing_level: str | None = None,
 ) -> Path:
     """Subfolder satu jenis render:
-    preview/{YYYYMMDD}/{RAW|PROCESSED}/{grayscale|colored|composite}/."""
+    {YYYYMMDD}/preview/{RAW|PROCESSED}/{grayscale|colored|composite}/."""
     if kind not in PREVIEW_KINDS:
         raise ValueError(f"Jenis preview tidak valid: {kind!r}. Valid: {PREVIEW_KINDS}")
     return get_preview_level_dir(
@@ -310,70 +394,108 @@ def list_preview_levels(dataset_id: int, dataset_name: str, scene_key: str) -> l
 def get_scratch_dir(dataset_id: int, dataset_name: str, scene_key: str) -> Path:
     """Folder kerja sementara (hasil kalibrasi radiometrik sebelum crop),
     dihapus otomatis setelah tahap CROP selesai — bukan bagian dari tier
-    resmi, jadi diletakkan di luar semuanya."""
-    return get_dataset_root(dataset_id, dataset_name) / "_work" / scene_slug(scene_key)
+    resmi, jadi diletakkan di luar folder tanggal."""
+    return get_dataset_root(dataset_id, dataset_name) / SCRATCH_DIRNAME / scene_slug(scene_key)
+
+
+def get_granule_cache_root(dataset_root: Path) -> Path:
+    """Folder induk cache granule di bawah satu root dataset."""
+    return dataset_root / GRANULE_CACHE_DIRNAME
 
 
 def get_granule_cache_dir(dataset_id: int, dataset_name: str, source: str) -> Path:
     """Folder cache granule mentah MODIS/GPM (.hdf/.nc4 sebelum
-    di-mosaic/crop). Flat, bukan per-scene: satu granule GPM harian ikut
-    dipakai window 72h/7d tanggal-tanggal berikutnya, jadi tidak bisa
-    dimiliki satu folder tanggal saja."""
+    di-mosaic/crop): _granule_cache/{source}/. Flat dan di luar folder
+    tanggal: satu granule GPM harian ikut dipakai window 72h/7d
+    tanggal-tanggal berikutnya, jadi tidak bisa dimiliki satu tanggal saja."""
     source = normalize_source(source)
     if source not in FLAT_RAW_SOURCES:
         raise ValueError(
             f"Source {source!r} tidak pakai cache granule flat. "
             f"Valid: {sorted(FLAT_RAW_SOURCES)}"
         )
-    return get_source_dir(dataset_id, dataset_name, "raw", source)
+    return get_granule_cache_root(get_dataset_root(dataset_id, dataset_name)) / source
+
+
+def tier_dirs_under(dataset_root: Path, tier: str) -> list[Path]:
+    """Semua folder yang menyimpan isi satu tier di bawah satu root dataset:
+    {tanggal}/{tier}/ untuk tiap tanggal, ditambah _granule_cache/ untuk tier
+    raw. Dipakai untuk menyapu satu tier lintas tanggal."""
+    tier = normalize_tier(tier)
+    dirs = [d / tier for d in list_date_dirs(dataset_root) if (d / tier).is_dir()]
+    if tier == "raw":
+        cache = get_granule_cache_root(dataset_root)
+        if cache.is_dir():
+            dirs.append(cache)
+    return dirs
+
+
+def _source_dirs(dataset_id: int, dataset_name: str, tier: str, source: str) -> list[Path]:
+    """Folder {tanggal}/{tier}/{source}/ yang ada di disk, lintas tanggal."""
+    tier, source = validate_tier_source(tier, source)
+    root = get_dataset_root(dataset_id, dataset_name)
+    return [
+        d / tier / source for d in list_date_dirs(root) if (d / tier / source).is_dir()
+    ]
 
 
 def list_sources(dataset_id: int, dataset_name: str, tier: str) -> list[str]:
-    """Source yang benar-benar punya folder on-disk di satu tier."""
+    """Source yang benar-benar punya folder on-disk di satu tier (di tanggal
+    mana pun, termasuk cache granule untuk tier raw)."""
     tier = normalize_tier(tier)
-    if not TIER_SOURCES[tier]:
+    allowed = TIER_SOURCES[tier]
+    if not allowed:
         return []
-    root = get_tier_dir(dataset_id, dataset_name, tier)
-    if not root.exists():
-        return []
-    return [s for s in TIER_SOURCES[tier] if (root / s).is_dir()]
+    found = set()
+    for d in tier_dirs_under(get_dataset_root(dataset_id, dataset_name), tier):
+        found.update(s for s in allowed if (d / s).is_dir())
+    return [s for s in allowed if s in found]
 
 
 def list_scenes(dataset_id: int, dataset_name: str, tier: str, source: str) -> list[str]:
-    """Semua nama folder scene di satu source pada satu tier. Folder
-    berawalan "_" dilewati (bukan scene)."""
-    p = get_source_dir(dataset_id, dataset_name, tier, source)
-    if not p.exists():
-        return []
-    return sorted(d.name for d in p.iterdir() if d.is_dir() and not d.name.startswith("_"))
+    """Semua kunci scene satu source pada satu tier, lintas tanggal.
+
+    Folder scene di bawah {tanggal}/{tier}/{source}/ (product_identifier S1)
+    dikembalikan apa adanya; file yang duduk langsung di folder source
+    (MODIS/GPM harian) berarti kunci scene-nya adalah tanggal itu sendiri.
+    Folder berawalan "_" dilewati (bukan scene)."""
+    scenes: set[str] = set()
+    for src_dir in _source_dirs(dataset_id, dataset_name, tier, source):
+        for entry in src_dir.iterdir():
+            if entry.name.startswith(("_", ".")):
+                continue
+            if entry.is_dir():
+                scenes.add(entry.name)
+            elif entry.is_file():
+                scenes.add(src_dir.parent.parent.name)
+    return sorted(scenes)
 
 
 def list_loose_files(
     dataset_id: int, dataset_name: str, tier: str, source: str
 ) -> list[Path]:
-    """File yang duduk langsung di folder source, tanpa folder scene di
-    antaranya — yaitu cache granule mentah `raw/modis/` dan `raw/gpm/`
-    (lihat FLAT_RAW_SOURCES). `list_scenes` cuma mengembalikan direktori,
-    jadi tanpa fungsi ini granule-granule itu tak pernah muncul di listing
-    berkas meski ikut terhitung di `storage_breakdown`."""
-    p = get_source_dir(dataset_id, dataset_name, tier, source)
+    """Cache granule mentah `_granule_cache/modis/` dan `_granule_cache/gpm/`
+    (lihat FLAT_RAW_SOURCES) — file tier raw yang tidak milik satu tanggal,
+    jadi tidak pernah muncul lewat `list_scenes`. Kosong untuk kombinasi lain."""
+    tier, source = validate_tier_source(tier, source)
+    if tier != "raw" or source not in FLAT_RAW_SOURCES:
+        return []
+    p = get_granule_cache_dir(dataset_id, dataset_name, source)
     if not p.exists():
         return []
     return sorted(f for f in p.iterdir() if f.is_file() and not f.name.startswith("."))
 
 
 def list_sourceless_scenes(dataset_id: int, dataset_name: str, tier: str) -> list[str]:
-    """Folder scene di satu tier lintas-source (`fusion`, `preview`), yang
-    isinya langsung {tier}/{scene}/ tanpa level {source} di antaranya."""
+    """Tanggal yang punya folder satu tier lintas-source (`fusion`,
+    `preview`), yang isinya langsung {tanggal}/{tier}/ tanpa level {source}."""
     tier = normalize_tier(tier)
     if TIER_SOURCES[tier]:
         raise ValueError(
             f"Tier {tier!r} punya level source — pakai list_scenes(tier, source)."
         )
-    p = get_tier_dir(dataset_id, dataset_name, tier)
-    if not p.exists():
-        return []
-    return sorted(d.name for d in p.iterdir() if d.is_dir() and not d.name.startswith("_"))
+    root = get_dataset_root(dataset_id, dataset_name)
+    return [d.name for d in list_date_dirs(root) if (d / tier).is_dir()]
 
 
 def list_fusion_scenes(dataset_id: int, dataset_name: str) -> list[str]:
@@ -393,8 +515,17 @@ def _files_under(p: Path) -> list[Path]:
 def get_scene_files(
     dataset_id: int, dataset_name: str, tier: str, source: str, scene_key: str
 ) -> list[Path]:
-    """Semua file di dalam satu scene pada satu source/tier."""
-    return _files_under(get_scene_dir(dataset_id, dataset_name, tier, source, scene_key))
+    """Semua file di dalam satu scene pada satu source/tier.
+
+    Untuk kunci tanggal (MODIS/GPM) folder scene = folder source itu sendiri,
+    jadi yang dihitung cuma file langsung di sana — folder scene S1 yang
+    kebetulan satu tanggal tidak ikut terbawa."""
+    p = get_scene_dir(dataset_id, dataset_name, tier, source, scene_key)
+    if _DATE_DIR_RE.match(scene_slug(scene_key)):
+        if not p.exists():
+            return []
+        return sorted(f for f in p.iterdir() if f.is_file())
+    return _files_under(p)
 
 
 def get_fusion_scene_files(dataset_id: int, dataset_name: str, scene_key: str) -> list[Path]:
@@ -415,17 +546,27 @@ def get_sourceless_scene_files(
     tier = normalize_tier(tier)
     if TIER_SOURCES[tier]:
         raise ValueError(f"Tier {tier!r} punya level source — pakai get_scene_files().")
-    return _files_under(get_tier_dir(dataset_id, dataset_name, tier) / scene_slug(scene_key))
+    return _files_under(
+        get_tier_dir(dataset_id, dataset_name, scene_date_key(scene_key), tier)
+    )
 
 
 def get_source_files(dataset_id: int, dataset_name: str, tier: str, source: str) -> list[Path]:
-    """Semua file satu source di satu tier (semua scene + cache granule)."""
-    return _files_under(get_source_dir(dataset_id, dataset_name, tier, source))
+    """Semua file satu source di satu tier, lintas tanggal (semua scene +
+    cache granule untuk raw)."""
+    files: list[Path] = []
+    for d in _source_dirs(dataset_id, dataset_name, tier, source):
+        files.extend(_files_under(d))
+    files.extend(list_loose_files(dataset_id, dataset_name, tier, source))
+    return sorted(files)
 
 
 def get_tier_files(dataset_id: int, dataset_name: str, tier: str) -> list[Path]:
-    """Semua file di dalam satu tier, lintas source."""
-    return _files_under(get_tier_dir(dataset_id, dataset_name, tier))
+    """Semua file di dalam satu tier, lintas tanggal dan source."""
+    files: list[Path] = []
+    for d in tier_dirs_under(get_dataset_root(dataset_id, dataset_name), tier):
+        files.extend(_files_under(d))
+    return sorted(files)
 
 
 def _size_of(files: list[Path]) -> int:

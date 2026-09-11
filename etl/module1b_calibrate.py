@@ -9,7 +9,6 @@ from pathlib import Path
 import numpy as np
 import rasterio
 from rasterio.warp import Resampling, calculate_default_transform, reproject
-from scipy.interpolate import RegularGridInterpolator
 
 # CRS lookups below (calculate_default_transform/reproject to EPSG:4326) hit
 # rasterio's PROJ database. If you see "Cannot find proj.db" / "unknown EPSG
@@ -52,18 +51,51 @@ def _parse_calibration_lut(xml_bytes: bytes) -> tuple[np.ndarray, np.ndarray, np
     return np.array(lines), np.array(pixel_rows[0]), np.array(sigma_rows)
 
 
-def apply_calibration(dn: np.ndarray, lines: np.ndarray, pixels: np.ndarray, sigma_lut: np.ndarray) -> np.ndarray:
-    interp = RegularGridInterpolator(
-        (lines, pixels), sigma_lut, bounds_error=False, fill_value=None
-    )
-    rows, cols = dn.shape
-    grid_r, grid_c = np.meshgrid(np.arange(rows), np.arange(cols), indexing="ij")
-    points = np.stack([grid_r.ravel(), grid_c.ravel()], axis=-1)
-    sigma_full = interp(points).reshape(rows, cols)
+def _linear_weights(grid: np.ndarray, targets: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    # Index kiri + bobot interpolasi linear; di luar grid diekstrapolasi linear
+    # (setara RegularGridInterpolator(fill_value=None)).
+    grid = grid.astype(np.float64)
+    idx = np.clip(np.searchsorted(grid, targets, side="right") - 1, 0, len(grid) - 2)
+    w = (targets - grid[idx]) / (grid[idx + 1] - grid[idx])
+    return idx, w
 
-    dn64 = dn.astype(np.float64)
-    sigma0 = np.where(sigma_full > 0, (dn64 ** 2) / (sigma_full ** 2), 0.0)
-    return sigma0.astype(np.float32)
+
+def apply_calibration(
+    dn: np.ndarray,
+    lines: np.ndarray,
+    pixels: np.ndarray,
+    sigma_lut: np.ndarray,
+    chunk_rows: int = 1024,
+) -> np.ndarray:
+    # LUT kalibrasi berupa grid reguler, jadi interpolasi bilinear bisa dipisah per sumbu
+    # dan diproses per blok baris. Versi lama membuat meshgrid seukuran citra penuh
+    # (~430 juta titik x 2 x float64 = ~7 GiB) dan memicu MemoryError.
+    rows, cols = dn.shape
+    sigma_lut = sigma_lut.astype(np.float64)
+
+    # 1) interpolasi sepanjang sumbu pixel untuk tiap baris LUT -> (n_lines, cols)
+    if len(pixels) >= 2:
+        c_idx, c_w = _linear_weights(pixels, np.arange(cols, dtype=np.float64))
+        lut_cols = (sigma_lut[:, c_idx] * (1.0 - c_w) + sigma_lut[:, c_idx + 1] * c_w).astype(np.float32)
+    else:
+        lut_cols = np.repeat(sigma_lut[:, :1], cols, axis=1).astype(np.float32)
+
+    sigma0 = np.empty((rows, cols), dtype=np.float32)
+    for start in range(0, rows, chunk_rows):
+        stop = min(start + chunk_rows, rows)
+        # 2) interpolasi sepanjang sumbu line untuk blok baris ini
+        if len(lines) >= 2:
+            r_idx, r_w = _linear_weights(lines, np.arange(start, stop, dtype=np.float64))
+            r_w = r_w.astype(np.float32)[:, None]
+            sigma_blk = lut_cols[r_idx] * (1.0 - r_w) + lut_cols[r_idx + 1] * r_w
+        else:
+            sigma_blk = np.broadcast_to(lut_cols[0], (stop - start, cols))
+
+        dn_blk = dn[start:stop].astype(np.float64)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            out = np.where(sigma_blk > 0, (dn_blk ** 2) / (sigma_blk.astype(np.float64) ** 2), 0.0)
+        sigma0[start:stop] = out
+    return sigma0
 
 
 def _reproject_with_gcps(data: np.ndarray, src_path: str, output_path: str, dst_crs: str = "EPSG:4326") -> None:
@@ -107,6 +139,7 @@ def calibrate_and_reproject(tif_path: str, calib_xml: bytes, output_path: str) -
     with rasterio.open(tif_path) as src:
         dn = src.read(1)
     sigma0 = apply_calibration(dn, lines, pixels, sigma_lut)
+    del dn  # bebaskan ~800 MB sebelum reproject
     _reproject_with_gcps(sigma0, tif_path, output_path)
     return output_path
 

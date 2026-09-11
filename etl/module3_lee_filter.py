@@ -14,14 +14,23 @@ logger = logging.getLogger(__name__)
 def lee_filter(img: np.ndarray, window_size: int = 7, looks: int = 1) -> np.ndarray:
     original_dtype = img.dtype
     img = img.astype(np.float64)
-    img_mean = uniform_filter(img, size=window_size)
-    img_sqr = uniform_filter(img ** 2, size=window_size)
-    img_var = img_sqr - img_mean ** 2
+    # Hasil kalibrasi punya nodata=NaN di luar footprint scene. uniform_filter
+    # memakai jumlah kumulatif, jadi satu NaN merambat ke seluruh citra.
+    # Hitung mean hanya dari pixel valid (normalized convolution), NaN dikembalikan di akhir.
+    valid = np.isfinite(img)
+    img = np.where(valid, img, 0.0)
+    count = uniform_filter(valid.astype(np.float64), size=window_size)
+    safe_count = np.where(count > 0, count, 1.0)
+    img_mean = uniform_filter(img, size=window_size) / safe_count
+    img_sqr = uniform_filter(img ** 2, size=window_size) / safe_count
+    img_var = np.maximum(img_sqr - img_mean ** 2, 0.0)
     noise_var = img_mean ** 2 / looks
     denom = img_var + noise_var
     safe_denom = np.where(denom > 0, denom, 1.0)
     weight = np.where(denom > 0, np.clip(img_var / safe_denom, 0, 1), 0.0)
     filtered = img_mean + weight * (img - img_mean)
+    if np.issubdtype(original_dtype, np.floating):
+        filtered = np.where(valid, filtered, np.nan)
     return filtered.astype(original_dtype)
 
 

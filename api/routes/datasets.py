@@ -251,15 +251,16 @@ async def download_dataset(
 
     base_dir = fm.get_dataset_root(dataset_id, info["name"])
     if tier is None:
-        root = base_dir
+        files = [f for f in base_dir.rglob("*") if f.is_file()] if base_dir.exists() else []
     else:
+        # Satu tier tersebar di banyak folder tanggal ({tanggal}/{tier}/),
+        # jadi file-nya dikumpulkan lintas tanggal lewat folder_manager.
         tier_l, source_l = _resolve_tier_source(tier, source)
-        root = (
-            fm.get_source_dir(dataset_id, info["name"], tier_l, source_l)
-            if source_l else fm.get_tier_dir(dataset_id, info["name"], tier_l)
+        files = (
+            fm.get_source_files(dataset_id, info["name"], tier_l, source_l)
+            if source_l else fm.get_tier_files(dataset_id, info["name"], tier_l)
         )
 
-    files = [f for f in root.rglob("*") if f.is_file()] if root.exists() else []
     if not files:
         raise HTTPException(404, "Tidak ada file untuk diunduh dengan filter ini")
 
@@ -647,14 +648,14 @@ async def list_dataset_tier_files(
                 result.append(
                     _entry(sc, src, fm.get_scene_files(dataset_id, name, tier_l, src, sc))
                 )
-            # Cache granule mentah MODIS/GPM duduk langsung di raw/{source}/
-            # tanpa folder scene, jadi list_scenes() di atas melewatinya.
+            # Cache granule mentah MODIS/GPM duduk di _granule_cache/{source}/
+            # di luar folder tanggal, jadi list_scenes() di atas melewatinya.
             # Tanpa cabang ini listing berkas melaporkan tier RAW kosong
             # untuk MODIS/GPM padahal storage/summary menghitung granulenya.
             if scene is None:
                 loose = fm.list_loose_files(dataset_id, name, tier_l, src)
                 if loose:
-                    result.append(_entry("(granule cache)", src, loose))
+                    result.append(_entry(fm.GRANULE_CACHE_LABEL, src, loose))
 
     return DatasetTierFilesResponse(
         dataset_id=dataset_id, tier=tier_l, source=source_l, scenes=result

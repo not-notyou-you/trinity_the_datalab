@@ -85,13 +85,22 @@ All data access is through authorized APIs — not scraping.
 ```
 data/datasets/{dataset_id}_{slug}/
 ├── metadata.json           # Dataset config (satellites, processing level, fusion strategy)
-├── raw/{source}/{date}/    # Original downloads
-├── bronze/{source}/{date}/ # Cropped to AOI
-├── silver/{source}/{date}/ # Filtered + QA metadata
-├── gold/{source}/{date}/   # Cloud-Optimized GeoTIFF
-├── preview/{date}/         # PNG previews (grayscale/, colored/)
-└── fusion/{date}/          # HDF5 fusion stacks
+├── {YYYYMMDD}/             # One folder per acquisition date
+│   ├── raw/{source}/       # Original downloads (sentinel1/{scene}/)
+│   ├── bronze/{source}/    # Cropped to AOI
+│   ├── silver/{source}/    # Filtered + QA metadata
+│   ├── gold/{source}/      # Cloud-Optimized GeoTIFF
+│   ├── preview/{LEVEL}/    # PNG previews (grayscale/, colored/, composite/)
+│   └── fusion/             # HDF5 fusion stacks
+├── _granule_cache/{modis,gpm}/  # Raw NASA granules shared across dates
+└── _work/{scene}/          # Calibration scratch, removed after CROP
+
+logs/{dataset_id}_{slug}.txt     # One run log per dataset
 ```
+
+Sentinel-1 keeps a `{scene}` (product identifier) folder under its source
+because one date can hold several S1 scenes; MODIS/GPM/fusion/preview are
+keyed by the date itself, so their files sit directly in the tier folder.
 
 Storage per Sentinel-1 scene: ~2.4 GB (all tiers) or ~0.25 GB (GOLD+FUSION only).
 

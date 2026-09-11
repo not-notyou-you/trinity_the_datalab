@@ -60,6 +60,21 @@
       "area_km2": 2710.6,
       "admin_level": 3,
       "is_primary": false
+    },
+    {
+      "region_code": "TNG_TEST",
+      "name": "Tangerang Kecil",
+      "description": "Small central subdivision of Tangerang, ~1/10 area for fast pipeline testing",
+      "bbox_wgs84": {
+        "min_lon": 106.62,
+        "min_lat": -6.19,
+        "max_lon": 106.74,
+        "max_lat": -6.11
+      },
+      "bbox_wkt": "POLYGON((106.62 -6.19, 106.74 -6.19, 106.74 -6.11, 106.62 -6.11, 106.62 -6.19))",
+      "area_km2": 117.7,
+      "admin_level": 4,
+      "is_primary": false
     }
   ]
 }

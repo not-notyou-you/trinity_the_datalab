@@ -16,8 +16,8 @@ NDWI di sini adalah formulasi McFeeters (green/NIR) yang menyorot badan air
 terbuka — bukan NDWI Gao (NIR/SWIR) yang mengukur kelembapan vegetasi.
 Pipeline ini soal banjir, jadi indeks air permukaan yang relevan.
 
-Output ditulis ke data/datasets/{id}_{slug}/silver/modis/{YYYYMMDD}/ dan
-granule mentahnya di-cache di raw/modis/. Semuanya adalah input fusion
+Output ditulis ke data/datasets/{id}_{slug}/{YYYYMMDD}/silver/modis/ dan
+granule mentahnya di-cache di _granule_cache/modis/. Semuanya adalah input fusion
 (dikonsumsi module9_fusion.py lewat tier GOLD), bukan deliverable akhir.
 
 Kegagalan satu produk tidak menjatuhkan produk lain: kalau MOD09GA hari itu
@@ -85,10 +85,23 @@ MODIS_STANDARD_PRODUCT = {
 # etl/constants.py:MODIS_PRODUCT_SHORT_NAME.
 MODIS_PRODUCT = MODIS_FLOOD_PRODUCT
 
-MODIS_TILES = ["h30v08", "h31v08"]
+# Tile default untuk AOI Jabodetabek. Nilai lama ["h30v08", "h31v08"] menunjuk
+# ke 120-140E / 0-10N (utara khatulistiwa), bukan Jakarta (~106.8E, 6S), jadi
+# crop ke AOI selalu gagal. Kalau pemanggil tidak memberi `tiles`, tile dihitung
+# dari AOI per produk lewat modis_tiles_for_bbox().
+MODIS_TILES = ["h28v09"]
 MODULE = "MODULE7_MODIS_DOWNLOAD"
 
-FLOOD_SUBDATASET = "Flood 1-day 250m"
+# Nama SDS di granule MCDWD_L3 adalah "Flood_1Day_250m". Nama dicocokkan tanpa
+# memedulikan huruf besar/spasi/underscore/strip (_norm_name), supaya varian
+# penamaan antar koleksi (NRT vs standar) tetap cocok.
+FLOOD_SUBDATASET = "Flood_1Day_250m"
+
+# Grid sinusoidal MODIS (MOD09GA dkk): tile 10 derajat = 1111950.52 m.
+MODIS_SINUSOIDAL_CRS = "+proj=sinu +lon_0=0 +x_0=0 +y_0=0 +R=6371007.181 +units=m +no_defs"
+_SIN_TILE_SIZE_M = 1111950.5196666666
+# Produk flood MCDWD memakai grid geografis 10x10 derajat, bukan sinusoidal.
+_GEOGRAPHIC_TILE_PRODUCTS = {"MCDWD_L3", "MCDWD_L3_F2_NRT"}
 
 # Subdataset surface reflectance MOD09GA (grid 500 m).
 _REFL_GRID = "MODIS_Grid_500m_2D"
@@ -326,8 +339,126 @@ def _download_with_retry(
     raise RuntimeError(f"gagal download {url} setelah {MAX_RETRIES} percobaan: {last_exc}")
 
 
-def _eos_grid_path(hdf_path: Path, subdataset: str) -> str:
-    return f'HDF4_EOS:EOS_GRID:"{hdf_path}":{subdataset}'
+def modis_tiles_for_bbox(
+    bbox: tuple[float, float, float, float],
+    product: str = MODIS_REFLECTANCE_PRODUCT,
+) -> list[str]:
+    """Tile MODIS (hXXvYY) yang memotong `bbox` WGS84 (min_lon, min_lat,
+    max_lon, max_lat). MCDWD memakai grid geografis 10x10 derajat, MOD09GA
+    grid sinusoidal — nomornya sering sama tapi tidak selalu, jadi dihitung
+    per produk. Tepi bbox disampel rapat supaya lengkungan sinusoidal tidak
+    melewatkan tile."""
+    min_lon, min_lat, max_lon, max_lat = bbox
+    lon_g, lat_g = np.meshgrid(
+        np.linspace(min_lon, max_lon, 9), np.linspace(min_lat, max_lat, 9)
+    )
+    if product in _GEOGRAPHIC_TILE_PRODUCTS:
+        h = np.floor((lon_g + 180.0) / 10.0)
+        v = np.floor((90.0 - lat_g) / 10.0)
+    else:
+        from pyproj import Transformer
+
+        x, y = Transformer.from_crs(
+            "EPSG:4326", MODIS_SINUSOIDAL_CRS, always_xy=True
+        ).transform(lon_g, lat_g)
+        h = np.floor(np.asarray(x) / _SIN_TILE_SIZE_M + 18)
+        v = np.floor(9 - np.asarray(y) / _SIN_TILE_SIZE_M)
+    h = np.clip(h, 0, 35).astype(int)
+    v = np.clip(v, 0, 17).astype(int)
+    return sorted({f"h{hh:02d}v{vv:02d}" for hh, vv in zip(h.ravel(), v.ravel())})
+
+
+def _norm_name(name: str) -> str:
+    return "".join(ch for ch in name.lower() if ch.isalnum())
+
+
+def _dms_to_deg(packed: float) -> float:
+    """GCTP packed DMS (DDDMMMSSS.SS) -> derajat desimal."""
+    sign = -1.0 if packed < 0 else 1.0
+    v = abs(packed)
+    return sign * (int(v // 1_000_000) + int((v % 1_000_000) // 1_000) / 60.0 + (v % 1_000) / 3600.0)
+
+
+def _eos_grid_georef(struct_meta: str, field: str) -> dict:
+    """Georeferensi grid HDF-EOS yang memuat `field`, dari StructMetadata."""
+    import re
+
+    from rasterio.coords import BoundingBox
+    from rasterio.crs import CRS
+    from rasterio.transform import from_bounds
+
+    for block in re.findall(r"GROUP=GRID_\d+\s(.*?)END_GROUP=GRID_\d+", struct_meta, re.S):
+        fields = re.findall(r'DataFieldName="([^"]+)"', block)
+        if not any(_norm_name(f) == _norm_name(field) for f in fields):
+            continue
+
+        def value(key: str) -> str:
+            m = re.search(rf"^\s*{key}=(.+)$", block, re.M)
+            if not m:
+                raise RuntimeError(f"StructMetadata grid untuk {field} tidak punya {key}")
+            return m.group(1).strip()
+
+        xdim, ydim = int(value("XDim")), int(value("YDim"))
+        ulx, uly = (float(s) for s in value("UpperLeftPointMtrs").strip("()").split(","))
+        lrx, lry = (float(s) for s in value("LowerRightMtrs").strip("()").split(","))
+        origin = value("GridOrigin")
+        if origin != "HDFE_GD_UL":
+            raise RuntimeError(f"GridOrigin {origin} belum didukung ({field})")
+        projection = value("Projection")
+        if projection == "GCTP_SNSOID":
+            crs = CRS.from_user_input(MODIS_SINUSOIDAL_CRS)
+        elif projection == "GCTP_GEO":
+            crs = CRS.from_epsg(4326)
+            ulx, uly, lrx, lry = (_dms_to_deg(c) for c in (ulx, uly, lrx, lry))
+        else:
+            raise RuntimeError(f"proyeksi grid {projection} belum didukung ({field})")
+        return {
+            "crs": crs,
+            "transform": from_bounds(ulx, lry, lrx, uly, xdim, ydim),
+            "width": xdim,
+            "height": ydim,
+            "bounds": BoundingBox(ulx, lry, lrx, uly),
+        }
+    raise RuntimeError(f"field {field} tidak ditemukan di StructMetadata")
+
+
+def _read_eos_grid_field(hdf_path: Path, subdataset: str) -> tuple[np.ndarray, dict]:
+    """Baca satu field grid HDF4-EOS -> (array, georef + nodata).
+
+    Dibaca lewat pyhdf, bukan path GDAL 'HDF4_EOS:EOS_GRID:...': wheel
+    rasterio (Windows/pip) tidak menyertakan driver HDF4, sehingga path itu
+    selalu gagal "does not exist in the file system". `subdataset` boleh
+    berbentuk "Grid:field" atau "field"."""
+    from pyhdf.SD import SD, SDC
+
+    field = subdataset.rsplit(":", 1)[-1]
+    sd = SD(str(hdf_path), SDC.READ)
+    try:
+        names = list(sd.datasets())
+        match = next((n for n in names if _norm_name(n) == _norm_name(field)), None)
+        if match is None:
+            raise RuntimeError(f"SDS {field!r} tidak ada di {hdf_path.name} (tersedia: {names})")
+        sds = sd.select(match)
+        try:
+            data = sds.get()
+            attrs = sds.attributes()
+        finally:
+            sds.endaccess()
+        global_attrs = sd.attributes()
+        struct_meta = "".join(
+            global_attrs[k] for k in sorted(global_attrs) if k.startswith("StructMetadata")
+        )
+    finally:
+        sd.end()
+
+    grid = _eos_grid_georef(struct_meta, match)
+    if data.shape != (grid["height"], grid["width"]):
+        raise RuntimeError(
+            f"ukuran {match} {data.shape} tidak cocok dengan grid "
+            f"{(grid['height'], grid['width'])} di {hdf_path.name}"
+        )
+    grid["nodata"] = attrs.get("_FillValue")
+    return data, grid
 
 
 def _hdf_subdataset_to_geotiff(
@@ -336,30 +467,28 @@ def _hdf_subdataset_to_geotiff(
     output_path: Path,
     dst_crs: str = DST_CRS,
 ) -> Path:
-    src_path = _eos_grid_path(hdf_path, subdataset)
-    with rasterio.open(src_path) as src:
-        transform, width, height = calculate_default_transform(
-            src.crs, dst_crs, src.width, src.height, *src.bounds
-        )
-        kwargs = src.meta.copy()
-        kwargs.update({
-            "driver": "GTiff",
-            "crs": dst_crs,
-            "transform": transform,
-            "width": width,
-            "height": height,
-        })
-        with rasterio.open(output_path, "w", **kwargs) as dst:
-            for i in range(1, src.count + 1):
-                reproject(
-                    source=rasterio.band(src, i),
-                    destination=rasterio.band(dst, i),
-                    src_transform=src.transform,
-                    src_crs=src.crs,
-                    dst_transform=transform,
-                    dst_crs=dst_crs,
-                    resampling=Resampling.nearest,
-                )
+    data, grid = _read_eos_grid_field(hdf_path, subdataset)
+    nodata = grid["nodata"]
+    transform, width, height = calculate_default_transform(
+        grid["crs"], dst_crs, grid["width"], grid["height"], *grid["bounds"]
+    )
+    dest = np.full((height, width), nodata if nodata is not None else 0, dtype=data.dtype)
+    reproject(
+        source=data,
+        destination=dest,
+        src_transform=grid["transform"],
+        src_crs=grid["crs"],
+        src_nodata=nodata,
+        dst_transform=transform,
+        dst_crs=dst_crs,
+        dst_nodata=nodata,
+        resampling=Resampling.nearest,
+    )
+    with rasterio.open(
+        output_path, "w", driver="GTiff", height=height, width=width, count=1,
+        dtype=data.dtype.name, crs=dst_crs, transform=transform, nodata=nodata,
+    ) as dst:
+        dst.write(dest, 1)
     return output_path
 
 
@@ -367,15 +496,7 @@ def _read_reflectance(hdf_path: Path, subdataset: str) -> tuple[np.ndarray, dict
     """Baca satu subdataset surface reflectance MOD09GA sebagai float32
     dengan fill/out-of-range diganti NaN. Mengembalikan (array, profil grid
     sumber) supaya pemanggil bisa reproject hasil hitungannya."""
-    with rasterio.open(_eos_grid_path(hdf_path, subdataset)) as src:
-        raw = src.read(1)
-        grid = {
-            "crs": src.crs,
-            "transform": src.transform,
-            "width": src.width,
-            "height": src.height,
-            "bounds": src.bounds,
-        }
+    raw, grid = _read_eos_grid_field(hdf_path, subdataset)
     data = raw.astype("float32")
     invalid = (raw == REFL_FILL) | (raw < REFL_VALID_MIN) | (raw > REFL_VALID_MAX)
     data[invalid] = np.nan
@@ -404,6 +525,11 @@ def _normalized_index_tile(
         index = (a - b) / denom
     # Penyebut nol = kedua band nol: tidak ada sinyal, bukan indeks 0.
     index[~np.isfinite(index)] = np.nan
+    # Rentang valid MOD09GA memuat reflectance negatif (artefak koreksi
+    # atmosfer). Dengan salah satu band negatif, penyebutnya bisa mendekati
+    # nol dan indeks meledak jauh di luar [-1, 1] (terukur -8..11 di AOI
+    # Jakarta). Pixel seperti itu tidak punya indeks yang bermakna.
+    index[(a < 0) | (b < 0)] = np.nan
 
     transform, width, height = calculate_default_transform(
         grid["crs"], dst_crs, grid["width"], grid["height"], *grid["bounds"]
@@ -573,7 +699,7 @@ def download_modis_scene(
     date_start: datetime,
     date_end: datetime,
     aoi_bbox: tuple[float, float, float, float] = JABODETABEK_BBOX,
-    tiles: list[str] = MODIS_TILES,
+    tiles: list[str] | None = None,
     plog: PipelineLogger | None = None,
     processing_levels=(PROCESSED,),
 ) -> tuple[str, dict]:
@@ -581,7 +707,7 @@ def download_modis_scene(
     Download MODIS flood (MCDWD) + surface reflectance (MOD09GA) dari NASA
     LAADS DAAC untuk setiap hari di [date_start, date_end], hitung NDVI/NDWI,
     reproject/crop tiap hari ke `aoi_bbox`, dan tulis GeoTIFF ke
-    data/datasets/{id}_{slug}/silver/modis/{YYYYMMDD}/modis_{date}_{band}.tif
+    data/datasets/{id}_{slug}/{YYYYMMDD}/silver/modis/modis_{date}_{band}.tif
     (ini input fusion, dikonsumsi module9_fusion.py — bukan deliverable akhir).
 
     `processing_levels` (dari dataset_source_config) menentukan band mana yang
@@ -617,6 +743,12 @@ def download_modis_scene(
 
     raw_dir = fm.get_granule_cache_dir(dataset_id, dataset_name, "modis")
     raw_dir.mkdir(parents=True, exist_ok=True)
+
+    # tiles=None -> hitung dari AOI per produk (grid MCDWD dan MOD09GA berbeda).
+    tiles_by_product = {
+        p: list(tiles) if tiles else modis_tiles_for_bbox(aoi_bbox, p)
+        for p in (MODIS_FLOOD_PRODUCT, MODIS_REFLECTANCE_PRODUCT)
+    }
 
     daily_outputs = []
     failed_days: list[dict] = []
@@ -679,7 +811,7 @@ def download_modis_scene(
             try:
                 bands[band] = _record(_build_band_for_date(
                     band=band, product=product, date=date, date_key=date_key,
-                    tiles=tiles, raw_dir=raw_dir, out_path=out_path, aoi_bbox=aoi_bbox,
+                    tiles=tiles_by_product[product], raw_dir=raw_dir, out_path=out_path, aoi_bbox=aoi_bbox,
                     plog=plog, dataset_id=dataset_id, scene_label=scene_label,
                 ))
             except Exception as exc:
@@ -736,7 +868,7 @@ def download_modis_scene(
     if not daily_outputs:
         raise RuntimeError(
             f"tidak ada produk MODIS ditemukan untuk rentang "
-            f"{date_start.date()}..{date_end.date()} di tiles {tiles}"
+            f"{date_start.date()}..{date_end.date()} di tiles {tiles_by_product}"
             + (f" (gagal: {failed_days})" if failed_days else "")
         )
 
@@ -771,7 +903,7 @@ def download_modis_scene(
         "date_start": date_start.date().isoformat(),
         "date_end": date_end.date().isoformat(),
         "aoi_bbox": aoi_bbox,
-        "tiles": tiles,
+        "tiles": tiles_by_product,
         "crs": DST_CRS,
         "outputs": daily_outputs,
         "quality": quality,
