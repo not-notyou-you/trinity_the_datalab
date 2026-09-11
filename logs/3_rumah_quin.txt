@@ -1,0 +1,4 @@
+2026-09-11 10:20:13,605 INFO    [Thread-2 (_runner)] etl.pipeline_logger [PLOG-FILE] run log opened for dataset='rumah quin' -> logs\3_rumah_quin.txt
+2026-09-11 10:20:13,605 INFO    [Thread-2 (_runner)] etl.module5_orchestrator [ORCH] job_id=3 start dataset='rumah quin' scenes=3 tiers=['RAW', 'BRONZE', 'SILVER', 'GOLD', 'FUSION'] log=logs\3_rumah_quin.txt
+2026-09-11 10:20:13,649 INFO    [Thread-3 (_download_worker)] etl.pipeline_logger [PLOG] {"log_id": 596, "dataset_id": 3, "scene_id": "S1D_IW_GRDH_1SDV_20260804T225632_20260804T225657_003982_0073B2_1064.SAFE", "module": "MODULE1_DOWNLOAD", "stage": "DOWNLOAD", "status": "STARTED", "message": "Downloading scene from ESA server", "expected_size_mb": 1630.8884201049805}
+2026-09-11 10:20:13,653 INFO    [Thread-3 (_download_worker)] etl.module1_download [M1] Downloading: S1D_IW_GRDH_1SDV_20260804T225632_20260804T225657_0 (1631 MB)
