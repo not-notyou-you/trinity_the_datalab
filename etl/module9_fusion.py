@@ -132,12 +132,15 @@ MODIS_FUSION_LAYERS: dict[str, tuple[_AuxLayer, ...]] = {
     ),
 }
 
+# GPM nearest, bukan bilinear: berkasnya sudah berupa blok sel IMERG 0.1
+# derajat (module8), dan bilinear ke grid S1 akan menghaluskan lagi batas sel
+# menjadi gradien yang tidak ada di data sumber.
 GPM_FUSION_LAYERS: dict[str, tuple[_AuxLayer, ...]] = {
-    RAW: (_AuxLayer("rainfall_daily", "24h", Resampling.bilinear),),
+    RAW: (_AuxLayer("rainfall_daily", "24h", Resampling.nearest),),
     PROCESSED: (
-        _AuxLayer("rainfall_24h", "24h", Resampling.bilinear),
-        _AuxLayer("rainfall_72h", "72h", Resampling.bilinear),
-        _AuxLayer("rainfall_7d", "7d", Resampling.bilinear),
+        _AuxLayer("rainfall_24h", "24h", Resampling.nearest),
+        _AuxLayer("rainfall_72h", "72h", Resampling.nearest),
+        _AuxLayer("rainfall_7d", "7d", Resampling.nearest),
     ),
 }
 

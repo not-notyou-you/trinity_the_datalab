@@ -6,7 +6,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from sqlalchemy import select
 from etl import folder_manager as fm
-from etl.database_client import CleanupOperation, DataProduct, Dataset, DatabaseClient
+from etl.database_client import (
+    CleanupOperation,
+    DataProduct,
+    Dataset,
+    DatabaseClient,
+    SatelliteScene,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -16,6 +22,8 @@ def _now() -> datetime:
 
 
 class DeletionManager:
+    MAX_EXTRA_PASSES = 2
+
     def __init__(self, db: DatabaseClient, dataset_id: int, dataset_name: str) -> None:
         self._db = db
         self._dataset_id = dataset_id
@@ -26,6 +34,21 @@ class DeletionManager:
 
     def delete_all(self) -> dict:
         result = self.clear_files_only()
+        # Manifest dibuat sekali di awal. File yang ditulis sesudahnya (thread
+        # job yang telat berhenti) tidak ada di manifest dan membuat folder
+        # dataset gagal di-rmdir — sapu ulang dengan manifest baru.
+        for _ in range(self.MAX_EXTRA_PASSES):
+            if not self._has_leftover_files():
+                break
+            logger.warning(
+                "[DELETE] dataset_id=%d masih ada file setelah penghapusan, sapu ulang",
+                self._dataset_id,
+            )
+            extra = self.clear_files_only()
+            result = {
+                "deleted_count": result["deleted_count"] + extra["deleted_count"],
+                "freed_bytes": result["freed_bytes"] + extra["freed_bytes"],
+            }
 
         try:
             self._cleanup_database_rows()
@@ -222,6 +245,11 @@ class DeletionManager:
         except OSError:
             pass
 
+    def _has_leftover_files(self) -> bool:
+        return self._base_dir.exists() and any(
+            f.is_file() for f in self._base_dir.rglob("*")
+        )
+
     def _cleanup_database_rows(self) -> None:
         with self._db.session() as sess:
             dataset = sess.get(Dataset, self._dataset_id)
@@ -230,3 +258,28 @@ class DeletionManager:
             if not dataset.is_deletable:
                 raise RuntimeError(f"dataset_id={self._dataset_id} tidak boleh dihapus (is_deletable=False)")
             sess.delete(dataset)
+            removed = self._delete_aux_placeholder_scenes(sess)
+        if removed:
+            logger.info(
+                "[DELETE] dataset_id=%d: %d scene placeholder NASA_AUX dihapus",
+                self._dataset_id, removed,
+            )
+
+    def _delete_aux_placeholder_scenes(self, sess) -> int:
+        """Scene placeholder MODIS/GPM (module9_fusion._resolve_aux_scene,
+        pid `NASA_AUX_{SOURCE}_{dataset_id}_{YYYYMMDD}`) milik dataset ini.
+
+        Scene S1 sungguhan dipakai bersama antar dataset dan tidak disentuh;
+        placeholder ini sebaliknya eksklusif per dataset, dan tanpa dihapus
+        ia tertinggal selamanya tanpa dataset (40 baris untuk jakarta_part2).
+        Dicocokkan dengan regex, bukan LIKE: '_' di LIKE adalah wildcard,
+        sehingga pola dataset 5 akan ikut menangkap placeholder dataset 15."""
+        pattern = rf"^NASA_AUX_[A-Z0-9]+_{self._dataset_id}_[0-9]{{8}}$"
+        scenes = sess.scalars(
+            select(SatelliteScene).where(
+                SatelliteScene.product_identifier.regexp_match(pattern)
+            )
+        ).all()
+        for scene in scenes:
+            sess.delete(scene)
+        return len(scenes)

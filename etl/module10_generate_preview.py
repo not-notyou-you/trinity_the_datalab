@@ -35,7 +35,8 @@ Tiga jenis render, tiga tujuan berbeda:
                 yang tidak ada di data, dan kontras dimaksimalkan ke sebaran
                 nilai berkas itu sendiri.
     colored/    Colormap per-source dengan rentang yang punya arti fisik
-                (NDVI/NDWI dipatok -1..1, hujan dipatok mulai 0). Untuk
+                (NDVI -0.2..0.8, NDWI -0.5..0.5, hujan mulai 0, peta banjir
+                MODIS per kelas). Untuk
                 publikasi/presentasi: warna bisa dibaca lintas tanggal karena
                 skalanya tidak ikut bergeser mengikuti isi berkas.
     composite/  False-color RGB Sentinel-1 (R=VV, G=VH, B=VV-VH). Folder
@@ -44,6 +45,15 @@ Tiga jenis render, tiga tujuan berbeda:
                 colormap tidak berlaku untuknya, dan menyimpannya di colored/
                 membuat sidecar colored_info.json memuat satu entri yang
                 skema-nya berbeda dari yang lain.
+
+GRID BERSAMA
+Kalau ada Sentinel-1, semua lapisan MODIS/GPM direproject ke grid preview S1
+(ukuran PNG, extent, dan posisi piksel identik) dengan nearest-neighbour. Tanpa
+itu MODIS 500 m di AOI kecil jadi PNG belasan piksel, dan GPM punya extent
+berbeda sehingga tidak bisa ditumpuk. Nearest dipakai supaya piksel sensor
+kasar tetap tampil sebagai blok — seperti di Worldview/GEE — bukan gradien
+hasil interpolasi. Tanpa S1, raster kecil diperbesar kelipatan bulat (nearest)
+mendekati MAX_WIDTH.
 
 Keduanya ditulis RGBA/LA — piksel NoData jadi transparan, bukan hitam. Hitam
 adalah nilai yang sah untuk backscatter rendah (air tenang), jadi memetakan
@@ -74,7 +84,9 @@ from pathlib import Path
 
 import numpy as np
 import rasterio
+from affine import Affine
 from rasterio.enums import Resampling
+from rasterio.warp import reproject
 
 from etl import folder_manager as fm
 from etl import module7_modis_download as m7
@@ -113,9 +125,11 @@ class PreviewSpec:
     label: str
     units: str
     cmap: str
-    # "percentile": rentang dari isi berkas (2–98).
-    # "fixed":      rentang tetap vmin..vmax, arti fisik lintas tanggal.
-    # "zero_based": 0..persentil-atas — nol selalu berarti nol.
+    # "percentile":  rentang dari isi berkas (2–98).
+    # "fixed":       rentang tetap vmin..vmax, arti fisik lintas tanggal.
+    # "zero_based":  0..persentil-atas — nol selalu berarti nol.
+    # "categorical": nilai kelas diskret; warna dari `categories`, grayscale
+    #                vmin..vmax, resampling selalu nearest.
     scale: str
     vmin: float | None = None
     vmax: float | None = None
@@ -126,6 +140,13 @@ class PreviewSpec:
     # lihat _maybe_to_db().
     log_db: bool = False
     interpretation: str = ""
+    # Untuk scale="categorical": (nilai, warna hex, alpha 0-255, label). Nilai
+    # yang tidak terdaftar dirender transparan.
+    categories: tuple[tuple[int, str, int, str], ...] = ()
+
+    @property
+    def categorical(self) -> bool:
+        return self.scale == "categorical"
 
 
 # Urutan di sini adalah urutan tampil di UI dan di preview_metadata.json.
@@ -163,22 +184,50 @@ PREVIEW_SPECS: tuple[PreviewSpec, ...] = (
         ),
     ),
     PreviewSpec(
+        key="modis_flood",
+        source="modis",
+        band="FLOOD",
+        label="MODIS Flood 2 hari (MCDWD)",
+        units="kelas",
+        cmap="categorical",
+        scale="categorical",
+        vmin=0.0,
+        vmax=3.0,
+        # Palet mengikuti konvensi peta banjir NASA: air referensi biru, banjir
+        # merah. "No water" abu-abu semi-transparan supaya area yang teramati
+        # kering tetap beda dari "insufficient data" (255, transparan).
+        categories=(
+            (0, "#bdbdbd", 110, "Tidak ada air"),
+            (1, "#2171b5", 255, "Air permanen (referensi)"),
+            (2, "#fd8d3c", 255, "Banjir musiman (berulang)"),
+            (3, "#e31a1c", 255, "Banjir (tidak biasa)"),
+        ),
+        interpretation=(
+            "Peta banjir MODIS MCDWD komposit 2 hari (Terra+Aqua, 250 m). Biru = "
+            "air permanen, oranye = banjir musiman, merah = banjir tidak biasa, "
+            "abu-abu = teramati tanpa air. Transparan = data tidak cukup "
+            "(umumnya tertutup awan)."
+        ),
+    ),
+    PreviewSpec(
         key="modis_ndvi",
         source="modis",
         band="NDVI",
         label="MODIS NDVI",
         units="indeks",
-        # Divergen di sekitar 0 karena tanda NDVI-nya sendiri bermakna:
-        # negatif = air/awan, positif = vegetasi.
         cmap="RdYlGn",
         scale="fixed",
-        vmin=-1.0,
-        vmax=1.0,
+        # Rentang palet NDVI yang lazim (NASA/GEE): nilai < -0.2 hanya air
+        # dan > 0.8 hanya kanopi paling rapat, jadi -1..1 membuang separuh
+        # colormap dan membuat kota seperti Jakarta (0..0.4) kuning rata.
+        vmin=-0.2,
+        vmax=0.8,
         interpretation=(
-            "Normalized Difference Vegetation Index. Merah (<0) = air, awan, "
-            "atau lahan terbuka; kuning (~0.2) = vegetasi jarang; hijau (>0.6) "
-            "= kanopi rapat. Skala dipatok -1..1 sehingga warna bisa "
-            "dibandingkan langsung antar tanggal."
+            "Normalized Difference Vegetation Index (komposit 8 hari MOD09A1, "
+            "awan dibuang). Merah (<0) = air atau lahan terbangun; kuning "
+            "(~0.3) = vegetasi jarang; hijau (>0.6) = kanopi rapat. Skala "
+            "dipatok -0.2..0.8 sehingga warna bisa dibandingkan antar tanggal. "
+            "Transparan = awan."
         ),
     ),
     PreviewSpec(
@@ -189,12 +238,15 @@ PREVIEW_SPECS: tuple[PreviewSpec, ...] = (
         units="indeks",
         cmap="BrBG",
         scale="fixed",
-        vmin=-1.0,
-        vmax=1.0,
+        # Tetap simetris di nol (ambang air McFeeters), tapi dipersempit:
+        # daratan jarang di bawah -0.5 dan air terbuka sudah jelas di +0.5.
+        vmin=-0.5,
+        vmax=0.5,
         interpretation=(
             "Normalized Difference Water Index (formulasi McFeeters: "
             "green/NIR). Cokelat (<0) = daratan kering; biru-hijau (>0) = "
-            "badan air terbuka. Ambang genangan biasanya diambil di sekitar 0."
+            "badan air terbuka. Ambang genangan biasanya diambil di sekitar 0. "
+            "Transparan = awan."
         ),
     ),
     PreviewSpec(
@@ -209,8 +261,9 @@ PREVIEW_SPECS: tuple[PreviewSpec, ...] = (
         scale="zero_based",
         transparent_below=0.1,
         interpretation=(
-            "Akumulasi hujan 24 jam menjelang akuisisi. Pemicu langsung banjir "
-            "kilat. Piksel <0.1 mm dibuat transparan supaya area kering tidak "
+            "Curah hujan satu hari kalender UTC tanggal akuisisi (IMERG "
+            "harian, sel 0.1 derajat ~11 km). Pemicu langsung banjir kilat. "
+            "Piksel <0.1 mm dibuat transparan supaya area kering tidak "
             "terbaca sebagai 'hujan sangat sedikit'."
         ),
     ),
@@ -437,14 +490,56 @@ def _maybe_to_db(data: np.ndarray, mask: np.ndarray) -> tuple[np.ndarray, bool]:
     return np.maximum(db, DB_FLOOR).astype(np.float32), True
 
 
-def _read_downsampled(
-    path: Path, max_width: int = MAX_WIDTH, log_db: bool = False
-) -> _Layer:
-    """Baca band 1 dengan downsampling langsung di driver.
+@dataclass(frozen=True)
+class _PreviewGrid:
+    """Grid PNG bersama (biasanya grid preview Sentinel-1)."""
 
-    Downsample dilakukan rasterio (bukan setelah membaca penuh) supaya raster
-    S1 belasan ribu piksel tidak pernah masuk memori utuh: COG punya overview
-    internal, jadi pembacaan ini membaca level piramida yang sudah ada.
+    transform: Affine
+    crs: object
+    width: int
+    height: int
+
+
+def _preview_shape(width: int, height: int, max_width: int) -> tuple[int, int]:
+    """(out_w, out_h) PNG untuk raster `width` x `height`.
+
+    Lebih lebar dari `max_width` -> diperkecil ke `max_width`. Lebih kecil ->
+    diperbesar dengan faktor BULAT terbesar yang masih <= `max_width`, supaya
+    tiap piksel sumber jadi blok persegi utuh (MODIS 21 px -> 1008 px), bukan
+    PNG belasan piksel yang di UI tampil sebagai titik atau di-blur browser."""
+    if width > max_width:
+        scale = max_width / width
+        return max(1, int(round(width * scale))), max(1, int(round(height * scale)))
+    factor = max(1, max_width // width)
+    return width * factor, height * factor
+
+
+def _preview_grid(path: Path, max_width: int = MAX_WIDTH) -> _PreviewGrid:
+    """Grid PNG untuk raster `path` — dipakai sebagai grid bersama semua
+    lapisan satu tanggal kalau `path` adalah Sentinel-1."""
+    with rasterio.open(path) as src:
+        out_w, out_h = _preview_shape(src.width, src.height, max_width)
+        transform = src.transform * Affine.scale(src.width / out_w, src.height / out_h)
+        return _PreviewGrid(transform, src.crs, out_w, out_h)
+
+
+def _read_downsampled(
+    path: Path,
+    max_width: int = MAX_WIDTH,
+    log_db: bool = False,
+    grid: _PreviewGrid | None = None,
+    categorical: bool = False,
+) -> _Layer:
+    """Baca band 1 ke ukuran preview.
+
+    Tanpa `grid`: ukuran dari _preview_shape(). Downsample dilakukan rasterio
+    (bukan setelah membaca penuh) supaya raster S1 belasan ribu piksel tidak
+    pernah masuk memori utuh: COG punya overview internal, jadi pembacaan ini
+    membaca level piramida yang sudah ada. Upsample selalu nearest.
+
+    Dengan `grid`: raster direproject ke grid itu (extent & ukuran identik
+    dengan preview S1). Nearest kalau sumbernya lebih kasar dari grid atau
+    datanya kategorikal; average kalau sumbernya lebih halus.
 
     `log_db=True` mengubah sigma0 linear jadi dB setelah masking — lihat
     _maybe_to_db(). Rata-rata downsample sengaja dilakukan di ranah linear
@@ -452,14 +547,35 @@ def _read_downsampled(
     rata-rata geometrik daya, yang bukan yang dimaksud di sini.
     """
     with rasterio.open(path) as src:
-        scale = min(1.0, max_width / src.width)
-        out_w = max(1, int(round(src.width * scale)))
-        out_h = max(1, int(round(src.height * scale)))
-        data = src.read(
-            1, out_shape=(out_h, out_w), resampling=Resampling.average
-        ).astype(np.float32)
         nodata = src.nodata
         src_h, src_w = src.height, src.width
+        if grid is not None:
+            out_w, out_h = grid.width, grid.height
+            coarser = abs(src.transform.a) >= abs(grid.transform.a)
+            resampling = (
+                Resampling.nearest if categorical or coarser else Resampling.average
+            )
+            data = np.full((out_h, out_w), np.nan, dtype=np.float32)
+            reproject(
+                source=rasterio.band(src, 1),
+                destination=data,
+                src_transform=src.transform,
+                src_crs=src.crs,
+                src_nodata=nodata,
+                dst_transform=grid.transform,
+                dst_crs=grid.crs,
+                dst_nodata=np.nan,
+                resampling=resampling,
+            )
+        else:
+            out_w, out_h = _preview_shape(src.width, src.height, max_width)
+            upsample = out_w >= src.width
+            resampling = (
+                Resampling.nearest if categorical or upsample else Resampling.average
+            )
+            data = src.read(1, out_shape=(out_h, out_w), resampling=resampling).astype(
+                np.float32
+            )
 
     mask = ~np.isfinite(data)
     if nodata is not None and np.isfinite(nodata):
@@ -495,7 +611,7 @@ def _stretch_range(layer: _Layer, spec: PreviewSpec | None) -> tuple[float, floa
     if valid.size == 0:
         return 0.0, 1.0
 
-    if spec is not None and spec.scale == "fixed":
+    if spec is not None and spec.scale in ("fixed", "categorical"):
         return float(spec.vmin), float(spec.vmax)
 
     if spec is not None and spec.scale == "zero_based":
@@ -541,28 +657,66 @@ def _save_png(img, path: Path) -> Path:
     return path
 
 
-def _render_grayscale(layer: _Layer, out_path: Path) -> Path:
+def _gray_range(layer: _Layer, spec: PreviewSpec | None) -> tuple[float, float]:
+    """Rentang grayscale: persentil per berkas, kecuali data kategorikal —
+    persentil kelas diskret (mis. 98% piksel bernilai 1) menjepit kelas
+    lain ke putih/hitam, jadi kelas dipetakan ke vmin..vmax tetap."""
+    if spec is not None and spec.categorical:
+        return _stretch_range(layer, spec)
+    return _stretch_range(layer, None)
+
+
+def _render_grayscale(layer: _Layer, out_path: Path, spec: PreviewSpec | None = None) -> Path:
     """PNG mode LA: satu kanal luminansi (nilai ilmiah) + satu kanal alpha
     (masker NoData). Tetap 'satu kanal data' seperti yang dimaksud tier ini —
     alpha bukan data, dia cuma memisahkan 'gelap' dari 'tidak ada'."""
     from PIL import Image
 
-    lo, hi = _stretch_range(layer, None)
+    lo, hi = _gray_range(layer, spec)
     gray = (_normalize(layer, lo, hi) * 255).astype(np.uint8)
     img = Image.fromarray(np.dstack([gray, _alpha(layer)]), mode="LA")
     return _save_png(img, out_path)
 
 
-def _render_colored(layer: _Layer, spec: PreviewSpec, out_path: Path) -> Path:
-    """PNG RGBA hasil colormap matplotlib."""
+def _colored_rgba(layer: _Layer, spec: PreviewSpec) -> np.ndarray:
+    """Array RGBA uint8 untuk render colored."""
     from matplotlib import colormaps
-    from PIL import Image
+    from matplotlib.colors import to_rgb
+
+    if spec.categorical:
+        rgba = np.zeros((layer.height, layer.width, 4), dtype=np.uint8)
+        values = np.where(layer.mask, -1, np.rint(layer.data)).astype(np.int32)
+        for value, color, alpha, _label in spec.categories:
+            hit = values == value
+            rgba[hit, :3] = [int(round(c * 255)) for c in to_rgb(color)]
+            rgba[hit, 3] = alpha
+        return rgba
 
     lo, hi = _stretch_range(layer, spec)
     rgba = (colormaps[spec.cmap](_normalize(layer, lo, hi)) * 255).astype(np.uint8)
     rgba[..., 3] = _alpha(layer, spec)
-    img = Image.fromarray(rgba, mode="RGBA")
+    return rgba
+
+
+def _render_colored(layer: _Layer, spec: PreviewSpec, out_path: Path) -> Path:
+    """PNG RGBA hasil colormap matplotlib (atau palet kelas)."""
+    from PIL import Image
+
+    img = Image.fromarray(_colored_rgba(layer, spec), mode="RGBA")
     return _save_png(img, out_path)
+
+
+def _class_percentages(layer: _Layer, spec: PreviewSpec) -> dict[str, float]:
+    """Persentase piksel preview per kelas (dari seluruh piksel, termasuk
+    NoData) — ringkasan yang lebih berguna daripada min/max/mean kelas."""
+    total = layer.data.size or 1
+    values = np.where(layer.mask, -1, np.rint(layer.data)).astype(np.int32)
+    out = {
+        label: round(float((values == value).sum()) / total * 100, 2)
+        for value, _color, _alpha, label in spec.categories
+    }
+    out["Tidak ada data"] = round(float(layer.mask.sum()) / total * 100, 2)
+    return out
 
 
 def _render_s1_rgb(vv: _Layer, vh: _Layer, out_path: Path) -> Path | None:
@@ -713,10 +867,12 @@ def _colored_info(entries: list[dict]) -> dict:
                 "false-color RGB (VV/VH/VV-VH)."
             ),
             "modis": (
-                "Divergen dengan titik tengah nol, dipatok -1..1: NDVI RdYlGn "
-                "(merah = air/lahan terbuka, hijau = vegetasi), NDWI BrBG "
-                "(cokelat = kering, biru-hijau = air). Tanda indeksnya sendiri "
-                "bermakna, jadi nol harus jatuh tepat di tengah colormap."
+                "FLOOD: palet kelas (abu-abu = tanpa air, biru = air "
+                "permanen, oranye = banjir musiman, merah = banjir tidak biasa, "
+                "transparan = data tidak cukup); lihat 'legend' tiap entri. "
+                "NDVI RdYlGn dipatok -0.2..0.8 (merah = air/lahan terbangun, "
+                "hijau = vegetasi); NDWI BrBG dipatok -0.5..0.5 dengan nol di "
+                "tengah (cokelat = kering, biru-hijau = air). Awan transparan."
             ),
             "gpm": (
                 "YlGnBu sequential mulai dari nol, batas atas persentil 98 per "
@@ -726,6 +882,12 @@ def _colored_info(entries: list[dict]) -> dict:
             ),
         },
         "nodata": "Transparan (alpha=0), sama seperti grayscale/.",
+        "grid": (
+            "Kalau Sentinel-1 ada, MODIS/GPM direproject ke grid preview S1 "
+            "(nearest-neighbour; lihat 'aligned_to') sehingga semua PNG satu "
+            "tanggal berukuran sama dan bisa ditumpuk. Piksel MODIS 250/500 m "
+            "dan sel GPM 0.1 derajat tampil sebagai blok."
+        ),
         "ideal_use_cases": [
             "Gambar untuk laporan, poster, dan presentasi",
             "Perbandingan kondisi antar tanggal (skala terpatok untuk MODIS)",
@@ -819,6 +981,18 @@ def generate_previews(
     skipped: list[dict] = []
     layers: dict[str, _Layer] = {}
 
+    # Grid bersama dari Sentinel-1 (lihat "GRID BERSAMA" di docstring modul).
+    grid: _PreviewGrid | None = None
+    grid_source: str | None = None
+    for s1_key in ("s1_vv", "s1_vh"):
+        if s1_key in inputs:
+            try:
+                grid = _preview_grid(inputs[s1_key], max_width=max_width)
+                grid_source = s1_key
+            except Exception:
+                logger.exception("[M10] gagal baca grid %s, lapisan aux tanpa grid bersama", s1_key)
+            break
+
     for spec in PREVIEW_SPECS:
         src_path = inputs.get(spec.key)
         if src_path is None:
@@ -841,7 +1015,11 @@ def generate_previews(
             continue
 
         try:
-            layer = _read_downsampled(src_path, max_width=max_width, log_db=spec.log_db)
+            layer = _read_downsampled(
+                src_path, max_width=max_width, log_db=spec.log_db,
+                grid=grid if spec.source != "sentinel1" else None,
+                categorical=spec.categorical,
+            )
         except Exception as exc:
             logger.exception("[M10] gagal baca %s untuk %s", src_path, spec.key)
             skipped.append({
@@ -872,18 +1050,24 @@ def generate_previews(
             "source_height": layer.src_height,
             "statistics": layer.stats,
             "transform": "10*log10(sigma0)" if layer.stats.get("converted_to_db") else "none",
+            "aligned_to": grid_source if spec.source != "sentinel1" and grid is not None else None,
         }
+        if spec.categorical:
+            common["statistics"] = {**layer.stats, "class_percent": _class_percentages(layer, spec)}
 
         try:
             if gray_path is not None:
-                _render_grayscale(layer, gray_path)
-                g_lo, g_hi = _stretch_range(layer, None)
+                _render_grayscale(layer, gray_path, spec)
+                g_lo, g_hi = _gray_range(layer, spec)
                 gray_entries.append({
                     **common,
                     "file": gray_path.name,
                     "colormap": "gray",
                     "value_range": [round(g_lo, 4), round(g_hi, 4)],
-                    "range_method": f"persentil {PCT_LOW}-{PCT_HIGH}",
+                    "range_method": (
+                        "kelas tetap" if spec.categorical
+                        else f"persentil {PCT_LOW}-{PCT_HIGH}"
+                    ),
                     "size_bytes": gray_path.stat().st_size,
                 })
                 written.append(gray_path)
@@ -891,7 +1075,7 @@ def generate_previews(
             if color_path is not None:
                 _render_colored(layer, spec, color_path)
                 c_lo, c_hi = _stretch_range(layer, spec)
-                color_entries.append({
+                entry = {
                     **common,
                     "file": color_path.name,
                     "colormap": spec.cmap,
@@ -900,7 +1084,22 @@ def generate_previews(
                     "transparent_below": spec.transparent_below,
                     "interpretation": spec.interpretation,
                     "size_bytes": color_path.stat().st_size,
-                })
+                }
+                if spec.categorical:
+                    entry["legend"] = [
+                        {"value": v, "color": c, "alpha": a, "label": lbl}
+                        for v, c, a, lbl in spec.categories
+                    ]
+                # PNG yang seluruhnya transparan tampak "rusak" di UI padahal
+                # datanya sah (mis. hujan 0 mm di seluruh AOI) — tandai.
+                if not _colored_rgba(layer, spec)[..., 3].any():
+                    entry["all_transparent"] = True
+                    entry["note"] = (
+                        f"Seluruh piksel di bawah {spec.transparent_below} {spec.units} "
+                        "(tidak ada hujan)" if spec.transparent_below is not None
+                        else "Tidak ada kelas yang bisa ditampilkan"
+                    )
+                color_entries.append(entry)
                 written.append(color_path)
         except Exception as exc:
             logger.exception("[M10] gagal render %s", spec.key)
@@ -940,6 +1139,23 @@ def generate_previews(
                 "reason": f"gagal render: {exc}",
             })
 
+    # PNG render lama untuk lapisan yang kali ini dilewati (mis. NDVI yang
+    # sekarang seluruhnya awan) harus hilang: API mendaftar PNG lewat glob
+    # folder, jadi berkas basi akan tetap tampil seolah hasil render terbaru.
+    if overwrite:
+        known = {f"{spec.key}.png" for spec in PREVIEW_SPECS} | {f"{S1_RGB_KEY}.png"}
+        for kind_dir, entries in (
+            (gray_dir, gray_entries), (color_dir, color_entries),
+            (composite_dir, composite_entries),
+        ):
+            if kind_dir is None:
+                continue
+            current = {e["file"] for e in entries}
+            for stale in kind_dir.glob("*.png"):
+                if stale.name in known and stale.name not in current:
+                    stale.unlink()
+                    logger.info("[M10] hapus preview basi %s", stale)
+
     kinds: dict[str, dict] = {}
     for kind, kind_dir, entries, info_fn in (
         ("grayscale", gray_dir, gray_entries, _grayscale_info),
@@ -971,6 +1187,10 @@ def generate_previews(
         "derived_from": tier.upper(),
         "options": sorted(wanted),
         "max_width_px": max_width,
+        "grid": (
+            {"aligned_to": grid_source, "width": grid.width, "height": grid.height}
+            if grid is not None else None
+        ),
         "png_compress_level": PNG_COMPRESS_LEVEL,
         "sources_present": sources_present,
         "counts": {

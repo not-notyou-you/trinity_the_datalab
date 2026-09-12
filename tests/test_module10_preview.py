@@ -171,7 +171,7 @@ class TestRendering:
         assert entry["range_method"] == "zero_based"
 
     def test_modis_range_is_pinned_across_dates(self, data_root):
-        """NDVI dipatok -1..1 supaya warna bisa dibandingkan antar tanggal,
+        """NDVI dipatok -0.2..0.8 supaya warna bisa dibandingkan antar tanggal,
         bukan digeser mengikuti isi tiap berkas."""
         from etl import module7_modis_download as m7
 
@@ -183,7 +183,85 @@ class TestRendering:
         color = fm.get_preview_kind_dir(DATASET_ID, DATASET_NAME, DATE_KEY, "colored")
         info = json.loads((color / "colored_info.json").read_text(encoding="utf-8"))
         entry = next(e for e in info["images"] if e["key"] == "modis_ndvi")
-        assert entry["value_range"] == [-1.0, 1.0]
+        assert entry["value_range"] == [-0.2, 0.8]
+
+    def test_modis_flood_rendered_with_class_palette(self, data_root):
+        """FLOOD kategorikal: warna per kelas, 255 (insufficient data)
+        transparan, dan persentase kelas tercatat."""
+        from PIL import Image
+
+        from etl import module7_modis_download as m7
+
+        d = fm.get_scene_dir(DATASET_ID, DATASET_NAME, "gold", "modis", DATE_KEY)
+        flood = np.full((10, 10), 255, dtype="uint8")
+        flood[:5, :] = 1
+        flood[5:, :5] = 3
+        d.mkdir(parents=True, exist_ok=True)
+        with rasterio.open(
+            d / m7.band_filename("FLOOD", DATE_KEY), "w", driver="GTiff",
+            height=10, width=10, count=1, dtype="uint8", crs="EPSG:4326",
+            transform=from_origin(106.7, -6.0, 0.01, 0.01), nodata=255,
+        ) as dst:
+            dst.write(flood, 1)
+
+        m10.generate_previews(DATASET_ID, DATASET_NAME, DATE_KEY)
+
+        color = fm.get_preview_kind_dir(DATASET_ID, DATASET_NAME, DATE_KEY, "colored")
+        info = json.loads((color / "colored_info.json").read_text(encoding="utf-8"))
+        entry = next(e for e in info["images"] if e["key"] == "modis_flood")
+        assert entry["range_method"] == "categorical"
+        assert {item["value"] for item in entry["legend"]} == {0, 1, 2, 3}
+        pct = entry["statistics"]["class_percent"]
+        assert pct["Air permanen (referensi)"] == 50.0
+        assert pct["Banjir (tidak biasa)"] == 25.0
+        assert pct["Tidak ada data"] == 25.0
+
+        rgba = np.array(Image.open(color / "modis_flood.png"))
+        # 10 px diperbesar kelipatan bulat -> blok nearest, bukan PNG 10 px.
+        assert rgba.shape[1] == 1020
+        assert tuple(rgba[0, 0]) == (0x21, 0x71, 0xB5, 255)   # air
+        assert tuple(rgba[-1, 0]) == (0xE3, 0x1A, 0x1C, 255)  # banjir
+        assert rgba[-1, -1, 3] == 0                           # insufficient data
+
+    def test_aux_layers_share_sentinel1_grid(self, data_root):
+        """MODIS/GPM direproject ke grid preview S1: ukuran PNG sama, dan sel
+        kasar tampil sebagai blok (nearest), bukan gradien."""
+        from PIL import Image
+
+        from etl import module8_gpm_download as m8
+
+        _s1_gold(data_root, "VV", _linear_sigma0(8))  # 60x80 px @0.001 deg
+        d = fm.get_scene_dir(DATASET_ID, DATASET_NAME, "gold", "gpm", DATE_KEY)
+        d.mkdir(parents=True, exist_ok=True)
+        rain = np.array([[1.0, 9.0], [4.0, 16.0]], dtype="float32")
+        with rasterio.open(
+            d / m8.band_filename("24h", DATE_KEY), "w", driver="GTiff",
+            height=2, width=2, count=1, dtype="float32", crs="EPSG:4326",
+            transform=from_origin(106.7, -6.0, 0.04, 0.03), nodata=-9999.9,
+        ) as dst:
+            dst.write(rain, 1)
+
+        result = m10.generate_previews(
+            DATASET_ID, DATASET_NAME, DATE_KEY, s1_scene_key=S1_SCENE
+        )
+        gray = fm.get_preview_kind_dir(DATASET_ID, DATASET_NAME, DATE_KEY, "grayscale")
+        s1_size = Image.open(gray / "s1_vv.png").size
+        assert Image.open(gray / "gpm_rain_24h.png").size == s1_size
+        assert result["grid"]["aligned_to"] == "s1_vv"
+
+        color = fm.get_preview_kind_dir(DATASET_ID, DATASET_NAME, DATE_KEY, "colored")
+        info = json.loads((color / "colored_info.json").read_text(encoding="utf-8"))
+        entry = next(e for e in info["images"] if e["key"] == "gpm_rain_24h")
+        assert entry["aligned_to"] == "s1_vv"
+        # Nearest: hanya 4 nilai sel asli, tidak ada nilai antara hasil interpolasi.
+        layer = m10._read_downsampled(
+            d / m8.band_filename("24h", DATE_KEY),
+            grid=m10._preview_grid(
+                fm.get_scene_dir(DATASET_ID, DATASET_NAME, "gold", "sentinel1", S1_SCENE)
+                / "S1D_calibrated_VV_lee.tif"
+            ),
+        )
+        assert set(np.unique(layer.valid).tolist()) == {1.0, 4.0, 9.0, 16.0}
 
 
 class TestResilience:
@@ -199,6 +277,22 @@ class TestResilience:
         skipped = {s["key"] for s in result["skipped"]}
         assert "s1_vh" in skipped and "modis_ndvi" in skipped
         assert result["sources_present"] == ["sentinel1"]
+
+    def test_rerender_removes_png_of_layer_now_skipped(self, data_root):
+        """Lapisan yang dulu dirender tapi sekarang seluruhnya NoData tidak
+        boleh meninggalkan PNG lama — API mendaftar PNG lewat glob."""
+        from etl import module7_modis_download as m7
+
+        d = fm.get_scene_dir(DATASET_ID, DATASET_NAME, "gold", "modis", DATE_KEY)
+        ndvi = d / m7.band_filename("NDVI", DATE_KEY)
+        _write_tif(ndvi, np.full((20, 20), 0.4))
+        m10.generate_previews(DATASET_ID, DATASET_NAME, DATE_KEY)
+        color = fm.get_preview_kind_dir(DATASET_ID, DATASET_NAME, DATE_KEY, "colored")
+        assert (color / "modis_ndvi.png").exists()
+
+        _write_tif(ndvi, np.full((20, 20), np.nan))
+        m10.generate_previews(DATASET_ID, DATASET_NAME, DATE_KEY)
+        assert not (color / "modis_ndvi.png").exists()
 
     def test_no_gold_at_all_still_writes_metadata(self, data_root):
         """Tanpa satu pun input, tetap tulis sidecar kosong daripada melempar:

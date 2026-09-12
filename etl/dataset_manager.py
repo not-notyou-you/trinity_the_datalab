@@ -57,6 +57,23 @@ def _is_thread_alive(key: str) -> bool:
         return t is not None and t.is_alive()
 
 
+def _wait_thread_exit(key: str, timeout_s: float) -> bool:
+    """Tunggu thread terdaftar `key` selesai. True kalau sudah tidak hidup
+    (atau memang tidak ada), False kalau timeout."""
+    with _threads_lock:
+        t = _active_threads.get(key)
+    if t is None or t is threading.current_thread():
+        return True
+    t.join(timeout_s)
+    return not t.is_alive()
+
+
+# Batas tunggu job berhenti sebelum file dataset dihapus. Cancel hanya dicek
+# di antara tahap, dan satu tahap (ekstrak/kalibrasi GRD, download 1.7 GB)
+# bisa berjalan belasan menit.
+JOB_STOP_TIMEOUT_S = 30 * 60
+
+
 def _register_thread(key: str, thread: threading.Thread) -> None:
     with _threads_lock:
         _active_threads[key] = thread
@@ -530,7 +547,7 @@ class DatasetManager:
             # (with cancel set) so it exits instead of leaking forever.
             get_cancel_event(job_id).set()
             get_pause_event(job_id).set()
-        self._spawn_deletion_runner(dataset_id)
+        self._spawn_deletion_runner(dataset_id, job_id=job_id)
         logger.info("[DATASET] dataset_id=%d deletion triggered force=%s", dataset_id, force)
         return {"status": "DELETING", "dataset_id": dataset_id}
 
@@ -776,7 +793,7 @@ class DatasetManager:
         _register_thread(key, t)
         t.start()
 
-    def _spawn_deletion_runner(self, dataset_id: int) -> None:
+    def _spawn_deletion_runner(self, dataset_id: int, job_id: int | None = None) -> None:
         key = f"delete-{dataset_id}"
         if _is_thread_alive(key):
             return
@@ -796,6 +813,17 @@ class DatasetManager:
             return
 
         def _runner() -> None:
+            # Hapus file hanya setelah thread job berhenti. Cancel cuma sinyal:
+            # tahap yang sedang jalan tetap menulis sampai selesai, dan file
+            # yang lahir sesudah manifest penghapusan dibuat akan tertinggal
+            # sebagai folder yatim tanpa baris dataset (kasus jakarta_part2:
+            # 3.5 GB raw/_work tersisa setelah dataset dihapus di tengah
+            # kalibrasi).
+            if job_id is not None and not _wait_thread_exit(f"job-{job_id}", JOB_STOP_TIMEOUT_S):
+                logger.warning(
+                    "[DATASET] job_id=%d belum berhenti setelah %ds; penghapusan "
+                    "dataset_id=%d tetap dilanjutkan", job_id, JOB_STOP_TIMEOUT_S, dataset_id,
+                )
             try:
                 DeletionManager(self._db, dataset_id, dataset_name).delete_all()
             except Exception:

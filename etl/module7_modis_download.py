@@ -6,11 +6,14 @@ dataset AOI, and writes one GeoTIFF per band per day for lineage tracking.
 Dua produk berbeda diambil di sini:
 
   MCDWD_L3_F2_NRT (250 m)  -> band FLOOD, langsung dari subdataset
-                              "Flood 1-day 250m".
-  MOD09GA_NRT     (500 m)  -> band NDVI dan NDWI, dihitung dari surface
-                              reflectance:
+                              "Flood 2-Day 250m" (komposit 2 hari).
+  MOD09A1         (500 m)  -> band NDVI dan NDWI, dihitung dari surface
+                              reflectance komposit 8 hari:
                                   NDVI = (b02_NIR   - b01_red)   / (b02 + b01)
                                   NDWI = (b04_green - b02_NIR)   / (b04 + b02)
+                              piksel awan/bayangan/cirrus (QA state) dibuang
+                              jadi NaN. Kalau komposit periode itu belum
+                              terbit, jatuh balik ke MOD09GA_NRT harian.
 
 NDWI di sini adalah formulasi McFeeters (green/NIR) yang menyorot badan air
 terbuka — bukan NDWI Gao (NIR/SWIR) yang mengukur kelembapan vegetasi.
@@ -20,13 +23,13 @@ Output ditulis ke data/datasets/{id}_{slug}/{YYYYMMDD}/silver/modis/ dan
 granule mentahnya di-cache di _granule_cache/modis/. Semuanya adalah input fusion
 (dikonsumsi module9_fusion.py lewat tier GOLD), bukan deliverable akhir.
 
-Kegagalan satu produk tidak menjatuhkan produk lain: kalau MOD09GA hari itu
-belum tersedia di NRT archive tapi MCDWD ada, hari itu tetap menghasilkan
-FLOOD dan cuma kehilangan NDVI/NDWI.
+Kegagalan satu produk tidak menjatuhkan produk lain: kalau reflectance hari
+itu tidak tersedia (MOD09A1 maupun MOD09GA) tapi MCDWD ada, hari itu tetap
+menghasilkan FLOOD dan cuma kehilangan NDVI/NDWI.
 
 LEVEL PEMROSESAN (DOCS/ETL.md, "MODIS Pipeline")
     RAW        cuma peta banjir MCDWD -> reproject -> crop -> tier BRONZE.
-               MOD09GA tidak diunduh sama sekali: NDVI/NDWI adalah indeks
+               Reflectance tidak diunduh sama sekali: NDVI/NDWI adalah indeks
                turunan, dan level RAW justru didefinisikan sebagai "tanpa
                indeks turunan".
     PROCESSED  peta banjir + NDVI + NDWI -> tier SILVER (lalu COG GOLD lewat
@@ -70,7 +73,19 @@ LAADS_NRT_BASE = "https://nrt3.modaps.eosdis.nasa.gov/archive/allData/61"
 LAADS_STANDARD_BASE = "https://ladsweb.modaps.eosdis.nasa.gov/archive/allData/61"
 
 MODIS_FLOOD_PRODUCT = "MCDWD_L3_F2_NRT"
-MODIS_REFLECTANCE_PRODUCT = "MOD09GA_NRT"
+
+# NDVI/NDWI utamanya dari MOD09A1: komposit surface reflectance 8 hari yang
+# per piksel memilih observasi terbaik (awan & sudut pandang minimum) dalam
+# periodenya. Di musim hujan Jakarta, MOD09GA harian tertutup awan 75-100%
+# hampir setiap tanggal, sehingga setelah cloud mask indeksnya kosong total;
+# komposit 8 hari menaikkan peluang ada piksel cerah. Produk ini hanya ada di
+# arsip standar (tidak ada versi NRT) dan terbit ~1-2 minggu setelah periodenya
+# berakhir, jadi tanggal yang komposit-nya belum terbit jatuh balik ke
+# MOD09GA_NRT harian (juga dengan cloud mask).
+MODIS_REFLECTANCE_PRODUCT = "MOD09A1"
+MODIS_REFLECTANCE_FALLBACK_PRODUCT = "MOD09GA_NRT"
+MODIS_REFLECTANCE_PRODUCTS = (MODIS_REFLECTANCE_PRODUCT, MODIS_REFLECTANCE_FALLBACK_PRODUCT)
+MOD09A1_PERIOD_DAYS = 8
 
 # NRT product -> standard-archive equivalent. MCDWD's standard archive is a
 # single consolidated "MCDWD_L3" product (the 1-day/2-day/3-day composites
@@ -78,7 +93,7 @@ MODIS_REFLECTANCE_PRODUCT = "MOD09GA_NRT"
 # MOD09GA's standard equivalent just drops the "_NRT" suffix.
 MODIS_STANDARD_PRODUCT = {
     MODIS_FLOOD_PRODUCT: "MCDWD_L3",
-    MODIS_REFLECTANCE_PRODUCT: "MOD09GA",
+    MODIS_REFLECTANCE_FALLBACK_PRODUCT: "MOD09GA",
 }
 
 # Nama produk "utama" modul ini — dipakai untuk product_id lineage dan
@@ -92,10 +107,14 @@ MODIS_PRODUCT = MODIS_FLOOD_PRODUCT
 MODIS_TILES = ["h28v09"]
 MODULE = "MODULE7_MODIS_DOWNLOAD"
 
-# Nama SDS di granule MCDWD_L3 adalah "Flood_1Day_250m". Nama dicocokkan tanpa
-# memedulikan huruf besar/spasi/underscore/strip (_norm_name), supaya varian
-# penamaan antar koleksi (NRT vs standar) tetap cocok.
-FLOOD_SUBDATASET = "Flood_1Day_250m"
+# Komposit 2 hari (hari itu + sehari sebelumnya), sesuai produk NRT yang
+# dipakai (MCDWD_L3_F2_NRT = 2-day). Granule standar MCDWD_L3 memuat 1/2/3-day
+# sekaligus; versi 1-day tidak dipakai karena bayangan awan dan piksel gelap
+# perkotaan lolos sebagai "Flood (unusual)" — di AOI Jakarta 20250111 ada 200
+# piksel flood 1-day yang tidak muncul di komposit multi-hari. Nama dicocokkan
+# tanpa memedulikan huruf besar/spasi/underscore/strip (_norm_name), supaya
+# varian penamaan antar koleksi ("Flood 2-Day 250m" vs "Flood_2Day_250m") cocok.
+FLOOD_SUBDATASET = "Flood_2Day_250m"
 
 # Grid sinusoidal MODIS (MOD09GA dkk): tile 10 derajat = 1111950.52 m.
 MODIS_SINUSOIDAL_CRS = "+proj=sinu +lon_0=0 +x_0=0 +y_0=0 +R=6371007.181 +units=m +no_defs"
@@ -103,24 +122,68 @@ _SIN_TILE_SIZE_M = 1111950.5196666666
 # Produk flood MCDWD memakai grid geografis 10x10 derajat, bukan sinusoidal.
 _GEOGRAPHIC_TILE_PRODUCTS = {"MCDWD_L3", "MCDWD_L3_F2_NRT"}
 
-# Subdataset surface reflectance MOD09GA (grid 500 m).
-_REFL_GRID = "MODIS_Grid_500m_2D"
-REFL_RED = f"{_REFL_GRID}:sur_refl_b01_1"    # 620-670 nm
-REFL_NIR = f"{_REFL_GRID}:sur_refl_b02_1"    # 841-876 nm
-REFL_GREEN = f"{_REFL_GRID}:sur_refl_b04_1"  # 545-565 nm
+# Nama SDS surface reflectance + QA state per keluarga produk (grid 500 m;
+# state MOD09GA ada di grid 1 km, state MOD09A1 di 500 m).
+#   red   = band 1, 620-670 nm
+#   nir   = band 2, 841-876 nm
+#   green = band 4, 545-565 nm
+REFLECTANCE_SDS: dict[str, dict[str, str]] = {
+    "MOD09A1": {
+        "red": "sur_refl_b01",
+        "nir": "sur_refl_b02",
+        "green": "sur_refl_b04",
+        "state": "sur_refl_state_500m",
+    },
+    "MOD09GA": {
+        "red": "sur_refl_b01_1",
+        "nir": "sur_refl_b02_1",
+        "green": "sur_refl_b04_1",
+        "state": "state_1km_1",
+    },
+}
 
-# MOD09GA: fill -28672, rentang valid -100..16000 (scale 0.0001). Skala
+# MOD09: fill -28672, rentang valid -100..16000 (scale 0.0001). Skala
 # saling meniadakan di indeks ternormalisasi, jadi tidak perlu di-apply —
 # tapi fill dan nilai di luar rentang valid tetap wajib dibuang dulu.
 REFL_FILL = -28672
 REFL_VALID_MIN = -100
 REFL_VALID_MAX = 16000
 
-# band_name -> (subdataset A, subdataset B); indeks = (A - B) / (A + B)
+# QA awan. Tanpa mask ini NDVI/NDWI musim hujan dihitung dari puncak awan: di
+# AOI Jakarta Jan-Apr 2025 tutupan awan MOD09GA 75-100% per tanggal, dan
+# NDVI-nya turun ke ~0 (awan putih = reflectance merah ~ NIR). state_1km
+# (MOD09GA) dan sur_refl_state_500m (MOD09A1) memakai tata letak bit yang sama
+# (MOD09 User Guide, tabel "State QA"):
+STATE_FILL = 65535
+_STATE_CLOUD_MASK = 0b11          # bit 0-1: 00 clear, 01 cloudy, 10 mixed, 11 not set (clear)
+_STATE_CLOUD_SHADOW = 1 << 2      # bit 2
+_STATE_CIRRUS_SHIFT = 8           # bit 8-9: 00 none, 01 small, 10 average, 11 high
+_STATE_INTERNAL_CLOUD = 1 << 10   # bit 10: internal cloud algorithm flag
+
+# band_name -> (kanal A, kanal B); indeks = (A - B) / (A + B)
 MODIS_INDICES: dict[str, tuple[str, str]] = {
-    "NDVI": (REFL_NIR, REFL_RED),
-    "NDWI": (REFL_GREEN, REFL_NIR),
+    "NDVI": ("nir", "red"),
+    "NDWI": ("green", "nir"),
 }
+
+
+def _reflectance_family(product: str) -> str:
+    """Nama produk (termasuk varian _NRT / arsip standar) -> kunci REFLECTANCE_SDS."""
+    family = product.removesuffix("_NRT")
+    if family not in REFLECTANCE_SDS:
+        raise ValueError(f"produk reflectance tidak dikenal: {product!r}")
+    return family
+
+
+def _product_query_date(product: str, date: datetime) -> datetime:
+    """Tanggal granule yang dicari untuk `date`. MOD09A1 diberi nama menurut
+    hari pertama periode 8 harinya (DOY 1, 9, 17, ...), jadi tanggal target
+    dipetakan ke awal periode yang memuatnya."""
+    if product != MODIS_REFLECTANCE_PRODUCT:
+        return date
+    doy = date.timetuple().tm_yday
+    start_doy = (doy - 1) // MOD09A1_PERIOD_DAYS * MOD09A1_PERIOD_DAYS + 1
+    return datetime(date.year, 1, 1) + timedelta(days=start_doy - 1)
 
 # band_name -> nilai data_products.product_type
 MODIS_PRODUCT_TYPES: dict[str, str] = {
@@ -219,7 +282,17 @@ def _discover_tile_files_with_fallback(
     standard/reprocessed archive if NRT has nothing for `date` — this is the
     normal case for backfill jobs on dates past the NRT retention window.
 
+    Produk tanpa varian NRT (mis. MOD09A1) langsung dicari di arsip standar.
+
     Returns (items, product_used)."""
+    if not product.endswith("_NRT"):
+        items = _discover_tile_files(date, tiles, product, base=LAADS_STANDARD_BASE)
+        if not items:
+            raise RuntimeError(
+                f"tidak ada granule {product} untuk {date.date().isoformat()}"
+            )
+        return items, product
+
     try:
         items = _discover_tile_files(date, tiles, product, base=LAADS_NRT_BASE)
         if items:
@@ -392,16 +465,20 @@ def _eos_grid_georef(struct_meta: str, field: str) -> dict:
         if not any(_norm_name(f) == _norm_name(field) for f in fields):
             continue
 
-        def value(key: str) -> str:
+        def value(key: str, default: str | None = None) -> str:
             m = re.search(rf"^\s*{key}=(.+)$", block, re.M)
             if not m:
+                if default is not None:
+                    return default
                 raise RuntimeError(f"StructMetadata grid untuk {field} tidak punya {key}")
             return m.group(1).strip()
 
         xdim, ydim = int(value("XDim")), int(value("YDim"))
         ulx, uly = (float(s) for s in value("UpperLeftPointMtrs").strip("()").split(","))
         lrx, lry = (float(s) for s in value("LowerRightMtrs").strip("()").split(","))
-        origin = value("GridOrigin")
+        # GridOrigin opsional di HDF-EOS dan default-nya UL; granule MOD09A1
+        # memang tidak menuliskannya (MOD09GA/MCDWD menulis eksplisit).
+        origin = value("GridOrigin", "HDFE_GD_UL")
         if origin != "HDFE_GD_UL":
             raise RuntimeError(f"GridOrigin {origin} belum didukung ({field})")
         projection = value("Projection")
@@ -503,22 +580,53 @@ def _read_reflectance(hdf_path: Path, subdataset: str) -> tuple[np.ndarray, dict
     return data, grid
 
 
+def _cloud_mask(hdf_path: Path, shape: tuple[int, int], state_sds: str) -> np.ndarray:
+    """Mask True = piksel yang tidak boleh dipakai indeks, menurut QA state.
+
+    Dibuang: cloudy/mixed, bayangan awan, cirrus average/high, flag awan
+    internal, dan fill. Grid state dan grid reflectance menutupi tile yang
+    sama, jadi state 1 km MOD09GA diperbesar ke `shape` dengan pengulangan blok
+    (1 piksel 1 km = 2x2 piksel 500 m), bukan resampling; state 500 m MOD09A1
+    sudah seukuran."""
+    state, _ = _read_eos_grid_field(hdf_path, state_sds)
+    fy, ry = divmod(shape[0], state.shape[0])
+    fx, rx = divmod(shape[1], state.shape[1])
+    if ry or rx or not fy or not fx:
+        raise RuntimeError(
+            f"grid {state_sds} {state.shape} tidak kelipatan grid reflectance {shape} "
+            f"di {hdf_path.name}"
+        )
+    state = state.astype(np.uint16)
+    cloud_state = state & _STATE_CLOUD_MASK
+    bad = (
+        (state == STATE_FILL)
+        | (cloud_state == 0b01)
+        | (cloud_state == 0b10)
+        | ((state & _STATE_CLOUD_SHADOW) != 0)
+        | (((state >> _STATE_CIRRUS_SHIFT) & 0b11) >= 0b10)
+        | ((state & _STATE_INTERNAL_CLOUD) != 0)
+    )
+    return np.repeat(np.repeat(bad, fy, axis=0), fx, axis=1)
+
+
 def _normalized_index_tile(
     hdf_path: Path,
-    sub_a: str,
-    sub_b: str,
+    product: str,
+    band: str,
     output_path: Path,
     dst_crs: str = DST_CRS,
 ) -> Path:
-    """Hitung indeks ternormalisasi (A - B) / (A + B) dari dua subdataset
-    reflectance, lalu reproject hasilnya ke `dst_crs`.
+    """Hitung indeks ternormalisasi `band` (lihat MODIS_INDICES) dari granule
+    reflectance `product` (MOD09A1 / MOD09GA), lalu reproject ke `dst_crs`.
 
     Indeksnya dihitung dulu di grid sinusoidal asli baru direproject —
     bukan sebaliknya. Meresample tiap band dulu lalu membagi akan
     mencampur reflectance tetangga di pembilang dan penyebut secara
     berbeda, yang menggeser nilai indeks di tepi tiap fitur."""
-    a, grid = _read_reflectance(hdf_path, sub_a)
-    b, _ = _read_reflectance(hdf_path, sub_b)
+    sds = REFLECTANCE_SDS[_reflectance_family(product)]
+    chan_a, chan_b = MODIS_INDICES[band]
+    a, grid = _read_reflectance(hdf_path, sds[chan_a])
+    b, _ = _read_reflectance(hdf_path, sds[chan_b])
 
     denom = a + b
     with np.errstate(invalid="ignore", divide="ignore"):
@@ -530,6 +638,9 @@ def _normalized_index_tile(
     # nol dan indeks meledak jauh di luar [-1, 1] (terukur -8..11 di AOI
     # Jakarta). Pixel seperti itu tidak punya indeks yang bermakna.
     index[(a < 0) | (b < 0)] = np.nan
+    # Awan/bayangan dibuang SEBELUM reproject: bilinear di tahap berikut
+    # mengabaikan NaN, jadi nilai awan tidak ikut merembes ke piksel cerah.
+    index[_cloud_mask(hdf_path, index.shape, sds["state"])] = np.nan
 
     transform, width, height = calculate_default_transform(
         grid["crs"], dst_crs, grid["width"], grid["height"], *grid["bounds"]
@@ -619,7 +730,8 @@ def _build_band_for_date(
     Mengembalikan dict hasil. Melempar RuntimeError kalau band ini tidak bisa
     dibangun sama sekali untuk tanggal tsb; pemanggil memutuskan apakah itu
     fatal (tidak, per band) atau tidak."""
-    items, product_used = _discover_tile_files_with_fallback(date, tiles, product)
+    query_date = _product_query_date(product, date)
+    items, product_used = _discover_tile_files_with_fallback(query_date, tiles, product)
     if not items:
         raise RuntimeError(f"tidak ada granule {product} untuk {date.date().isoformat()}")
     if product_used != product:
@@ -645,8 +757,7 @@ def _build_band_for_date(
             if band == "FLOOD":
                 _hdf_subdataset_to_geotiff(hdf_path, FLOOD_SUBDATASET, tile_tif)
             else:
-                sub_a, sub_b = MODIS_INDICES[band]
-                _normalized_index_tile(hdf_path, sub_a, sub_b, tile_tif)
+                _normalized_index_tile(hdf_path, product_used, band, tile_tif)
             tile_tifs.append(tile_tif)
         except Exception as exc:
             logger.warning(
@@ -659,8 +770,14 @@ def _build_band_for_date(
         raise RuntimeError(f"semua tile {band} gagal ({', '.join(failed_tiles)})")
 
     _mosaic_and_crop(tile_tifs, aoi_bbox, out_path)
+    valid_fraction = _valid_fraction(out_path)
+    logger.info(
+        "[M7] %s tanggal %s: %.1f%% piksel AOI valid%s",
+        band, date.date().isoformat(), valid_fraction * 100,
+        " (sisanya awan/tanpa data)" if band != "FLOOD" else " (sisanya insufficient data)",
+    )
 
-    return {
+    entry = {
         "band": band,
         "product": product_used,
         "path": str(out_path),
@@ -669,7 +786,24 @@ def _build_band_for_date(
         "skipped": False,
         "degraded": bool(failed_tiles),
         "failed_tiles": failed_tiles,
+        "valid_fraction": round(valid_fraction, 4),
     }
+    if product == MODIS_REFLECTANCE_PRODUCT:
+        period_end = query_date + timedelta(days=MOD09A1_PERIOD_DAYS - 1)
+        entry["composite_period"] = [
+            query_date.date().isoformat(), period_end.date().isoformat()
+        ]
+    return entry
+
+
+def _valid_fraction(path: Path) -> float:
+    """Porsi piksel AOI yang punya nilai (bukan nodata/NaN)."""
+    with rasterio.open(path) as src:
+        data = src.read(1, masked=True)
+    if data.size == 0:
+        return 0.0
+    values = np.ma.masked_invalid(data) if data.dtype.kind == "f" else data
+    return float(values.count()) / data.size
 
 
 def _band_targets(
@@ -747,7 +881,7 @@ def download_modis_scene(
     # tiles=None -> hitung dari AOI per produk (grid MCDWD dan MOD09GA berbeda).
     tiles_by_product = {
         p: list(tiles) if tiles else modis_tiles_for_bbox(aoi_bbox, p)
-        for p in (MODIS_FLOOD_PRODUCT, MODIS_REFLECTANCE_PRODUCT)
+        for p in (MODIS_FLOOD_PRODUCT, *MODIS_REFLECTANCE_PRODUCTS)
     }
 
     daily_outputs = []
@@ -760,11 +894,12 @@ def download_modis_scene(
         bands: dict[str, dict] = {}
         band_errors: dict[str, str] = {}
 
-        for band, product in (
-            ("FLOOD", MODIS_FLOOD_PRODUCT),
-            ("NDVI", MODIS_REFLECTANCE_PRODUCT),
-            ("NDWI", MODIS_REFLECTANCE_PRODUCT),
+        for band, products in (
+            ("FLOOD", (MODIS_FLOOD_PRODUCT,)),
+            ("NDVI", MODIS_REFLECTANCE_PRODUCTS),
+            ("NDWI", MODIS_REFLECTANCE_PRODUCTS),
         ):
+            product = products[0]
             if band not in wanted_bands:
                 continue
 
@@ -809,11 +944,28 @@ def download_modis_scene(
                 continue
 
             try:
-                bands[band] = _record(_build_band_for_date(
-                    band=band, product=product, date=date, date_key=date_key,
-                    tiles=tiles_by_product[product], raw_dir=raw_dir, out_path=out_path, aoi_bbox=aoi_bbox,
-                    plog=plog, dataset_id=dataset_id, scene_label=scene_label,
-                ))
+                # Produk dicoba berurutan (reflectance: MOD09A1 lalu MOD09GA);
+                # error terakhir yang dilaporkan kalau semuanya gagal.
+                attempt_errors: list[str] = []
+                for candidate in products:
+                    try:
+                        bands[band] = _record(_build_band_for_date(
+                            band=band, product=candidate, date=date, date_key=date_key,
+                            tiles=tiles_by_product[candidate], raw_dir=raw_dir,
+                            out_path=out_path, aoi_bbox=aoi_bbox,
+                            plog=plog, dataset_id=dataset_id, scene_label=scene_label,
+                        ))
+                        break
+                    except Exception as exc:
+                        attempt_errors.append(f"{candidate}: {exc}")
+                        if candidate != products[-1]:
+                            logger.info(
+                                "[M7] %s tanggal %s: %s gagal (%s), coba %s",
+                                band, date.date().isoformat(), candidate, exc,
+                                products[products.index(candidate) + 1],
+                            )
+                else:
+                    raise RuntimeError("; ".join(attempt_errors))
             except Exception as exc:
                 logger.warning(
                     "[M7] band %s gagal tanggal %s: %s", band, date.date().isoformat(), exc
@@ -894,7 +1046,7 @@ def download_modis_scene(
     metadata = {
         "product": MODIS_PRODUCT,
         "products": (
-            [MODIS_FLOOD_PRODUCT, MODIS_REFLECTANCE_PRODUCT]
+            [MODIS_FLOOD_PRODUCT, *MODIS_REFLECTANCE_PRODUCTS]
             if plan.has_processed else [MODIS_FLOOD_PRODUCT]
         ),
         "processing_levels": list(plan.levels),

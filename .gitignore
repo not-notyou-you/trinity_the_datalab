@@ -32,6 +32,7 @@ processed/gold/*
 !processed/bronze/.gitkeep
 !processed/silver/.gitkeep
 !processed/gold/.gitkeep
+logs/*
 
 # GeoTIFF / raster formats
 *.tif

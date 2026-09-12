@@ -40,12 +40,13 @@ import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
+import numpy as np
 import rasterio
 from rasterio.enums import Resampling
 from rasterio.io import MemoryFile
 from rasterio.mask import mask
-from rasterio.transform import array_bounds
-from rasterio.warp import calculate_default_transform, reproject
+from rasterio.transform import from_origin
+from rasterio.warp import reproject
 from shapely.geometry import box, mapping
 
 from etl import folder_manager as fm
@@ -471,6 +472,14 @@ def _reproject_and_crop_to_s1_grid(
     raster with billions of pixels (GDAL's free-disk-space check then
     aborts with a multi-petabyte "required space" figure). Cropping first
     bounds the reprojection to the AOI's ~tens-of-millions of pixels.
+
+    Grid tujuan adalah `aoi_bbox` persis (bukan batas sel IMERG yang
+    tersentuh), jadi berkas GPM menutupi area yang sama dengan Sentinel-1.
+    Resampling-nya nearest: satu sel IMERG 0.1 derajat (~11 km) adalah satu
+    nilai, dan bilinear ke 10 m mengarang gradien halus di antara segelintir
+    sel yang tidak punya dasar fisik. Disimpan float32 + DEFLATE: presisi
+    float64 tidak bermakna untuk mm hujan, dan blok bernilai sama
+    terkompresi hampir habis.
     """
     height, width = accum.shape
 
@@ -492,40 +501,31 @@ def _reproject_and_crop_to_s1_grid(
             )
             crop_crs = src.crs
 
-    crop_height, crop_width = crop_image.shape[1], crop_image.shape[2]
-    crop_bounds = array_bounds(crop_height, crop_width, crop_transform)
+    min_lon, min_lat, max_lon, max_lat = aoi_bbox
+    dst_width = max(1, int(np.ceil(round((max_lon - min_lon) / S1_RESOLUTION_DEG, 6))))
+    dst_height = max(1, int(np.ceil(round((max_lat - min_lat) / S1_RESOLUTION_DEG, 6))))
+    dst_transform = from_origin(min_lon, max_lat, S1_RESOLUTION_DEG, S1_RESOLUTION_DEG)
 
-    with MemoryFile() as cropped_memfile:
-        with cropped_memfile.open(
-            driver="GTiff", height=crop_height, width=crop_width, count=1,
-            dtype="float64", crs=crop_crs, transform=crop_transform,
-            nodata=DEFAULT_NODATA,
-        ) as tmp:
-            tmp.write(crop_image)
+    dest = np.full((dst_height, dst_width), DEFAULT_NODATA, dtype="float32")
+    reproject(
+        source=crop_image[0].astype("float32"),
+        destination=dest,
+        src_transform=crop_transform,
+        src_crs=crop_crs,
+        src_nodata=DEFAULT_NODATA,
+        dst_transform=dst_transform,
+        dst_crs=DST_CRS,
+        dst_nodata=DEFAULT_NODATA,
+        resampling=Resampling.nearest,
+    )
 
-        with cropped_memfile.open() as src:
-            dst_transform, dst_width, dst_height = calculate_default_transform(
-                src.crs, DST_CRS, src.width, src.height, *crop_bounds,
-                resolution=S1_RESOLUTION_DEG,
-            )
-            kwargs = src.meta.copy()
-            kwargs.update({
-                "driver": "GTiff",
-                "crs": DST_CRS,
-                "transform": dst_transform,
-                "width": dst_width,
-                "height": dst_height,
-            })
-            with rasterio.open(output_path, "w", **kwargs) as dst:
-                reproject(
-                    source=rasterio.band(src, 1),
-                    destination=rasterio.band(dst, 1),
-                    src_transform=src.transform,
-                    src_crs=src.crs,
-                    dst_transform=dst_transform,
-                    dst_crs=DST_CRS,
-                    resampling=Resampling.bilinear,
-                )
+    with rasterio.open(
+        output_path, "w", driver="GTiff", height=dst_height, width=dst_width,
+        count=1, dtype="float32", crs=DST_CRS, transform=dst_transform,
+        nodata=DEFAULT_NODATA, compress="deflate", predictor=3,
+        tiled=True, blockxsize=512, blockysize=512,
+    ) as dst:
+        dst.write(dest, 1)
 
     return output_path
 

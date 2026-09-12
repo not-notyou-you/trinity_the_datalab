@@ -164,10 +164,10 @@ Full chain: calibrate + crop + **Lee filter 7×7** + **QA analytics** + **COG ex
 ## MODIS Pipeline
 
 ### What RAW means for MODIS
-Download HDF4 + extract **flood map only** (MCDWD_L3_F2_NRT categorical) + reproject sinusoidal → EPSG:4326 + mosaic tiles + crop AOI. **No derived indices computed.** Output at BRONZE tier.
+Download HDF4 + extract **flood map only** (MCDWD_L3_F2_NRT categorical, subdataset `Flood_2Day_250m` — 2-day composite; the 1-day layer is not used because cloud shadows and dark urban pixels leak through as "Flood (unusual)") + reproject → EPSG:4326 + mosaic tiles + crop AOI. **No derived indices computed.** Output at BRONZE tier.
 
 ### What PROCESSED means for MODIS
-Full chain: flood map + **compute NDVI** from MOD09GA reflectance `(B02_NIR − B01_Red) / (B02 + B01)` + **compute NDWI** (McFeeters) `(B04_Green − B02_NIR) / (B04 + B02)`. Indices computed on native sinusoidal grid before reprojection. Output through SILVER → GOLD tiers (COG).
+Full chain: flood map + **compute NDVI** `(B02_NIR − B01_Red) / (B02 + B01)` + **compute NDWI** (McFeeters) `(B04_Green − B02_NIR) / (B04 + B02)` from **MOD09A1** 8-day surface-reflectance composites (standard archive only; the composite whose 8-day period contains the target date is used, and its period is recorded as `composite_period`). If that composite is not published yet, it falls back to daily **MOD09GA_NRT**. Indices computed on native sinusoidal grid before reprojection. Pixels flagged in the State QA (`sur_refl_state_500m` / `state_1km`) as cloudy/mixed, cloud shadow, cirrus (average/high), internal cloud, or fill are set to NaN before reprojection — persistently cloudy dates can still end up NaN, which is correct (fusion fills NaN). Output through SILVER → GOLD tiers (COG).
 
 ### Stages
 
@@ -188,6 +188,8 @@ Download NetCDF4 (GPM_3IMERGDF v07) + extract **daily rainfall only** (single da
 
 ### What PROCESSED means for GPM
 Full chain: daily rainfall + **compute accumulation windows**: 24h (today), 72h (past 3 days), 7-day (past week). This requires downloading adjacent days' data to build the windows. Output through SILVER → GOLD tiers (COG).
+
+Output grid (both levels): exactly the dataset AOI bbox at ~10 m, **nearest-neighbour** from the native 0.1° IMERG cells (so each ~11 km cell stays a visible block instead of an invented bilinear gradient), float32 + DEFLATE.
 
 ### Stages
 
@@ -230,8 +232,8 @@ Fusion reads from the **highest available tier** for each source:
 1. Identify eligible dates per strategy
 2. For each date: locate GOLD (or BRONZE for RAW-level) products for each source
 3. Reproject all onto S1 reference grid (or largest-extent source if no S1)
-   - Nearest-neighbor: categorical data (MODIS FLOOD)
-   - Bilinear: continuous data (all others)
+   - Nearest-neighbor: categorical data (MODIS FLOOD) and GPM rainfall (0.1° cells kept as blocks)
+   - Bilinear: MODIS NDVI/NDWI
 4. Write HDF5 — only include groups for configured sources:
    - If sentinel1 configured: `/sentinel1/VV`, `/sentinel1/VH`
    - If modis RAW: `/modis/FLOOD` only
