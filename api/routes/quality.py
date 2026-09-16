@@ -28,6 +28,8 @@ from etl.database_client import (
 )
 from etl.metadata_manager import MetadataManager
 
+from etl import tier_names as tn
+
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
@@ -214,7 +216,7 @@ async def get_dataset_quality_by_source(
                 .where(
                     DataProduct.dataset_id == dataset_id,
                     DataProduct.source == source,
-                    DataProduct.product_tier == ProductTierEnum.GOLD,
+                    DataProduct.product_tier.in_(tn.tiers_at_rank(3)),
                     DataProduct.is_latest == True,
                     DataProduct.is_valid == True,
                 )

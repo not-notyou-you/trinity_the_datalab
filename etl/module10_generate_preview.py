@@ -318,7 +318,7 @@ S1_RGB_INTERPRETATION = (
 # tahap terakhir level itu (module3_lee_filter -> "_lee", module2_crop ->
 # "_crop"). Satu-satunya tempat pemetaan level -> tier untuk PREVIEW; fusion
 # menyatakan aturan yang sama lewat SourcePlan.tier_for_run().
-_TIER_BY_LEVEL: dict[str, str] = {"PROCESSED": "gold", "RAW": "bronze"}
+_TIER_BY_LEVEL: dict[str, str] = {"PROCESSED": "cog", "RAW": "aligned"}
 _S1_SUFFIX_BY_LEVEL: dict[str, str] = {"PROCESSED": "_lee", "RAW": "_crop"}
 
 
@@ -1004,8 +1004,12 @@ def generate_previews(
             })
             continue
 
-        gray_path = gray_dir / f"{spec.key}.png" if gray_dir else None
-        color_path = color_dir / f"{spec.key}.png" if color_dir else None
+        # Prefiks tanggal wajib sejak relayout: folder preview tidak lagi
+        # bersarang di bawah folder tanggal, jadi tanpa ini render tanggal
+        # kedua akan menimpa tanggal pertama dengan nama yang sama.
+        png_name = fm.dated_filename(date_key, f"{spec.key}.png")
+        gray_path = gray_dir / png_name if gray_dir else None
+        color_path = color_dir / png_name if color_dir else None
         wanted_paths = [p for p in (gray_path, color_path) if p is not None]
         if not overwrite and wanted_paths and all(p.exists() for p in wanted_paths):
             skipped.append({
@@ -1113,7 +1117,7 @@ def generate_previews(
     # VV-VH-nya tetap punya arti fisik yang sama, cuma belum di-despeckle.
     composite_entries: list[dict] = []
     if composite_dir is not None and "s1_vv" in layers and "s1_vh" in layers:
-        rgb_path = composite_dir / f"{S1_RGB_KEY}.png"
+        rgb_path = composite_dir / fm.dated_filename(date_key, f"{S1_RGB_KEY}.png")
         try:
             if _render_s1_rgb(layers["s1_vv"], layers["s1_vh"], rgb_path) is not None:
                 composite_entries.append({
@@ -1143,7 +1147,13 @@ def generate_previews(
     # sekarang seluruhnya awan) harus hilang: API mendaftar PNG lewat glob
     # folder, jadi berkas basi akan tetap tampil seolah hasil render terbaru.
     if overwrite:
-        known = {f"{spec.key}.png" for spec in PREVIEW_SPECS} | {f"{S1_RGB_KEY}.png"}
+        # Dibatasi ke tanggal yang sedang dirender: satu folder kind sekarang
+        # memuat PNG SEMUA tanggal (tidak ada lagi folder tanggal), jadi
+        # mencocokkan nama tanpa prefiks akan menghapus render tanggal lain
+        # yang justru masih sahih.
+        known = {
+            fm.dated_filename(date_key, f"{spec.key}.png") for spec in PREVIEW_SPECS
+        } | {fm.dated_filename(date_key, f"{S1_RGB_KEY}.png")}
         for kind_dir, entries in (
             (gray_dir, gray_entries), (color_dir, color_entries),
             (composite_dir, composite_entries),
@@ -1181,8 +1191,8 @@ def generate_previews(
         "generator": MODULE,
         "tier": "PREVIEW",
         "processing_level": level,
-        # Tier asalnya, bukan konstanta "GOLD": preview level RAW dirender
-        # dari bronze/, dan menuliskan "GOLD" di situ akan membuat sidecar
+        # Tier asalnya, bukan konstanta "COG": preview level RAW dirender
+        # dari tier ALIGNED, dan menuliskan "COG" di situ akan membuat sidecar
         # berbohong soal provenance-nya.
         "derived_from": tier.upper(),
         "options": sorted(wanted),

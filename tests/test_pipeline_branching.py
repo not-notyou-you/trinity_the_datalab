@@ -103,7 +103,7 @@ def stub_sentinel1(monkeypatch, tmp_path):
     def fake_discover(bbox_wkt, date_from, date_to, max_results=200):
         return [{"product_identifier": PID, "size_mb": 1.0, "cloud_cover": 0}]
 
-    def fake_download(scene_meta, output_dir, keep_raw=True, progress_cb=None):
+    def fake_download(scene_meta, output_dir, keep_raw=True, progress_cb=None, reuse_root=None):
         out = Path(output_dir)
         return DownloadResult(
             product_identifier=PID,
@@ -126,16 +126,22 @@ def stub_sentinel1(monkeypatch, tmp_path):
         d = Path(out_dir)
         return _touch(d / "cal_vv.tif"), _touch(d / "cal_vh.tif")
 
+    # Nama berkas memuat product_identifier seperti module2_crop/module3 yang
+    # asli. Sejak relayout itu bukan kosmetik: laci {source}/RAW/ memuat semua
+    # scene dan semua tanggal sekaligus, jadi nama berkas adalah satu-satunya
+    # cara memisahkan satu scene dari yang lain.
     def fake_crop(vv, vh, out_dir, bbox):
         d = Path(out_dir)
-        return _touch(d / "crop_vv.tif"), _touch(d / "crop_vh.tif")
+        return (_touch(d / f"{PID}_VV_crop.tif"),
+                _touch(d / f"{PID}_VH_crop.tif"))
 
     def fake_lee(vv, vh, out_dir, window_size=7, looks=1):
         d = Path(out_dir)
-        return _touch(d / "lee_vv.tif"), _touch(d / "lee_vh.tif")
+        return (_touch(d / f"{PID}_VV_lee.tif"),
+                _touch(d / f"{PID}_VH_lee.tif"))
 
     def fake_gold(dataset_id, dataset_name, source, scene_key, silver_files):
-        d = fm.ensure_scene_dir(dataset_id, dataset_name, "gold", source, scene_key)
+        d = fm.ensure_scene_dir(dataset_id, dataset_name, "cog", source, scene_key)
         return {band: _touch(d / f"{source}_{scene_key}_{band}.tif")
                 for band in silver_files}
 
@@ -188,7 +194,7 @@ def stub_aux(monkeypatch):
         return Path(_touch(output_path, b"gpm"))
 
     def fake_gold(dataset_id, dataset_name, source, scene_key, silver_files):
-        d = fm.ensure_scene_dir(dataset_id, dataset_name, "gold", source, scene_key)
+        d = fm.ensure_scene_dir(dataset_id, dataset_name, "cog", source, scene_key)
         return {band: _touch(d / Path(path).name)
                 for band, path in silver_files.items()}
 
@@ -238,12 +244,12 @@ class TestSentinel1Branching:
         m5.run_dataset_job(db_client, job_id)
 
         rows = products(db_client, dataset_id)
-        assert tiers(rows) == {"RAW", "BRONZE"}, rows
+        assert tiers(rows) == {"RAW", "ALIGNED"}, rows
         assert all(level == "RAW" for _, level, _, _ in rows), rows
 
-        assert len(files_in(dataset_id, name, "bronze", "sentinel1", PID)) == 2
-        assert files_in(dataset_id, name, "silver", "sentinel1", PID) == []
-        assert files_in(dataset_id, name, "gold", "sentinel1", PID) == []
+        assert len(files_in(dataset_id, name, "aligned", "sentinel1", PID)) == 2
+        assert files_in(dataset_id, name, "despeckled", "sentinel1", PID) == []
+        assert files_in(dataset_id, name, "cog", "sentinel1", PID) == []
 
     def test_raw_plus_processed_produces_both(self, db_client, job_factory, stub_sentinel1):
         dataset_id, name, job_id = job_factory({"sentinel1": ["RAW", "PROCESSED"]})
@@ -251,18 +257,24 @@ class TestSentinel1Branching:
         m5.run_dataset_job(db_client, job_id)
 
         rows = products(db_client, dataset_id)
-        assert tiers(rows) == {"RAW", "BRONZE", "SILVER", "GOLD"}, rows
+        assert tiers(rows) == {"RAW", "ALIGNED", "DESPECKLED", "COG"}, rows
 
         by_tier = {tier: {level for t, level, _, _ in rows if t == tier}
                    for tier in tiers(rows)}
         # BRONZE adalah deliverable RAW; SILVER/GOLD milik jalur PROCESSED.
-        assert by_tier["BRONZE"] == {"RAW"}
-        assert by_tier["SILVER"] == {"PROCESSED"}
-        assert by_tier["GOLD"] == {"PROCESSED"}
+        assert by_tier["ALIGNED"] == {"RAW"}
+        assert by_tier["DESPECKLED"] == {"PROCESSED"}
+        assert by_tier["COG"] == {"PROCESSED"}
 
-        assert len(files_in(dataset_id, name, "bronze", "sentinel1", PID)) == 2
-        assert len(files_in(dataset_id, name, "silver", "sentinel1", PID)) == 3  # +metadata_qa
-        assert len(files_in(dataset_id, name, "gold", "sentinel1", PID)) == 2
+        assert len(files_in(dataset_id, name, "aligned", "sentinel1", PID)) == 2
+        # Dua laci final berdampingan -- inilah ablation study-nya: crop tanpa
+        # Lee di RAW/, COG ter-despeckle di PROCESSED/.
+        assert len(files_in(dataset_id, name, "cog", "sentinel1", PID)) == 2
+
+        # SILVER tetap tercatat di data_products (lihat by_tier di atas), tapi
+        # berkasnya artefak antara: hidup di _work/ dan disapu di akhir job.
+        scratch = fm.get_dataset_root(dataset_id, name) / fm.SCRATCH_DIRNAME
+        assert not scratch.exists(), "_work/ seharusnya sudah disapu"
 
     def test_processed_only_tags_every_tier_processed(
         self, db_client, job_factory, stub_sentinel1
@@ -273,7 +285,7 @@ class TestSentinel1Branching:
         m5.run_dataset_job(db_client, job_id)
 
         rows = products(db_client, dataset_id)
-        assert tiers(rows) == {"RAW", "BRONZE", "SILVER", "GOLD"}
+        assert tiers(rows) == {"RAW", "ALIGNED", "DESPECKLED", "COG"}
         assert all(level == "PROCESSED" for _, level, _, _ in rows), rows
 
     def test_quality_metrics_only_for_processed(self, db_client, job_factory, stub_sentinel1):
@@ -306,15 +318,15 @@ class TestAuxBranching:
 
         m5.run_dataset_job(db_client, job_id)
 
-        assert files_in(dataset_id, name, "silver", "modis", DATE_KEY) == [
+        assert files_in(dataset_id, name, "indices", "modis", DATE_KEY) == [
             "modis_20240305_flood.tif",
             "modis_20240305_ndvi.tif",
             "modis_20240305_ndwi.tif",
         ]
-        assert files_in(dataset_id, name, "bronze", "modis", DATE_KEY) == []
+        assert files_in(dataset_id, name, "aligned", "modis", DATE_KEY) == []
 
         rows = products(db_client, dataset_id, source="MODIS")
-        assert tiers(rows) == {"SILVER", "GOLD"}
+        assert tiers(rows) == {"INDICES", "COG"}
         assert all(level == "PROCESSED" for _, level, _, _ in rows), rows
         assert {band for _, _, band, _ in rows} == {"FLOOD", "NDVI", "NDWI"}
 
@@ -325,12 +337,12 @@ class TestAuxBranching:
 
         m5.run_dataset_job(db_client, job_id)
 
-        assert files_in(dataset_id, name, "bronze", "modis", DATE_KEY) == [
+        assert files_in(dataset_id, name, "aligned", "modis", DATE_KEY) == [
             "modis_20240305_flood.tif"
         ]
-        assert files_in(dataset_id, name, "silver", "modis", DATE_KEY) == []
+        assert files_in(dataset_id, name, "indices", "modis", DATE_KEY) == []
         rows = products(db_client, dataset_id, source="MODIS")
-        assert tiers(rows) == {"BRONZE"}
+        assert tiers(rows) == {"ALIGNED"}
         assert {band for _, _, band, _ in rows} == {"FLOOD"}
         assert all(level == "RAW" for _, level, _, _ in rows), rows
 
@@ -341,15 +353,15 @@ class TestAuxBranching:
 
         m5.run_dataset_job(db_client, job_id)
 
-        assert files_in(dataset_id, name, "bronze", "gpm", DATE_KEY) == [
+        assert files_in(dataset_id, name, "aligned", "gpm", DATE_KEY) == [
             "gpm_rain_24h_20240305.tif"
         ]
-        assert files_in(dataset_id, name, "silver", "gpm", DATE_KEY) == []
-        assert files_in(dataset_id, name, "gold", "gpm", DATE_KEY) == []
+        assert files_in(dataset_id, name, "accumulated", "gpm", DATE_KEY) == []
+        assert files_in(dataset_id, name, "cog", "gpm", DATE_KEY) == []
 
         rows = products(db_client, dataset_id, source="GPM")
         assert {band for _, _, band, _ in rows} == {"RAIN_24H"}, "tidak ada 72h/7d"
-        assert tiers(rows) == {"BRONZE"}
+        assert tiers(rows) == {"ALIGNED"}
         assert all(level == "RAW" for _, level, _, _ in rows), rows
 
     def test_gpm_processed_produces_all_windows(self, db_client, job_factory, stub_aux):
@@ -357,10 +369,10 @@ class TestAuxBranching:
 
         m5.run_dataset_job(db_client, job_id)
 
-        assert len(files_in(dataset_id, name, "silver", "gpm", DATE_KEY)) == 3
+        assert len(files_in(dataset_id, name, "accumulated", "gpm", DATE_KEY)) == 3
         rows = products(db_client, dataset_id, source="GPM")
         assert {band for _, _, band, _ in rows} == {"RAIN_24H", "RAIN_72H", "RAIN_7D"}
-        assert tiers(rows) == {"SILVER", "GOLD"}
+        assert tiers(rows) == {"ACCUMULATED", "COG"}
 
 
 # ---------------------------------------------------------------------------
@@ -375,8 +387,8 @@ class TestSourceIsolation:
 
         m5.run_dataset_job(db_client, job_id)
 
-        assert files_in(dataset_id, name, "bronze", "modis", DATE_KEY) == []
-        assert files_in(dataset_id, name, "silver", "modis", DATE_KEY) == []
+        assert files_in(dataset_id, name, "aligned", "modis", DATE_KEY) == []
+        assert files_in(dataset_id, name, "indices", "modis", DATE_KEY) == []
         assert products(db_client, dataset_id, source="MODIS") == []
 
     def test_s1_raw_does_not_cut_off_processed_aux_source(
@@ -391,7 +403,7 @@ class TestSourceIsolation:
         m5.run_dataset_job(db_client, job_id)
 
         s1_rows = products(db_client, dataset_id, source="SENTINEL1")
-        assert tiers(s1_rows) == {"RAW", "BRONZE"}
+        assert tiers(s1_rows) == {"RAW", "ALIGNED"}
         assert all(level == "RAW" for _, level, _, _ in s1_rows)
 
         modis_rows = products(db_client, dataset_id, source="MODIS")

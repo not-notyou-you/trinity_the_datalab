@@ -51,6 +51,7 @@ from typing import Callable
 import h5py
 import numpy as np
 import rasterio
+from rasterio.crs import CRS
 from rasterio.enums import Resampling
 from rasterio.warp import reproject
 from shapely.geometry import box
@@ -62,6 +63,7 @@ from etl.database_client import (
     DatabaseClient,
     DataProduct,
     FusionProduct,
+    JobStatusEnum,
     NasaScene,
     ProductTierEnum,
     SatelliteScene,
@@ -80,6 +82,7 @@ from etl.pipeline_logger import PipelineLogger
 from etl.processing_plan import GPM as GPM_PLAN_NAME
 from etl.processing_plan import MODIS as MODIS_PLAN_NAME
 from etl.processing_plan import SENTINEL1 as S1_PLAN_NAME
+from etl.fusion_strategies import FILENAME_SUFFIX, SUBFOLDER
 from etl.processing_plan import (
     PROCESSED,
     RAW,
@@ -87,6 +90,8 @@ from etl.processing_plan import (
     SourcePlan,
     load_processing_plan,
 )
+
+from etl import tier_names as tn
 
 logger = logging.getLogger(__name__)
 
@@ -194,7 +199,7 @@ def fusion_layers_for(source_levels: dict[str, str]) -> list[str]:
 
 
 def _find_s1_products(
-    db: DatabaseClient, dataset_id: int, scene_id: int, tier: str = "GOLD"
+    db: DatabaseClient, dataset_id: int, scene_id: int, tier: str = tn.COG
 ) -> dict | None:
     """Cari produk Sentinel-1 VV/VH scene `scene_id` di `tier`. None kalau
     scene-nya sendiri tidak ada.
@@ -270,14 +275,14 @@ def _find_nearest_daily_file(
     filename_fn,
     center_dt: datetime,
     tolerance_hours: int = ALIGNMENT_WINDOW_HOURS,
-    tier: str = "gold",
+    tier: str = "cog",
 ) -> tuple[Path, date_type] | None:
     """File MODIS/GPM distempel satu per hari pada tengah malam lokal,
     masing-masing di folder {tier}/{source}/{YYYYMMDD}/ sendiri. Kembalikan
     (path, tanggal) kandidat hari terdekat yang tengah malamnya masih dalam
     `tolerance_hours` dari `center_dt`, atau None kalau tidak ada di disk.
 
-    `tier` ikut level sumber pada run ini: "gold" untuk PROCESSED, "bronze"
+    `tier` ikut level sumber pada run ini: "cog" untuk PROCESSED, "aligned"
     untuk RAW. Nama berkasnya sama persis di kedua tier (module7/module8
     memakai `band_filename()` yang sama untuk semua target), jadi yang berbeda
     hanya folder induknya.
@@ -531,6 +536,17 @@ def _product_exists(db: DatabaseClient, dataset_id: int, file_path: str) -> bool
         ) is not None
 
 
+def _empty_produced() -> dict[str, list[str]]:
+    """Wadah {tier: [path]} untuk artefak aux yang ditulis satu pemanggilan.
+
+    Memuat KEDUA nama tier rank 2 (INDICES untuk MODIS, ACCUMULATED untuk GPM)
+    walau satu pemanggilan biasanya cuma mengisi salah satunya: fungsi
+    agregat ensure_aux_inputs_for_date menggabungkan hasil kedua sumber ke
+    satu dict, jadi kuncinya harus sudah ada untuk keduanya.
+    """
+    return {tn.ALIGNED: [], tn.INDICES: [], tn.ACCUMULATED: [], tn.COG: []}
+
+
 def _resolve_aux_scene(
     db: DatabaseClient,
     dataset_id: int,
@@ -592,7 +608,7 @@ def _register_aux_products(
     aux_scene_id: int,
     band_paths: dict[str, str],
     product_type: str,
-    tier: str = "SILVER",
+    tier: str = tn.INDICES,
     processing_level: str = PROCESSED,
 ) -> tuple[dict[str, int], int]:
     """Daftarkan band satu source/tanggal sebagai data_products di `tier`.
@@ -610,26 +626,38 @@ def _register_aux_products(
     job_id = meta.insert_processing_job(
         aux_scene_id, "DOWNLOAD", parameters={"dataset_id": dataset_id, "source": source.upper()}
     )
+    # Job ini dulu cuma dibuat, tidak pernah dijalankan/ditutup: setiap
+    # registrasi aux meninggalkan satu baris processing_jobs QUEUED selamanya
+    # (puluhan per dataset FULL_COVERAGE/HYBRID).
+    meta.start_job(job_id)
     product_ids: dict[str, int] = {}
-    for band, path in band_paths.items():
-        if not Path(path).exists():
-            continue
-        if _product_exists(db, dataset_id, path):
-            continue
-        meta.insert_nasa_scene(
-            source=nasa_source, tile_id=nasa_tile_id,
-            product_short_name=nasa_product_short_name,
-            acquisition_date=acquisition_date, region_id=region_id, raw_file_path=path,
+    try:
+        for band, path in band_paths.items():
+            if not Path(path).exists():
+                continue
+            if _product_exists(db, dataset_id, path):
+                continue
+            meta.insert_nasa_scene(
+                source=nasa_source, tile_id=nasa_tile_id,
+                product_short_name=nasa_product_short_name,
+                acquisition_date=acquisition_date, region_id=region_id, raw_file_path=path,
+            )
+            product_ids[band] = meta.insert_data_product(
+                scene_id=aux_scene_id, job_id=job_id, dataset_id=dataset_id,
+                product_tier=tier, source=fm.db_source(source),
+                product_type=product_type, band_name=band,
+                file_path=path, file_name=Path(path).name,
+                file_size_mb=round(Path(path).stat().st_size / (1024 ** 2), 3),
+                data_hash_sha256=lineage.compute_sha256(path),
+                processing_level=processing_level,
+            )
+    except Exception as exc:
+        meta.complete_job(
+            job_id, status=JobStatusEnum.FAILED,
+            error_code=type(exc).__name__, error_message=str(exc)[:2000],
         )
-        product_ids[band] = meta.insert_data_product(
-            scene_id=aux_scene_id, job_id=job_id, dataset_id=dataset_id,
-            product_tier=tier, source=fm.db_source(source),
-            product_type=product_type, band_name=band,
-            file_path=path, file_name=Path(path).name,
-            file_size_mb=round(Path(path).stat().st_size / (1024 ** 2), 3),
-            data_hash_sha256=lineage.compute_sha256(path),
-            processing_level=processing_level,
-        )
+        raise
+    meta.complete_job(job_id)
 
     return product_ids, job_id
 
@@ -661,26 +689,33 @@ def _promote_aux_to_gold(
         parameters={"dataset_id": dataset_id, "source": source.upper(), "date": date_key},
     )
     meta.start_job(gold_job_id)
-    for band, path in gold_paths.items():
-        if _product_exists(db, dataset_id, path):
-            continue
-        gold_product_id = meta.insert_data_product(
-            scene_id=aux_scene_id, job_id=gold_job_id, dataset_id=dataset_id,
-            product_tier="GOLD", source=fm.db_source(source),
-            product_type=m4.gold_product_type(source), band_name=band,
-            file_path=path, file_name=Path(path).name,
-            file_size_mb=round(Path(path).stat().st_size / (1024 ** 2), 3),
-            data_hash_sha256=lineage.compute_sha256(path),
-            file_format="COG",
-            # GOLD hanya pernah lahir dari jalur PROCESSED: level RAW berhenti
-            # di BRONZE dan tidak pernah sampai ke fungsi ini.
-            processing_level=PROCESSED,
-        )
-        if band in silver_product_ids:
-            lineage.record_transformation(
-                silver_product_ids[band], gold_product_id, "GOLD_EXPORT", gold_job_id,
-                {"source": source, "date": date_key},
+    try:
+        for band, path in gold_paths.items():
+            if _product_exists(db, dataset_id, path):
+                continue
+            gold_product_id = meta.insert_data_product(
+                scene_id=aux_scene_id, job_id=gold_job_id, dataset_id=dataset_id,
+                product_tier=tn.COG, source=fm.db_source(source),
+                product_type=m4.gold_product_type(source), band_name=band,
+                file_path=path, file_name=Path(path).name,
+                file_size_mb=round(Path(path).stat().st_size / (1024 ** 2), 3),
+                data_hash_sha256=lineage.compute_sha256(path),
+                file_format="COG",
+                # GOLD hanya pernah lahir dari jalur PROCESSED: level RAW berhenti
+                # di BRONZE dan tidak pernah sampai ke fungsi ini.
+                processing_level=PROCESSED,
             )
+            if band in silver_product_ids:
+                lineage.record_transformation(
+                    silver_product_ids[band], gold_product_id, "GOLD_EXPORT", gold_job_id,
+                    {"source": source, "date": date_key},
+                )
+    except Exception as exc:
+        meta.complete_job(
+            gold_job_id, status=JobStatusEnum.FAILED,
+            error_code=type(exc).__name__, error_message=str(exc)[:2000],
+        )
+        raise
     meta.complete_job(gold_job_id)
     return gold_paths
 
@@ -710,7 +745,7 @@ def ensure_modis_inputs_for_date(
     from etl.module7_modis_download import MODIS_PRODUCT_TYPES, download_modis_scene
 
     plan = plan or _aux_plan(db, dataset_id, MODIS_PLAN_NAME)
-    produced: dict[str, list[str]] = {"BRONZE": [], "SILVER": [], "GOLD": []}
+    produced: dict[str, list[str]] = _empty_produced()
     if plan is None:
         logger.info(
             "[M9] MODIS tidak dikonfigurasi untuk dataset=%s, dilewati", dataset_id
@@ -752,14 +787,14 @@ def ensure_modis_inputs_for_date(
                     tier=tier, processing_level=target["processing_level"],
                 )
                 produced[tier].append(path)
-                if tier != "SILVER":
+                if tn.rank(tier) != 2:
                     continue
                 gold_paths = _promote_aux_to_gold(
                     db, dataset_id=dataset_id, dataset_name=dataset_name, source="modis",
                     date_key=date_key, aux_scene_id=aux_scene_id,
                     silver_paths={band: path}, silver_product_ids=product_ids,
                 )
-                produced["GOLD"].extend(gold_paths.values())
+                produced[tn.COG].extend(gold_paths.values())
 
     return produced
 
@@ -789,7 +824,7 @@ def ensure_gpm_inputs_for_date(
     )
 
     plan = plan or _aux_plan(db, dataset_id, GPM_PLAN_NAME)
-    produced: dict[str, list[str]] = {"BRONZE": [], "SILVER": [], "GOLD": []}
+    produced: dict[str, list[str]] = _empty_produced()
     if plan is None:
         logger.info(
             "[M9] GPM tidak dikonfigurasi untuk dataset=%s, dilewati", dataset_id
@@ -831,14 +866,14 @@ def ensure_gpm_inputs_for_date(
             tier=tier, processing_level=level,
         )
         produced[tier].extend(band_paths.values())
-        if tier != "SILVER":
+        if tn.rank(tier) != 2:
             continue
         gold_paths = _promote_aux_to_gold(
             db, dataset_id=dataset_id, dataset_name=dataset_name, source="gpm",
             date_key=date_key, aux_scene_id=aux_scene_id,
             silver_paths=band_paths, silver_product_ids=product_ids,
         )
-        produced["GOLD"].extend(gold_paths.values())
+        produced[tn.COG].extend(gold_paths.values())
 
     return produced
 
@@ -881,7 +916,7 @@ def ensure_aux_inputs_for_date(
         tertinggal di disk saat user cuma meminta tier FUSION.
     """
     plan = plan or load_processing_plan(db, dataset_id)
-    produced: dict[str, list[str]] = {"BRONZE": [], "SILVER": [], "GOLD": []}
+    produced: dict[str, list[str]] = _empty_produced()
 
     # Sumber yang tidak ada di plan dilewati DI SINI, bukan diserahkan ke
     # fungsi per-sumber: fungsi itu punya fallback "baca dari database" untuk
@@ -921,7 +956,9 @@ class FusionRun:
     checksum_sha256: str
 
 
-def fusion_h5_name(date_key: str, processing_level: str) -> str:
+def fusion_h5_name(
+    date_key: str, processing_level: str, fusion_strategy: str | None = None
+) -> str:
     """Nama berkas stack HDF5. Level SELALU ikut di nama, juga saat dataset
     cuma menghasilkan satu stack.
 
@@ -930,7 +967,16 @@ def fusion_h5_name(date_key: str, processing_level: str) -> str:
     menangani dua pola nama dan menebak mana yang berlaku dari konfigurasi
     dataset yang belum tentu dia punya. Satu pola untuk semua kasus lebih
     murah, dan level di nama berkas membuat isi folder fusion/ bisa dibaca
-    tanpa membuka satu pun HDF5."""
+    tanpa membuka satu pun HDF5.
+
+    Strategi ikut ke nama kalau diberikan. Subfolder sudah memisahkan ketiga
+    strategi, tapi berkas yang diunduh dan dipindahkan ke tempat lain kehilangan
+    konteks foldernya -- dan dua HDF5 dari strategi berbeda untuk tanggal yang
+    sama tidak bisa dibedakan dari isinya sekilas."""
+    strategy = str(fusion_strategy).strip().upper() if fusion_strategy else None
+    suffix = FILENAME_SUFFIX.get(strategy) if strategy else None
+    if suffix:
+        return f"fusion_{date_key}_{suffix}_{processing_level.lower()}.h5"
     return f"fusion_{date_key}_{processing_level.lower()}.h5"
 
 
@@ -949,7 +995,7 @@ def _aux_layers_for_run(
 ) -> list[tuple[_AuxLayer, tuple[Path, date_type] | None]]:
     """Pasangkan tiap lapisan aux yang diminta level ini dengan berkasnya di
     disk (None kalau tidak ada dalam jendela toleransi)."""
-    tier = "gold" if level == PROCESSED else "bronze"
+    tier = "cog" if level == PROCESSED else "aligned"
     out = []
     for layer in _AUX_LAYERS_BY_SOURCE[source][level]:
         hit = _find_nearest_daily_file(
@@ -961,6 +1007,65 @@ def _aux_layers_for_run(
     return out
 
 
+def _aoi_reference_grid(
+    aoi_bbox: tuple[float, float, float, float]
+) -> tuple[object, object, tuple[int, int]]:
+    """Grid referensi dari AOI saja, untuk tanggal fusi yang tidak punya
+    scene Sentinel-1.
+
+    FULL_COVERAGE merakit satu HDF5 per hari, termasuk hari tanpa S1 — dan S1
+    yang biasanya jadi grid referensi (CRS + transform + shape) tidak ada di
+    hari itu. Grid dibangun dengan rumus yang sama persis dipakai
+    module8_gpm_download saat memproyeksikan IMERG ke "grid Sentinel-1":
+    bbox AOI pada S1_RESOLUTION_DEG, EPSG:4326. Menyamakan rumusnya disengaja
+    — kalau hari ber-S1 dan hari tanpa-S1 mendarat di grid yang berbeda,
+    deret waktu hasil FULL_COVERAGE tidak bisa ditumpuk jadi array tunggal,
+    yang justru satu-satunya alasan strategi itu ada.
+    """
+    from rasterio.transform import from_origin
+
+    # Impor lokal: module8 mengimpor module9 untuk registrasi produk, jadi
+    # impor tingkat-modul di sini akan membuat siklus.
+    from etl.module8_gpm_download import S1_RESOLUTION_DEG
+
+    min_lon, min_lat, max_lon, max_lat = aoi_bbox
+    width = max(1, int(np.ceil(round((max_lon - min_lon) / S1_RESOLUTION_DEG, 6))))
+    height = max(1, int(np.ceil(round((max_lat - min_lat) / S1_RESOLUTION_DEG, 6))))
+    transform = from_origin(min_lon, max_lat, S1_RESOLUTION_DEG, S1_RESOLUTION_DEG)
+    return transform, CRS.from_epsg(4326), (height, width)
+
+
+def _dataset_s1_reference_grid(
+    db: DatabaseClient, dataset_id: int, tier: str
+) -> tuple[object, object, tuple[int, int]] | None:
+    """Grid raster S1 mana pun milik dataset ini di `tier`, atau None.
+
+    Dipakai hari tanpa-S1 sebelum jatuh ke _aoi_reference_grid. Rumus AOI itu
+    TIDAK sama dengan grid S1 yang sebenarnya: module1b mereproyeksi scene
+    dengan calculate_default_transform, jadi resolusinya mengikuti geometri
+    scene, bukan S1_RESOLUTION_DEG. Terukur di dataset try2 (Tangerang):
+    hari ber-S1 571x468, hari tanpa-S1 578x473 -- deret FULL_COVERAGE jadi
+    tidak bisa ditumpuk. Selama dataset punya satu saja raster S1, semua
+    harinya harus mendarat di grid raster itu."""
+    tier_enum = ProductTierEnum[str(tier).upper()]
+    with db.session() as sess:
+        paths = sess.scalars(
+            select(DataProduct.file_path).where(
+                DataProduct.dataset_id == dataset_id,
+                DataProduct.product_tier == tier_enum,
+                DataProduct.source == "SENTINEL1",
+                DataProduct.is_latest == True,
+                DataProduct.is_valid == True,
+            ).order_by(DataProduct.product_id)
+        ).all()
+    for path in paths:
+        if not path or not Path(path).exists():
+            continue
+        with rasterio.open(path) as ref:
+            return ref.transform, ref.crs, (ref.height, ref.width)
+    return None
+
+
 def _build_fusion_stack_for_level(
     db: DatabaseClient,
     *,
@@ -968,14 +1073,24 @@ def _build_fusion_stack_for_level(
     dataset_name: str,
     s1_date: date_type,
     aoi_bbox: tuple[float, float, float, float],
-    scene_id: int,
+    scene_id: int | None,
     plan: ProcessingPlan,
     run_level: str,
     fusion_strategy: str | None,
     progress_cb: Callable[[str, int, int], None] | None,
+    region_id: int | None = None,
+    require_s1: bool = True,
+    s1_offset_days: int | None = 0,
 ) -> FusionRun:
     """Bangun SATU stack HDF5 untuk `run_level`. Dipanggil sekali atau dua
-    kali per scene oleh create_fusion_stack."""
+    kali per tanggal fusi oleh create_fusion_stack.
+
+    `require_s1=False` (dipakai FULL_COVERAGE) membuat tanggal tanpa scene S1
+    tetap menghasilkan berkas: group sentinel1/ ada tapi berisi NaN, persis
+    perlakuan yang sudah berlaku untuk MODIS/GPM yang hilang. Itu penting
+    karena fusion_layers_for membedakan "sensor tidak diminta" (tidak ada
+    group sama sekali) dari "diminta tapi datanya hilang hari itu" (group
+    berisi NaN) — dan S1 di dataset FULL_COVERAGE jelas termasuk yang kedua."""
     from etl.module7_modis_download import band_filename as modis_band_filename
     from etl.module8_gpm_download import band_filename as gpm_band_filename
 
@@ -988,17 +1103,60 @@ def _build_fusion_stack_for_level(
     }
     s1_tier = source_tiers[S1_PLAN_NAME]
 
-    s1 = _find_s1_products(db, dataset_id, scene_id, tier=s1_tier)
+    s1 = (
+        _find_s1_products(db, dataset_id, scene_id, tier=s1_tier)
+        if scene_id is not None else None
+    )
     if s1 is None or (not s1["vv_path"] and not s1["vh_path"]):
-        raise RuntimeError(
-            f"No S1 {s1_tier} product found for scene_id={scene_id} "
-            f"s1_date={s1_date.isoformat()} (run level {run_level})"
+        if require_s1:
+            raise RuntimeError(
+                f"No S1 {s1_tier} product found for scene_id={scene_id} "
+                f"s1_date={s1_date.isoformat()} (run level {run_level})"
+            )
+        # Rekaman S1 kosong, bukan cabang kode terpisah: seluruh jalur di bawah
+        # sudah menangani path None lewat _read_band_or_nan, jadi membentuk
+        # rekaman null di sini jauh lebih sedikit permukaan error daripada
+        # menduplikasi alur perakitan untuk kasus tanpa-S1.
+        if region_id is None:
+            raise RuntimeError(
+                "require_s1=False butuh region_id untuk membuat scene "
+                "placeholder tempat data_products fusi ditempelkan"
+            )
+        logger.info(
+            "[M9] tanggal=%s tanpa scene S1 (strategi=%s): stack ditulis dengan "
+            "group sentinel1/ berisi NaN di atas grid AOI",
+            s1_date.isoformat(), fusion_strategy,
         )
-
-    ref_path = s1["vv_path"] or s1["vh_path"]
-    with rasterio.open(ref_path) as ref:
-        ref_transform, ref_crs = ref.transform, ref.crs
-        ref_shape = (ref.height, ref.width)
+        # Kunci rekaman ini HARUS sama dengan hasil _find_s1_products: kode di
+        # bawah membaca vv_product_id/vh_product_id untuk lineage. Tanpa kedua
+        # kunci itu setiap hari tanpa-S1 jatuh KeyError SETELAH HDF5 dan baris
+        # fusion_products ditulis -- job FUSION-nya tertinggal RUNNING dan
+        # data_products-nya tanpa lineage (dataset try2, 11 dari 16 hari).
+        s1 = {
+            "vv_path": None,
+            "vh_path": None,
+            "vv_product_id": None,
+            "vh_product_id": None,
+            "region_id": region_id,
+            "scene_id": _resolve_aux_scene(
+                db, dataset_id, region_id, box(*aoi_bbox).wkt, "FUSION", s1_date
+            ),
+            "acquisition_datetime": datetime.combine(
+                s1_date, datetime.min.time(), tzinfo=timezone.utc
+            ),
+        }
+        ref_transform, ref_crs, ref_shape = (
+            _dataset_s1_reference_grid(db, dataset_id, s1_tier)
+            or _aoi_reference_grid(aoi_bbox)
+        )
+        # Tanpa scene S1 sama sekali, "jarak hari" tidak terdefinisi. NULL,
+        # bukan 0: nol berarti same-day, dan itu klaim yang tidak benar di sini.
+        s1_offset_days = None
+    else:
+        ref_path = s1["vv_path"] or s1["vh_path"]
+        with rasterio.open(ref_path) as ref:
+            ref_transform, ref_crs = ref.transform, ref.crs
+            ref_shape = (ref.height, ref.width)
 
     expected_layers = fusion_layers_for(source_levels)
     total_layers = len(expected_layers)
@@ -1088,8 +1246,12 @@ def _build_fusion_stack_for_level(
             _tick(name)
 
     date_key = s1_date.strftime("%Y%m%d")
-    out_dir = fm.ensure_fusion_dir(dataset_id, dataset_name, date_key)
-    h5_path = out_dir / fusion_h5_name(date_key, run_level)
+    # Output dipecah per strategi: membandingkan CO_OCCURRENCE vs FULL_COVERAGE
+    # vs HYBRID pada dataset yang sama adalah inti D1, dan itu cuma mungkin
+    # kalau hasilnya tidak saling menimpa.
+    subfolder = SUBFOLDER.get(str(fusion_strategy).strip().upper()) if fusion_strategy else None
+    out_dir = fm.ensure_fusion_dir(dataset_id, dataset_name, date_key, subfolder)
+    h5_path = out_dir / fusion_h5_name(date_key, run_level, fusion_strategy)
     json_path = out_dir / fusion_metadata_name(run_level)
     processing_dt = datetime.now(tz=timezone.utc)
 
@@ -1128,15 +1290,35 @@ def _build_fusion_stack_for_level(
 
     days_since_s1 = max((abs((d - s1_date).days) for d in found_dates), default=0)
 
+    # Hari yang MEMINJAM scene S1 (FULL_COVERAGE, offset >= 1) tidak boleh
+    # menempelkan data_products-nya ke scene S1 itu. Dedup is_latest di
+    # insert_data_product berjalan atas (scene_id, band_name, tier, dataset_id),
+    # jadi lima hari yang meminjam satu scene saling menandai usang dan hanya
+    # hari terakhir yang tersisa di listing API -- termasuk stack same-day-nya
+    # sendiri (dataset try2: 4 dari 5 stack hilang). Placeholder per tanggal,
+    # sama dengan hari tanpa-S1. s1_scene_id di fusion_products tetap scene
+    # yang benar-benar dipakai.
+    product_scene_id = (
+        s1["scene_id"] if s1_offset_days in (0, None)
+        else _resolve_aux_scene(
+            db, dataset_id, s1["region_id"], box(*aoi_bbox).wkt, "FUSION", s1_date
+        )
+    )
+
     with db.session() as sess:
+        # dataset_id ikut kunci (migrasi 021). Tanpa itu dua dataset atas AOI
+        # dan tanggal yang sama berbagi SATU baris: try1/try2/try3 semuanya
+        # menulis fusion_id=43 dan yang terakhir selesai menimpa path dua
+        # lainnya.
         existing = sess.scalar(
             select(FusionProduct).where(
+                FusionProduct.dataset_id == dataset_id,
                 FusionProduct.feature_date == s1_date,
-                FusionProduct.region_id == s1["region_id"],
                 FusionProduct.processing_level == run_level,
             )
         )
         if existing:
+            existing.region_id = s1["region_id"]
             existing.s1_scene_id = s1["scene_id"]
             existing.modis_scene_id = modis_scene_id
             existing.gpm_scene_id = gpm_scene_id
@@ -1145,10 +1327,12 @@ def _build_fusion_stack_for_level(
             existing.fusion_strategy = fusion_strategy
             existing.temporal_offset_modis = offsets[MODIS_PLAN_NAME]
             existing.temporal_offset_gpm = offsets[GPM_PLAN_NAME]
+            existing.s1_offset_days = s1_offset_days
             sess.flush()
             fusion_id = existing.fusion_id
         else:
             fusion = FusionProduct(
+                dataset_id=dataset_id,
                 feature_date=s1_date,
                 region_id=s1["region_id"],
                 s1_scene_id=s1["scene_id"],
@@ -1158,6 +1342,7 @@ def _build_fusion_stack_for_level(
                 feature_stack_path=str(h5_path),
                 fusion_strategy=fusion_strategy,
                 processing_level=run_level,
+                s1_offset_days=s1_offset_days,
                 temporal_offset_modis=offsets[MODIS_PLAN_NAME],
                 temporal_offset_gpm=offsets[GPM_PLAN_NAME],
             )
@@ -1182,35 +1367,45 @@ def _build_fusion_stack_for_level(
     )
 
     fusion_job_id = meta.insert_processing_job(
-        s1["scene_id"], "FUSION",
+        product_scene_id, "FUSION",
         parameters={
             "dataset_id": dataset_id, "s1_date": s1_date.isoformat(),
             "processing_level": run_level, "source_levels": source_levels,
         },
     )
     meta.start_job(fusion_job_id)
-    fusion_product_id = meta.insert_data_product(
-        scene_id=s1["scene_id"], job_id=fusion_job_id, dataset_id=dataset_id,
-        product_tier="FUSION", source=fm.FUSION_DB_SOURCE,
-        product_type="FUSION_H5",
-        # band_name membawa level-nya, bukan cuma "FUSION": dedup is_latest di
-        # insert_data_product berjalan atas (scene_id, band_name, tier,
-        # dataset_id), jadi dua stack tanggal yang sama dengan band_name yang
-        # sama akan membuat stack RAW menandai dirinya sendiri usang begitu
-        # stack PROCESSED didaftarkan — dan hilang dari semua listing API.
-        band_name=f"FUSION_{run_level}",
-        file_path=str(h5_path), file_name=h5_path.name,
-        file_size_mb=round(h5_path.stat().st_size / (1024 ** 2), 3),
-        data_hash_sha256=checksum,
-        file_format="HDF5", rows=height, cols=width,
-        processing_level=run_level,
-    )
-    for product_key in ("vv_product_id", "vh_product_id"):
-        if s1[product_key]:
-            lineage.record_transformation(
-                s1[product_key], fusion_product_id, "FUSION", fusion_job_id,
-                {"aoi_bbox": list(aoi_bbox), "processing_level": run_level},
-            )
+    try:
+        fusion_product_id = meta.insert_data_product(
+            scene_id=product_scene_id, job_id=fusion_job_id, dataset_id=dataset_id,
+            product_tier=tn.FUSED, source=fm.FUSION_DB_SOURCE,
+            product_type="FUSION_H5",
+            # band_name membawa level-nya, bukan cuma "FUSION": dedup is_latest di
+            # insert_data_product berjalan atas (scene_id, band_name, tier,
+            # dataset_id), jadi dua stack tanggal yang sama dengan band_name yang
+            # sama akan membuat stack RAW menandai dirinya sendiri usang begitu
+            # stack PROCESSED didaftarkan — dan hilang dari semua listing API.
+            band_name=f"FUSION_{run_level}",
+            file_path=str(h5_path), file_name=h5_path.name,
+            file_size_mb=round(h5_path.stat().st_size / (1024 ** 2), 3),
+            data_hash_sha256=checksum,
+            file_format="HDF5", rows=height, cols=width,
+            processing_level=run_level,
+        )
+        for product_key in ("vv_product_id", "vh_product_id"):
+            if s1.get(product_key):
+                lineage.record_transformation(
+                    s1[product_key], fusion_product_id, "FUSION", fusion_job_id,
+                    {"aoi_bbox": list(aoi_bbox), "processing_level": run_level},
+                )
+    except Exception as exc:
+        # Job yang sudah RUNNING wajib ditutup di jalur gagal juga; kalau tidak
+        # ia tertinggal RUNNING selamanya dan terlihat seperti fusi yang masih
+        # berjalan.
+        meta.complete_job(
+            fusion_job_id, status=JobStatusEnum.FAILED,
+            error_code=type(exc).__name__, error_message=str(exc)[:2000],
+        )
+        raise
     meta.complete_job(fusion_job_id)
 
     logger.info(
@@ -1241,6 +1436,9 @@ def create_fusion_stack(
     progress_cb: Callable[[str, int, int], None] | None = None,
     plan: ProcessingPlan | None = None,
     fusion_strategy: str | None = None,
+    region_id: int | None = None,
+    require_s1: bool = True,
+    s1_offset_days: int | None = 0,
 ) -> list[FusionRun]:
     """
     Bangun stack fitur HDF5 untuk scene Sentinel-1 `scene_id` (akuisisi
@@ -1272,10 +1470,18 @@ def create_fusion_stack(
         `fusion_id` int; sekarang selalu list karena satu panggilan bisa
         menghasilkan dua stack.)
 
+    Args tambahan:
+        region_id: wajib kalau require_s1=False — dipakai membuat scene
+              placeholder tempat data_products fusi ditempelkan, karena
+              data_products.scene_id NOT NULL sementara tanggal tanpa S1
+              tidak punya baris satellite_scenes sendiri.
+        require_s1: True (default) mempertahankan perilaku lama — tanggal
+              tanpa produk S1 melempar. FULL_COVERAGE memakai False supaya
+              tiap hari tetap jadi berkas walau S1-nya tidak ada.
+
     Raises:
-        RuntimeError: SENTINEL1 tidak dikonfigurasi, atau produk S1 di tier
-        yang diminta tidak ada. Fusi di pipeline ini di-anchor ke scene S1 —
-        lihat DOCS/IMPLEMENTATION_NOTES.md.
+        RuntimeError: SENTINEL1 tidak dikonfigurasi; atau produk S1 di tier
+        yang diminta tidak ada SEMENTARA require_s1=True.
     """
     owns_db = db is None
     db = db or DatabaseClient.from_env()
@@ -1303,6 +1509,9 @@ def create_fusion_stack(
                 run_level=run_level,
                 fusion_strategy=fusion_strategy,
                 progress_cb=progress_cb,
+                region_id=region_id,
+                require_s1=require_s1,
+                s1_offset_days=s1_offset_days,
             )
             for run_level in plan.output_levels()
         ]

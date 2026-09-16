@@ -148,6 +148,7 @@ Above the 4-step wizard, a "Pakai Config Sebelumnya" button (gear icon + text) a
 │                                        │
 │ Konfigurasi Terakhir:                  │
 │ • Jabodetabek                          │
+│ • Tanggal: 2026-08-01 s/d 2026-08-31   │
 │ • S1[RAW+PROC] · MODIS[PROC] · GPM[RAW]│
 │ • Strategi: HYBRID                     │
 └────────────────────────────────────────┘
@@ -155,9 +156,9 @@ Above the 4-step wizard, a "Pakai Config Sebelumnya" button (gear icon + text) a
 
 On click:
 1. Fetch `GET /api/datasets/last-config`
-2. Populate form fields (region, source checkboxes, fusion strategy, preview options)
+2. Populate form fields (region, date range, source checkboxes, fusion strategy, preview options)
 3. Focus on first field for editing
-4. User can edit before creating (dates, region, anything)
+4. User can edit before creating (dates, region, anything) -- date range is a preset, not a lock
 
 If no prior datasets exist, button hidden. If API fails, button stays visible but shows inline error.
 
@@ -269,15 +270,21 @@ The `.option-row` component: `border: 1px solid var(--glass-border); border-radi
 ```
 
 **Key changes from Prototype**:
-- ❌ Removed tier chips (RAW, BRONZE, SILVER, GOLD, FUSION)
+- ❌ Removed tier chips (tier bukan pilihan user — lihat D14)
 - ✅ Source + processing level chips: `S1[R+P]`, `MODIS[P]`, `GPM[R]`
   - `R` = RAW configured, `P` = PROCESSED configured, `[R+P]` = both selected
   - Only show sources actually configured in dataset
 - ❌ Removed ring progress with tier colors
-- ✅ Replaced with per-source scene count (e.g., "S1: 5 scene · MODIS: 30 scene")
-- ✅ Per-source storage breakdown in parentheses (S1: 1.2G | MODIS: 0.8G | GPM: 0.4G)
-- ✅ Fusion strategy label
+- ✅ Fusion strategy label, plus "hasil fusi saja" when `fusion_output_only` is set
 - ✅ Live logs still show per-stage progress
+- ✅ Per-source scene count and byte breakdown (`scenes_by_source`,
+  `bytes_by_source` on `DatasetItem`). Computed from `data_products` with ONE
+  aggregate query for the whole listing page — the card re-renders on every
+  poll, so a per-dataset fan-out would multiply database load by the number of
+  cards on screen. Scenes are counted DISTINCT: one scene produces many product
+  rows (VV, VH, several tiers), so counting rows would report a multiple of the
+  real figure. Sources with no products yet are absent rather than zero, so the
+  card can tell "belum ada" from "nol byte".
 
 **Card styling**: `.dataset-card` (glass surface, 18px radius, cyan border gradient on hover)
 
@@ -289,20 +296,33 @@ The `.option-row` component: `border: 1px solid var(--glass-border); border-radi
 - Scene status colors: COMPLETED = cyan, RUNNING = amber, FAILED = coral
 
 **Struktur panel**:
-- Storage tree (collapsible per source, then per processing level, then per tier):
+- Storage rows per tier, each split into per-source segments. **Labels show the
+  DRAWER, not the tier name** (`tierLabel()` in `web/app.js`): `ALIGNED` renders
+  as `RAW`, `COG` as `PROCESSED`, `FUSED` as `FUSION` — because that is what the
+  user sees when they open the downloaded folder (`sentinel-1/RAW/`,
+  `sentinel-1/PROCESSED/`). The `?tier=` value in the download link keeps the
+  real tier name so the URL still resolves.
   ```
-  SENTINEL-1
-    ├─ RAW: 150 MB (BRONZE ██ + PREVIEW █)
-    └─ PROCESSED: 600 MB (BRONZE ██ + SILVER ██ + GOLD ██ + PREVIEW █)
-  MODIS
-    └─ PROCESSED: 250 MB (BRONZE █ + SILVER ██ + GOLD ██ + PREVIEW █)
-  GPM
-    └─ RAW: 60 MB (BRONZE █ + PREVIEW ░)
+  RAW          700 B   1 berkas · 1 scene   [Berkas] [Unduh]   (granule cache)
+  RAW        1.00 KB   1 berkas · 1 scene   [Berkas] [Unduh]   ← tier ALIGNED
+  PROCESSED  2.50 KB   2 berkas · 1 scene   [Berkas] [Unduh]   ← tier COG
+  FUSION     3.00 KB   1 berkas · 1 scene   [Berkas] [Unduh]   ← tier FUSED
   ```
-- No horizontal bar chart; use nested list with indentation + byte counts
-- Quality metrics per source (only for S1 PROCESSED): nodata%, speckle, score
-- File browser: browse by source/processing_level/tier/date
-- Preview gallery: separate tabs per source+processing_level combo
+- Datasets created before the relayout are **not rendered as a tree at all**:
+  `storage.legacy_layout` is true and the panel shows a "format lama" notice
+  plus a whole-dataset download link. Their folder vocabulary no longer matches
+  anything else on screen.
+- Quality metrics per source: nodata%, speckle, score (served by
+  `/api/quality/dataset/{id}/by-source`, which is rank-3 based)
+- ✅ Collapsible nesting source → level → tier, built with native `<details>`
+  (open/close needs no JS state). The middle layer is **derived client-side**
+  from the tier via `TIER_LEVEL` — the disk has no level segment outside
+  `preview/`. A source with only one configured level collapses that layer
+  away: a single-child node adds a click without adding information.
+- ✅ File browser filtered by source (`/storage/files/{tier}?source=`, filtered
+  server-side) and grouped by date. Source and tier are already fixed by the
+  leaf that was clicked, so the columns are Tanggal | Scene | Berkas | Ukuran.
+  The date is read from the filename, since it is no longer a path segment.
 
 ### Preview Gallery (Inside Struktur Panel)
 
@@ -333,8 +353,8 @@ Each image card: thumbnail + label (band name), colormap tag, value range, inter
 - Recent ingested scenes table:
   | Date | Source | Processing | Stage | Status | Size |
   |---|---|---|---|---|---|
-  | 2024-09-08 | Sentinel-1 | PROCESSED | GOLD_EXPORT | COMPLETED | 125 MB |
-  | 2024-09-08 | MODIS | PROCESSED | LEE_FILTER | COMPLETED | 48 MB |
+  | 2024-09-08 | Sentinel-1 | PROCESSED | COG_EXPORT | COMPLETED | 125 MB |
+  | 2024-09-08 | MODIS | PROCESSED | COMPUTE_NDVI | COMPLETED | 48 MB |
   | 2024-09-07 | Sentinel-1 | RAW | CROP | COMPLETED | 65 MB |
 
 ## Modals

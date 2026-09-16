@@ -113,7 +113,7 @@ class TestCreateDatasetWithSources:
         ))
         assert resp.status_code == 201, resp.text
         detail = api_client.get(f"/api/datasets/{resp.json()['dataset_id']}").json()
-        assert detail["required_tiers"] == ["RAW", "BRONZE"]
+        assert detail["required_tiers"] == ["RAW", "ALIGNED"]
         assert detail["fusion_strategy"] is None
 
     def test_fusion_strategy_null_with_two_sources_rejected(self, api_client, sample_region):
@@ -217,9 +217,11 @@ class TestLastConfig:
         assert body["preview_options"] == ["COLORED", "COMPOSITE"]
         assert body["created_from_dataset_id"] == created["dataset_id"]
         assert body["created_at"]
-        # Nama dan tanggal sengaja TIDAK ikut (DOCS/DECISIONS.md D13).
+        assert body["date_start"] == "2024-01-01"
+        assert body["date_end"] == "2024-01-31"
+        # Nama sengaja TIDAK ikut (DOCS/DECISIONS.md D13); tanggal IKUT sebagai
+        # preset yang bisa diedit user.
         assert "name" not in body
-        assert "date_start" not in body
 
     def test_returns_latest_of_two_datasets(
         self, api_client, sample_region, no_existing_datasets
@@ -238,3 +240,48 @@ class TestLastConfig:
         assert body["sources"] == {"gpm": {"processing": ["RAW", "PROCESSED"]}}
         assert body["fusion_strategy"] is None
         assert body["preview_options"] == ["GRAYSCALE"]
+
+
+class TestPerSourceCardStats:
+    """`scenes_by_source` / `bytes_by_source` yang menyuapi kartu dataset.
+
+    Keduanya dihitung dari data_products lewat SATU query agregat untuk
+    seluruh halaman listing, bukan dengan menyusuri disk per kartu -- kartu
+    dirender ulang tiap polling.
+    """
+
+    def test_absent_until_products_exist(self, api_client, sample_region):
+        """Dataset baru belum punya produk, jadi kedua peta kosong -- bukan
+        berisi nol untuk tiap source yang dikonfigurasi. Kartu membedakan
+        "belum ada" dari "nol byte"."""
+        api_client.post("/api/datasets", json=_payload(sample_region))
+        item = api_client.get("/api/datasets").json()["items"][0]
+        assert item["scenes_by_source"] == {}
+        assert item["bytes_by_source"] == {}
+
+    def test_counts_distinct_scenes_not_product_rows(
+        self, api_client, db_client, meta, sample_region, sample_scene
+    ):
+        """Satu scene menghasilkan banyak baris produk (VV, VH, beberapa
+        tier). Menghitung barisnya akan melaporkan angka berkali lipat dari
+        jumlah scene yang sebenarnya."""
+        ds_id = api_client.post(
+            "/api/datasets", json=_payload(sample_region)
+        ).json()["dataset_id"]
+
+        job_id = meta.insert_processing_job(sample_scene, "DOWNLOAD")
+        for band in ("VV", "VH"):
+            meta.insert_data_product(
+                scene_id=sample_scene, job_id=job_id, dataset_id=ds_id,
+                product_tier="COG", source="SENTINEL1", product_type="S1_COG",
+                band_name=band, file_name=f"f_{band}.tif",
+                file_path=f"/tmp/f_{band}.tif", file_size_mb=2.0,
+                data_hash_sha256="",
+            )
+
+        item = next(
+            i for i in api_client.get("/api/datasets").json()["items"]
+            if i["dataset_id"] == ds_id
+        )
+        assert item["scenes_by_source"] == {"sentinel1": 1}   # 1 scene, 2 baris
+        assert item["bytes_by_source"]["sentinel1"] == int(4.0 * 1024 * 1024)

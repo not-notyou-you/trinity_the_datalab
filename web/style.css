@@ -1219,3 +1219,194 @@ details.advanced .field-row-3 { margin-top: 14px; }
   .wizard-step-pip span { font-size: 10px; }
   .satellite-card { padding: 11px 12px; }
 }
+
+/* Kontrol tambahan di langkah 3 (toleransi S1, "simpan hasil fusi saja").
+   Keduanya menempel di bawah pilihan strategi dan hanya tampil saat relevan,
+   jadi sengaja lebih ringan dari .option-row supaya tidak terbaca sebagai
+   pilihan strategi keempat. */
+.fusion-extra,
+.fusion-extra-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+}
+.fusion-extra { flex-direction: column; align-items: stretch; gap: 4px; }
+.fusion-extra-row { justify-content: space-between; cursor: pointer; }
+.fusion-extra-input { display: flex; align-items: center; gap: 6px; }
+.fusion-extra-input input[type="number"] {
+  width: 64px;
+  padding: 4px 8px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.04);
+  color: inherit;
+  font: inherit;
+  text-align: right;
+}
+.fusion-extra-unit { opacity: 0.7; }
+.fusion-extra-hint {
+  margin: 2px 0 0;
+  font-size: 12px;
+  line-height: 1.45;
+  opacity: 0.62;
+}
+
+/* Kartu dataset pasca-D14: ring bertier dihapus (tier bukan pilihan user dan
+   namanya tidak muncul di layar lain), diganti chip per-satelit + label
+   strategi fusi -- keduanya memakai kosakata yang sama dengan wizard. */
+.card-sources {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+.card-fusion {
+  margin-top: 6px;
+  font-size: 12px;
+  opacity: 0.72;
+}
+.card-fusion strong { opacity: 1; font-weight: 600; }
+.card-persource {
+  margin-top: 4px;
+  font-size: 12px;
+  opacity: 0.78;
+}
+.card-persource.dim { opacity: 0.55; }
+
+/* Panel Struktur: pohon bersarang source -> level -> tier.
+   Menggantikan batang horizontal per tier. <details> dipakai apa adanya --
+   buka/tutup native, tanpa state yang perlu dijaga di JS. */
+.struct-title {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+.struct-grand { font-weight: 600; opacity: 0.8; }
+.struct-tree { margin-top: 10px; }
+
+.struct-source > summary,
+.struct-level > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  list-style: none;
+  padding: 6px 0;
+}
+.struct-source > summary::-webkit-details-marker,
+.struct-level > summary::-webkit-details-marker { display: none; }
+.struct-source > summary::before,
+.struct-level > summary::before {
+  content: "\25B8";
+  font-size: 10px;
+  opacity: 0.55;
+  transition: transform 0.15s ease;
+}
+.struct-source[open] > summary::before,
+.struct-level[open] > summary::before { transform: rotate(90deg); }
+
+.struct-source-name { font-weight: 600; letter-spacing: 0.02em; }
+.struct-source-size,
+.struct-level-size { margin-left: auto; opacity: 0.72; font-variant-numeric: tabular-nums; }
+.struct-level { margin-left: 18px; }
+.struct-level-name { font-size: 12px; opacity: 0.78; letter-spacing: 0.04em; }
+
+.struct-swatch-mixed {
+  background: linear-gradient(90deg, #5B8DEF, #2FA07E, #C4762E);
+}
+
+/* Daun = satu tier. Namanya menampilkan LACI-nya (tierLabel), karena itulah
+   yang user lihat saat membuka folder hasil unduhan. */
+.struct-leaf {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-left: 34px;
+  padding: 4px 0;
+  font-size: 12px;
+}
+.struct-leaf-name { min-width: 92px; opacity: 0.9; }
+.struct-leaf-size { font-variant-numeric: tabular-nums; opacity: 0.8; }
+.struct-leaf-count { opacity: 0.55; flex: 1; }
+
+/* Galeri preview: satu seksi per satelit, dengan tab level terpisah dari tab
+   jenis render. Level adalah dimensi tersendiri karena satu tanggal bisa punya
+   dua set PNG yang isinya berbeda (RAW dari ALIGNED, PROCESSED dari COG). */
+.preview-levels { display: flex; gap: 6px; }
+.preview-group { margin-top: 14px; }
+.preview-group-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  opacity: 0.85;
+}
+.preview-group-level {
+  font-weight: 400;
+  opacity: 0.6;
+  letter-spacing: 0.04em;
+}
+
+/* Legenda radar progres: satu entri per cincin, warna sama dengan cincinnya. */
+.ring-legend { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 8px; font-size: 11px; opacity: 0.85; }
+.ring-legend-item { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+.ring-legend-item i { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
+
+/* Panel Detail per satelit. */
+.detail-source { margin: 12px 0 16px; }
+.detail-source-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 6px; }
+.detail-source-name { font-weight: 600; font-size: 13px; }
+.detail-stage { margin-bottom: 8px; }
+.detail-stage-head {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; width: 100%;
+  background: none; border: 0; color: inherit; font: inherit; font-size: 12px;
+  padding: 2px 0; cursor: pointer; text-align: left;
+}
+.detail-caret { width: 10px; opacity: 0.6; }
+.detail-phase { display: inline-flex; align-items: center; gap: 5px; }
+.detail-phase::before { content: ''; width: 9px; height: 9px; border-radius: 50%; background: var(--phase-color); }
+.detail-tier { font-family: var(--font-mono); font-size: 11px; opacity: 0.7; }
+.detail-count { opacity: 0.6; }
+.detail-size { margin-left: auto; font-family: var(--font-mono); font-size: 11px; }
+.detail-track { height: 8px; border-radius: 4px; background: rgba(255,255,255,0.06); overflow: hidden; margin-top: 4px; }
+.detail-bar { height: 100%; border-radius: 4px; }
+.detail-scenes { list-style: none; margin: 6px 0 0 16px; padding: 0; max-height: 220px; overflow-y: auto; font-size: 11px; }
+.detail-scenes li { display: flex; justify-content: space-between; gap: 10px; padding: 3px 0; border-bottom: 1px solid var(--glass-border); }
+.detail-scenes .mono { overflow-wrap: anywhere; }
+.detail-scene-meta { opacity: 0.6; white-space: nowrap; }
+
+/* Panel Struktur: grid kartu per satelit (menggantikan pohon bersarang). */
+.sg-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 340px), 1fr)); gap: 12px; }
+.sg-card {
+  border: 1px solid var(--glass-border); border-radius: 10px;
+  padding: 12px 14px; background: rgba(255,255,255,0.02);
+  display: flex; flex-direction: column; gap: 6px; min-width: 0;
+}
+.sg-head { display: flex; align-items: center; gap: 8px; padding-bottom: 8px; border-bottom: 1px solid var(--glass-border); margin-bottom: 2px; }
+.sg-title { font-weight: 600; font-size: 13px; }
+.sg-total { margin-left: auto; font-family: var(--font-mono); font-size: 12px; }
+.sg-level {
+  display: flex; justify-content: space-between; margin-top: 6px;
+  font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-dim);
+}
+.sg-row {
+  display: grid; grid-template-columns: 92px 1fr 72px;
+  grid-template-areas: "name track size" "meta meta actions";
+  align-items: center; column-gap: 10px; row-gap: 2px; padding: 5px 0; font-size: 12px;
+}
+.sg-row + .sg-row { border-top: 1px dashed rgba(255,255,255,0.05); }
+.sg-name { grid-area: name; font-family: var(--font-mono); font-size: 11px; }
+.sg-track { grid-area: track; height: 6px; border-radius: 3px; background: rgba(255,255,255,0.06); overflow: hidden; }
+.sg-bar { display: block; height: 100%; border-radius: 3px; }
+.sg-size { grid-area: size; text-align: right; font-family: var(--font-mono); font-size: 11px; font-variant-numeric: tabular-nums; }
+.sg-meta { grid-area: meta; font-size: 11px; color: var(--text-dim); }
+.sg-actions { grid-area: actions; display: flex; gap: 10px; justify-content: flex-end; }
+.sg-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin-top: 6px; padding-top: 8px; border-top: 1px solid var(--glass-border); font-size: 12px; }
+.sg-foot-label { font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-dim); }
+.sg-files-head { display: flex; justify-content: space-between; align-items: center; font-size: 12px; font-weight: 600; margin-bottom: 6px; }
+.struct-files { border: 1px solid var(--glass-border); border-radius: 10px; padding: 10px 12px; }

@@ -209,6 +209,19 @@ def _target_path(dataset_id: int, dataset_name: str, row: dict, old_path: Path) 
         return None
     if tier == "fusion":
         return fm.get_fusion_dir(dataset_id, dataset_name, scene_key) / row["file_name"]
+
+    # Tier antara tidak punya laci di layout baru (RAW = ZIP SAFE, SILVER =
+    # Lee pre-COG): get_scene_dir akan mengarahkannya ke _work/, yang justru
+    # dibuang setelah scene selesai. Memindahkan berkas ke sana sama dengan
+    # menghapusnya lewat jalan memutar, jadi dilewati secara eksplisit.
+    if fm.level_for_tier(tier) is None:
+        logger.info(
+            "[MIGRATE] tier %s tidak punya laci di layout baru, dilewati "
+            "(product_id=%d): %s",
+            tier.upper(), row["product_id"], old_path,
+        )
+        return None
+
     source = _source_for(row)
     if source is None:
         logger.error(

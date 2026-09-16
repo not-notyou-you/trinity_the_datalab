@@ -127,20 +127,27 @@ class TestNormalizeSourceConfigs:
 
 class TestDeriveRequiredTiers:
 
-    def test_raw_only_stops_at_bronze(self):
-        assert derive_required_tiers({"SENTINEL1": ["RAW"]}) == ["RAW", "BRONZE"]
+    def test_raw_only_stops_at_aligned(self):
+        assert derive_required_tiers({"SENTINEL1": ["RAW"]}) == ["RAW", "ALIGNED"]
 
-    def test_processed_reaches_gold(self):
+    def test_processed_reaches_cog(self):
+        """Tier rank 2 dinamai menurut source-nya: MODIS -> INDICES (D14)."""
         assert derive_required_tiers({"MODIS": ["PROCESSED"]}) == [
-            "RAW", "BRONZE", "SILVER", "GOLD"
+            "RAW", "ALIGNED", "INDICES", "COG"
+        ]
+        assert derive_required_tiers({"GPM": ["PROCESSED"]}) == [
+            "RAW", "ALIGNED", "ACCUMULATED", "COG"
+        ]
+        assert derive_required_tiers({"SENTINEL1": ["PROCESSED"]}) == [
+            "RAW", "ALIGNED", "DESPECKLED", "COG"
         ]
 
-    def test_fusion_added_only_with_gold(self):
-        """Fusi menyusun stack dari GOLD, jadi dataset RAW-only tidak dapat FUSION."""
-        assert "FUSION" in derive_required_tiers(
+    def test_fusion_added_only_with_cog(self):
+        """Fusi menyusun stack dari COG, jadi dataset RAW-only tidak dapat FUSED."""
+        assert "FUSED" in derive_required_tiers(
             {"SENTINEL1": ["PROCESSED"], "MODIS": ["PROCESSED"]}, with_fusion=True
         )
-        assert "FUSION" not in derive_required_tiers(
+        assert "FUSED" not in derive_required_tiers(
             {"SENTINEL1": ["RAW"], "MODIS": ["RAW"]}, with_fusion=True
         )
 
@@ -297,7 +304,9 @@ class TestCreateDatasetWithSources:
         )
         with db_client.session() as sess:
             tiers = list(sess.get(Dataset, ds.dataset_id).required_tiers)
-        assert tiers == ["RAW", "BRONZE", "SILVER", "GOLD", "FUSION"]
+        # S1 PROCESSED -> DESPECKLED + COG; MODIS RAW berhenti di ALIGNED.
+        # Tidak ada INDICES: MODIS tidak diminta PROCESSED.
+        assert tiers == ["RAW", "ALIGNED", "DESPECKLED", "COG", "FUSED"]
 
     def test_explicit_required_tiers_wins(self, db_client, sample_region):
         ds = db_client.create_dataset_with_sources(
@@ -473,18 +482,23 @@ class TestGetLastDatasetConfig:
         assert cfg["created_at"] is not None
 
     def test_structure_has_no_identity_fields(self, db_client, sample_region):
-        """D13: endpoint hanya mengembalikan field konfigurasi -- nama dan
-        rentang tanggal sengaja tidak ikut supaya user mengisinya ulang."""
+        """D13: endpoint hanya mengembalikan field konfigurasi -- nama sengaja
+        tidak ikut supaya user mengisinya ulang. Rentang tanggal IKUT sebagai
+        preset (bisa diedit user), bukan identity field."""
         db_client.create_dataset_with_sources(
             dataset_payload(sample_region), {"gpm": ["RAW"]}
         )
         cfg = db_client.get_last_dataset_config()
         assert set(cfg) == {
             "region_id", "region_name", "sources", "fusion_strategy",
-            "preview_options", "created_from_dataset_id", "created_at",
+            # Keduanya konfigurasi output, bukan identity: user yang mengklon
+            # config jelas ingin bentuk output yang sama, termasuk apakah
+            # artefak per-satelit disimpan dan seberapa longgar pasangan S1.
+            "fusion_output_only", "s1_match_tolerance_days",
+            "preview_options", "date_start", "date_end",
+            "created_from_dataset_id", "created_at",
         }
         assert "name" not in cfg
-        assert "date_start" not in cfg
 
     def test_soft_deleted_dataset_is_skipped(self, db_client, sample_region):
         keeper = db_client.create_dataset_with_sources(

@@ -91,6 +91,33 @@ Migration 018 replaces `uq_fusion_date_region` with
 date overwrites the first row, discarding exactly the comparison the dataset was
 configured to produce.
 
+Migration 021 then replaces it with `uq_fusion_dataset_date_level`
+(`dataset_id, feature_date, processing_level`) and adds
+`fusion_products.dataset_id`. The region-based key still let two *datasets* over
+the same AOI and date share one row: try1/try2/try3 (HYBRID / FULL_COVERAGE /
+CO_OCCURRENCE, same Tangerang AOI) all wrote `fusion_id=43`, and whichever
+finished last overwrote the other two's path and strategy. `region_id` left the
+key because a shared S1 scene carries the region of the dataset that first
+registered it, so a single dataset can legitimately hold rows with two
+region_ids.
+
+### 3.2b Fusion stacks on borrowed / missing S1 days
+
+- A FULL_COVERAGE day that **borrows** an S1 scene (offset ≥ 1) registers its
+  `data_products` row on a per-date `NASA_AUX_FUSION_*` placeholder scene, not on
+  the borrowed scene. The `is_latest` dedup key is
+  `(scene_id, band_name, tier, dataset_id)`, so days sharing one scene marked each
+  other stale and only the last stack stayed visible. `fusion_products.s1_scene_id`
+  still records the scene actually used.
+- A day with **no** S1 in tolerance uses the grid of any S1 raster the dataset
+  already has, falling back to the AOI formula only when there is none. The AOI
+  formula does not match module1b's reprojected grid (try2: 578×473 vs 571×468),
+  which made the daily series unstackable.
+- Every job that reaches `start_job` is closed on the failure path too
+  (`MetadataManager.fail_open_jobs`, plus explicit FAILED closes in module9).
+  Previously any exception between `start_job` and `complete_job` left the job
+  RUNNING forever.
+
 ### 3.3 Date matching must be done in UTC
 
 `acquisition_datetime` is `TIMESTAMPTZ`; psycopg2 returns it in the **database

@@ -54,7 +54,7 @@ trinity-datalab/
 ├── database/         # schema.sql + migrations/
 ├── config/           # config.json, config_locations.json
 ├── tests/            # pytest suite
-└── data/datasets/    # Output: {id}_{slug}/{date}/{tier}/{source}/
+└── data/datasets/    # Output: {id}_{slug}/{source}/{RAW|PROCESSED}/
 ```
 
 ## Documentation

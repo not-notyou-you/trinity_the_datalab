@@ -221,6 +221,13 @@ class CreateDatasetRequest(BaseModel):
     # {"sentinel1": {"processing": ["RAW", "PROCESSED"]}, ...}
     sources: dict[str, dict[str, list[str]]]
     fusion_strategy: str | None = None
+    # Simpan HDF5 fusi saja; artefak per-satelit dihapus SETELAH stack tanggal
+    # itu ditulis. Bukan "lewati pemrosesan" -- fusi tetap butuh bahannya.
+    fusion_output_only: bool = False
+    # Hanya dipakai FULL_COVERAGE, yang merakit satu berkas per hari termasuk
+    # hari tanpa scene S1 dan karena itu harus tahu seberapa jauh boleh
+    # meminjam scene dari hari lain. None = pakai default kolom (2 hari).
+    s1_match_tolerance_days: int | None = Field(default=None, ge=0, le=14)
     preview_options: list[str] | None = None
     quality_settings: DatasetQualitySettings | None = None
     generate_preview: bool = True
@@ -294,15 +301,21 @@ class DatasetCreateResponse(BaseModel):
 class DatasetLastConfigResponse(BaseModel):
     """GET /api/datasets/last-config.
 
-    Sengaja tanpa `name` dan rentang tanggal: keduanya harus diisi ulang user
-    supaya "Pakai Config Sebelumnya" tidak diam-diam menduplikasi dataset
-    (DOCS/DECISIONS.md D13).
+    Sengaja tanpa `name`: harus diisi ulang user supaya "Pakai Config
+    Sebelumnya" tidak diam-diam menduplikasi dataset (DOCS/DECISIONS.md D13).
+    Rentang tanggal DIIKUTSERTAKAN (sebagai preset, bukan kunci) supaya user
+    tidak perlu mengetik ulang tanggal yang sama setiap kali; field-nya tetap
+    bisa diedit di wizard sebelum submit.
     """
     region_id: int | None
     region_name: str | None
     sources: dict[str, dict[str, list[str]]]
     fusion_strategy: str | None
+    fusion_output_only: bool = False
+    s1_match_tolerance_days: int = 2
     preview_options: list[str]
+    date_start: date | None
+    date_end: date | None
     created_from_dataset_id: int
     created_at: datetime
 
@@ -332,7 +345,16 @@ class DatasetItem(BaseModel):
     # Model lama -- selected_satellites + satu processing_level global --
     # digantikan seluruhnya oleh source_configs.
     source_configs: list[DatasetSourceConfigResponse] = Field(default_factory=list)
+    # Hitungan scene dan byte per satelit, untuk kartu dataset. Dihitung dari
+    # data_products lewat SATU query agregat untuk seluruh halaman -- kartu
+    # dirender ulang tiap polling, jadi tidak boleh fan-out per dataset.
+    # Hanya berisi source yang benar-benar punya produk; source yang
+    # dikonfigurasi tapi belum menghasilkan apa pun tidak muncul.
+    scenes_by_source: dict[str, int] = Field(default_factory=dict)
+    bytes_by_source: dict[str, int] = Field(default_factory=dict)
     fusion_strategy: str | None = None
+    fusion_output_only: bool = False
+    s1_match_tolerance_days: int = 2
     preview_options: list[str] = Field(default_factory=list)
     # Diisi hanya kalau dataset ini dibuat lewat "Pakai Config Sebelumnya":
     # dataset_id yang config-nya disalin. None untuk dataset yang dikonfigurasi
@@ -401,6 +423,13 @@ class DatasetJobItem(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class ProgressLayer(BaseModel):
+    key: str
+    source: str
+    phase: str
+    ratio: float
+
+
 class DatasetProgressResponse(BaseModel):
     dataset_id: int
     job_id: int | None
@@ -414,6 +443,8 @@ class DatasetProgressResponse(BaseModel):
     paused: bool
     pause_reason: str | None
     scenes: list[SceneJobStateItem]
+    # Lapisan radar progres kartu dataset (lihat DatasetManager._progress_layers).
+    layers: list[ProgressLayer] = []
 
 
 class DatasetPauseRequest(BaseModel):
@@ -572,6 +603,11 @@ class DatasetStorageSummary(BaseModel):
     sources: dict[str, SourceStorageItem]
     total_size_bytes: int
     total_size_mb: float
+    # True kalau dataset ini memakai struktur folder sebelum relayout
+    # (folder tanggal + tier di jalur). Berkasnya masih utuh dan tetap bisa
+    # diunduh, tapi pohon penyimpanan tidak dirender dengan kosakata yang
+    # sudah tidak berlaku -- UI menampilkan pesan "format lama" sebagai gantinya.
+    legacy_layout: bool = False
 
 
 class DatasetFileItem(BaseModel):

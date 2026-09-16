@@ -44,16 +44,36 @@ class TestPathConstruction:
         assert fm.slugify("a/b:c") == "a_b_c"
         assert fm.slugify("///") == "dataset"
 
-    def test_aux_scene_dir_is_date_then_tier_then_source(self, data_root):
-        """Kunci scene MODIS/GPM adalah tanggal itu sendiri, jadi tidak ada
-        folder tanggal kedua di bawah source."""
-        p = fm.get_scene_dir(DATASET_ID, DATASET_NAME, "silver", "modis", "20260712")
-        assert p == data_root / DATASET_DIR / "20260712" / "silver" / "modis"
+    def test_final_tiers_land_in_source_level_drawers(self, data_root):
+        """Tier diterjemahkan jadi laci: BRONZE -> RAW/, GOLD -> PROCESSED/.
+        Tidak ada folder tanggal maupun folder scene -- tanggal sudah ada di
+        nama berkas."""
+        assert fm.get_scene_dir(
+            DATASET_ID, DATASET_NAME, "bronze", "modis", "20260712"
+        ) == data_root / DATASET_DIR / "modis" / "RAW"
 
-    def test_sentinel1_scene_dir_grouped_under_its_date(self, data_root):
         pid = "S1D_IW_GRDH_1SDV_20260712T111407.SAFE"
-        p = fm.get_scene_dir(DATASET_ID, DATASET_NAME, "bronze", "sentinel1", pid)
-        assert p == data_root / DATASET_DIR / "20260712" / "bronze" / "sentinel1" / pid
+        assert fm.get_scene_dir(
+            DATASET_ID, DATASET_NAME, "gold", "sentinel1", pid
+        ) == data_root / DATASET_DIR / "sentinel-1" / "PROCESSED"
+
+        assert fm.get_scene_dir(
+            DATASET_ID, DATASET_NAME, "gold", "gpm", "20260712"
+        ) == data_root / DATASET_DIR / "gpm-imerg" / "PROCESSED"
+
+    def test_intermediate_tiers_live_in_scratch(self, data_root):
+        """RAW (ZIP SAFE) dan SILVER (Lee pre-COG) tidak punya laci: keduanya
+        artefak antara yang dibuang setelah scene selesai. Source ikut ke path
+        supaya MODIS dan GPM -- yang kunci scene-nya sama-sama tanggal -- tidak
+        berbagi satu folder scratch."""
+        assert fm.get_scene_dir(
+            DATASET_ID, DATASET_NAME, "silver", "modis", "20260712"
+        ) == data_root / DATASET_DIR / "_work" / "20260712" / "silver" / "modis"
+        assert fm.get_scene_dir(
+            DATASET_ID, DATASET_NAME, "silver", "gpm", "20260712"
+        ) != fm.get_scene_dir(
+            DATASET_ID, DATASET_NAME, "silver", "modis", "20260712"
+        )
 
     def test_scene_date_key(self):
         assert fm.scene_date_key("20260712") == "20260712"
@@ -63,27 +83,42 @@ class TestPathConstruction:
         assert fm.scene_date_key("S1A_IW_GRDH_TEST_20240305") == "20240305"
 
     def test_scene_key_without_date_rejected(self):
-        """Tanpa tanggal folder tujuannya tidak bisa ditentukan -- harus gagal
-        keras, bukan diam-diam menulis ke folder yang salah."""
+        """scene_date_key tetap menolak kunci tanpa tanggal.
+
+        Sejak relayout, tanggal tidak lagi menentukan path tier final (dia ada
+        di nama berkas), jadi get_scene_dir tidak lagi memanggilnya di sana.
+        Tapi kontraknya sendiri masih berlaku untuk pemanggil yang memang
+        butuh tanggalnya."""
         with pytest.raises(ValueError, match="tidak mengandung tanggal"):
-            fm.get_scene_dir(DATASET_ID, DATASET_NAME, "raw", "sentinel1", "SCENE_A")
+            fm.scene_date_key("SCENE_A")
         with pytest.raises(ValueError):
             fm.scene_date_key("TEST_SCENE_1788773879.392203")
 
     def test_fusion_dir_has_no_source_level(self, data_root):
+        """Lintas-source DAN lepas dari folder tanggal: satu folder memuat
+        seluruh deret waktu, yang justru bentuk yang dicari konsumen."""
         p = fm.get_fusion_dir(DATASET_ID, DATASET_NAME, "20260712")
-        assert p == data_root / DATASET_DIR / "20260712" / "fusion"
+        assert p == data_root / DATASET_DIR / "fusion"
 
     def test_preview_dir_has_no_source_level(self, data_root):
         p = fm.get_preview_dir(DATASET_ID, DATASET_NAME, "20260712")
-        assert p == data_root / DATASET_DIR / "20260712" / "preview"
+        assert p == data_root / DATASET_DIR / "preview"
 
-    def test_all_tiers_of_one_date_share_a_folder(self, data_root):
+    def test_one_source_is_downloadable_on_its_own(self, data_root):
+        """Alasan relayout: "ambil Sentinel-1 PROCESSED saja" harus jadi satu
+        folder, bukan berkas yang tersebar di satu folder per tanggal."""
+        root = fm.get_dataset_root(DATASET_ID, DATASET_NAME)
         pid = "S1D_IW_GRDH_1SDV_20260712T111407.SAFE"
-        date_dir = fm.get_date_dir(DATASET_ID, DATASET_NAME, "2026-07-12")
-        assert fm.get_scene_dir(DATASET_ID, DATASET_NAME, "gold", "sentinel1", pid).parents[2] == date_dir
-        assert fm.get_scene_dir(DATASET_ID, DATASET_NAME, "gold", "gpm", "20260712").parents[1] == date_dir
-        assert fm.get_fusion_dir(DATASET_ID, DATASET_NAME, "20260712").parent == date_dir
+
+        s1_proc = fm.get_scene_dir(DATASET_ID, DATASET_NAME, "gold", "sentinel1", pid)
+        assert s1_proc.parent.parent == root
+        assert s1_proc.relative_to(root) == Path("sentinel-1") / "PROCESSED"
+
+        # Tanggal lain mendarat di folder yang sama.
+        pid2 = "S1D_IW_GRDH_1SDV_20260801T111407.SAFE"
+        assert fm.get_scene_dir(
+            DATASET_ID, DATASET_NAME, "gold", "sentinel1", pid2
+        ) == s1_proc
 
     def test_preview_kind_dirs(self, data_root):
         """Level pemrosesan duduk di antara tanggal dan jenis render. Tanpa
@@ -92,7 +127,7 @@ class TestPathConstruction:
         for kind in fm.PREVIEW_KINDS:
             p = fm.get_preview_kind_dir(DATASET_ID, DATASET_NAME, "20260712", kind)
             assert p == (
-                data_root / DATASET_DIR / "20260712" / "preview" / "PROCESSED" / kind
+                data_root / DATASET_DIR / "preview" / "PROCESSED" / kind
             )
 
     def test_preview_kind_dirs_per_level(self, data_root):
@@ -101,7 +136,7 @@ class TestPathConstruction:
                 DATASET_ID, DATASET_NAME, "20260712", "colored", level
             )
             assert p == (
-                data_root / DATASET_DIR / "20260712" / "preview" / level / "colored"
+                data_root / DATASET_DIR / "preview" / level / "colored"
             )
 
     def test_preview_levels_are_separate_dirs(self, data_root):
@@ -206,34 +241,43 @@ def _touch(path: Path, size: int = 100) -> Path:
 class TestListingAndStorage:
     @pytest.fixture
     def populated(self, data_root):
+        # Layout pasca-relayout: sumber di depan, dua laci per sumber, tanggal
+        # di nama berkas. Tidak ada folder tanggal dan tidak ada folder scene.
         base = data_root / DATASET_DIR
-        day = base / "20260712"
-        _touch(day / "silver" / "sentinel1" / SCENE_A / "vv_lee.tif", 1000)
-        _touch(day / "silver" / "sentinel1" / SCENE_A / "vh_lee.tif", 1000)
-        _touch(day / "silver" / "modis" / "modis_20260712_ndvi.tif", 500)
-        _touch(day / "gold" / "gpm" / "gpm_rain_24h_20260712.tif", 200)
+        _touch(base / "sentinel-1" / "PROCESSED" / f"{SCENE_A}_vv_lee.tif", 1000)
+        _touch(base / "sentinel-1" / "PROCESSED" / f"{SCENE_A}_vh_lee.tif", 1000)
+        _touch(base / "modis" / "PROCESSED" / "modis_20260712_ndvi.tif", 500)
+        _touch(base / "gpm-imerg" / "PROCESSED" / "gpm_rain_24h_20260712.tif", 200)
         _touch(base / "_granule_cache" / "modis" / "MOD09GA.A2026193.h30v08.hdf", 700)
-        _touch(day / "fusion" / "fusion_20260712.h5", 300)
+        _touch(base / "fusion" / "fusion_20260712.h5", 300)
         _touch(base / "metadata.json", 50)  # bukan tier, tidak boleh terhitung
         return base
 
     def test_list_scenes_per_source(self, populated):
-        assert fm.list_scenes(DATASET_ID, DATASET_NAME, "silver", "sentinel1") == [SCENE_A]
-        assert fm.list_scenes(DATASET_ID, DATASET_NAME, "silver", "modis") == ["20260712"]
-        assert fm.list_scenes(DATASET_ID, DATASET_NAME, "silver", "gpm") == []
+        """Tanpa folder scene, kunci scene dibaca dari tanggal di nama berkas
+        -- termasuk untuk Sentinel-1."""
+        assert fm.list_scenes(DATASET_ID, DATASET_NAME, "gold", "sentinel1") == ["20260712"]
+        assert fm.list_scenes(DATASET_ID, DATASET_NAME, "gold", "modis") == ["20260712"]
+        assert fm.list_scenes(DATASET_ID, DATASET_NAME, "bronze", "gpm") == []
 
     def test_list_dates(self, populated):
         assert fm.list_dates(DATASET_ID, DATASET_NAME) == ["20260712"]
 
-    def test_scene_files_resolve_through_date(self, populated):
-        s1 = fm.get_scene_files(DATASET_ID, DATASET_NAME, "silver", "sentinel1", SCENE_A)
-        assert sorted(f.name for f in s1) == ["vh_lee.tif", "vv_lee.tif"]
-        modis = fm.get_scene_files(DATASET_ID, DATASET_NAME, "silver", "modis", "20260712")
+    def test_scene_files_filter_by_name_not_folder(self, populated):
+        """Laci final memuat semua tanggal, jadi satu scene disaring lewat
+        nama berkas alih-alih lewat folder sendiri."""
+        s1 = fm.get_scene_files(DATASET_ID, DATASET_NAME, "gold", "sentinel1", SCENE_A)
+        assert sorted(f.name for f in s1) == [
+            f"{SCENE_A}_vh_lee.tif", f"{SCENE_A}_vv_lee.tif"
+        ]
+        modis = fm.get_scene_files(DATASET_ID, DATASET_NAME, "gold", "modis", "20260712")
         assert [f.name for f in modis] == ["modis_20260712_ndvi.tif"]
 
     def test_list_sources_only_returns_existing(self, populated):
-        assert fm.list_sources(DATASET_ID, DATASET_NAME, "silver") == ["sentinel1", "modis"]
-        assert fm.list_sources(DATASET_ID, DATASET_NAME, "gold") == ["gpm"]
+        assert fm.list_sources(DATASET_ID, DATASET_NAME, "gold") == [
+            "sentinel1", "modis", "gpm"
+        ]
+        assert fm.list_sources(DATASET_ID, DATASET_NAME, "bronze") == []
         # Tier fusion tidak punya level source sama sekali.
         assert fm.list_sources(DATASET_ID, DATASET_NAME, "fusion") == []
 
@@ -251,13 +295,16 @@ class TestListingAndStorage:
         daripada tier lain; listing-nya harus tetap menemukannya."""
         gray = fm.ensure_preview_kind_dir(DATASET_ID, DATASET_NAME, "20260712", "grayscale")
         color = fm.ensure_preview_kind_dir(DATASET_ID, DATASET_NAME, "20260712", "colored")
-        (gray / "s1_vv.png").write_bytes(b"x" * 100)
-        (color / "s1_vv.png").write_bytes(b"x" * 200)
+        # Prefiks tanggal wajib: folder preview tidak lagi bersarang di bawah
+        # folder tanggal, jadi tanpa itu tanggal kedua menimpa yang pertama.
+        (gray / "20260712_s1_vv.png").write_bytes(b"x" * 100)
+        (color / "20260712_s1_vv.png").write_bytes(b"x" * 200)
         (fm.get_preview_dir(DATASET_ID, DATASET_NAME, "20260712")
          / "preview_metadata.json").write_bytes(b"{}")
 
         names = sorted(p.name for p in fm.get_preview_scene_files(DATASET_ID, DATASET_NAME, "20260712"))
-        assert names == ["preview_metadata.json", "s1_vv.png", "s1_vv.png"]
+        assert names == ["20260712_s1_vv.png", "20260712_s1_vv.png",
+                         "preview_metadata.json"]
         assert fm.list_preview_scenes(DATASET_ID, DATASET_NAME) == ["20260712"]
 
         b = fm.storage_breakdown(DATASET_ID, DATASET_NAME)
@@ -278,19 +325,23 @@ class TestListingAndStorage:
     def test_storage_breakdown_splits_by_tier_and_source(self, populated):
         b = fm.storage_breakdown(DATASET_ID, DATASET_NAME)
 
-        assert b["tiers"]["silver"]["size_bytes"] == 2500
-        assert b["tiers"]["silver"]["sources"]["sentinel1"]["size_bytes"] == 2000
-        assert b["tiers"]["silver"]["sources"]["sentinel1"]["file_count"] == 2
-        assert b["tiers"]["silver"]["sources"]["modis"]["size_bytes"] == 500
-        assert "gpm" not in b["tiers"]["silver"]["sources"]
+        # Laci PROCESSED dilaporkan di bawah tier GOLD -- tier tetap jadi
+        # kosakata pelaporan walau bukan lagi segmen path (D14).
+        assert b["tiers"]["cog"]["size_bytes"] == 2700
+        assert b["tiers"]["cog"]["sources"]["sentinel1"]["size_bytes"] == 2000
+        assert b["tiers"]["cog"]["sources"]["sentinel1"]["file_count"] == 2
+        assert b["tiers"]["cog"]["sources"]["modis"]["size_bytes"] == 500
+        assert b["tiers"]["cog"]["sources"]["gpm"]["size_bytes"] == 200
+        # Tidak ada laci RAW yang terisi di fixture ini.
+        assert b["tiers"]["aligned"]["size_bytes"] == 0
 
         # Tier fusion dilaporkan tanpa pecahan source.
-        assert b["tiers"]["fusion"]["size_bytes"] == 300
-        assert b["tiers"]["fusion"]["sources"] == {}
-        assert b["tiers"]["fusion"]["scene_count"] == 1
+        assert b["tiers"]["fused"]["size_bytes"] == 300
+        assert b["tiers"]["fused"]["sources"] == {}
+        assert b["tiers"]["fused"]["scene_count"] == 1
 
         # Agregat lintas tier.
-        assert b["sources"]["modis"]["size_bytes"] == 1200  # 500 silver + 700 raw
+        assert b["sources"]["modis"]["size_bytes"] == 1200  # 500 PROCESSED + 700 cache
         assert b["total_size_bytes"] == 3700
 
     def test_storage_breakdown_on_empty_dataset(self, data_root):
@@ -339,34 +390,50 @@ class TestMigrationTargets:
         row.update(kw)
         return row
 
-    def test_sentinel1_uses_product_identifier(self, data_root):
+    def test_intermediate_tier_is_skipped(self, data_root):
+        """SILVER tidak punya laci di layout baru: get_scene_dir akan
+        mengarahkannya ke _work/, yang dibuang setelah scene selesai, jadi
+        memigrasikannya ke sana sama dengan menghapusnya lewat jalan memutar."""
         old = Path("data/datasets/42/20260712/silver/vv_lee.tif")
-        target = mig._target_path(DATASET_ID, DATASET_NAME, self._row(), old)
+        assert mig._target_path(DATASET_ID, DATASET_NAME, self._row(), old) is None
+
+    def test_sentinel1_gold_lands_in_processed_drawer(self, data_root):
+        old = Path("data/datasets/42/20260712/gold/vv_lee.tif")
+        target = mig._target_path(
+            DATASET_ID, DATASET_NAME,
+            self._row(product_tier="GOLD", product_type="S1_COG"), old
+        )
         assert target == (
-            data_root / DATASET_DIR / "20260712" / "silver" / "sentinel1"
-            / "S1D_SCENE_20260712T111407.SAFE" / "vv_lee.tif"
+            data_root / DATASET_DIR / "sentinel-1" / "PROCESSED" / "vv_lee.tif"
         )
 
     def test_modis_uses_date_from_l1_folder(self, data_root):
-        old = Path("data/datasets/42/20260712/silver/modis_20260712_flood.tif")
-        row = self._row(product_type="MODIS_FLOOD", file_name="modis_20260712_flood.tif")
+        old = Path("data/datasets/42/20260712/bronze/modis_20260712_flood.tif")
+        row = self._row(product_tier="BRONZE", product_type="MODIS_FLOOD",
+                        file_name="modis_20260712_flood.tif")
         target = mig._target_path(DATASET_ID, DATASET_NAME, row, old)
-        assert target == data_root / DATASET_DIR / "20260712" / "silver" / "modis" / "modis_20260712_flood.tif"
+        assert target == (
+            data_root / DATASET_DIR / "modis" / "RAW" / "modis_20260712_flood.tif"
+        )
 
     def test_modis_uses_date_from_l2_scene_folder(self, data_root):
-        old = Path("data/datasets/42_Banjir_Jakarta_2026/silver/20260712/modis_20260712_flood.tif")
-        row = self._row(product_type="MODIS_FLOOD", file_name="modis_20260712_flood.tif")
+        old = Path("data/datasets/42_Banjir_Jakarta_2026/bronze/20260712/modis_20260712_flood.tif")
+        row = self._row(product_tier="BRONZE", product_type="MODIS_FLOOD",
+                        file_name="modis_20260712_flood.tif")
         target = mig._target_path(DATASET_ID, DATASET_NAME, row, old)
-        assert target.parent.name == "modis"
-        assert target.parents[2].name == "20260712"
+        # Tanggal tidak lagi jadi segmen path -- dia tetap hidup di nama berkas.
+        assert target.parent.name == "RAW"
+        assert target.parent.parent.name == "modis"
+        assert "20260712" in target.name
 
     def test_date_falls_back_to_filename(self, data_root):
         """Kalau tidak ada folder tanggal di path asal, tanggal diambil dari nama file."""
         old = Path("somewhere/else/gpm_rain_24h_20260712.tif")
-        row = self._row(product_type="GPM_RAINFALL", file_name="gpm_rain_24h_20260712.tif")
+        row = self._row(product_tier="BRONZE", product_type="GPM_RAINFALL",
+                        file_name="gpm_rain_24h_20260712.tif")
         target = mig._target_path(DATASET_ID, DATASET_NAME, row, old)
-        assert target.parent.name == "gpm"
-        assert target.parents[2].name == "20260712"
+        assert target.parent.parent.name == "gpm-imerg"
+        assert "20260712" in target.name
 
     def test_fusion_h5_moves_to_fusion_tier_even_if_row_says_gold(self, data_root):
         """Instalasi yang belum menjalankan migrasi SQL 013 masih mencatat
@@ -376,7 +443,7 @@ class TestMigrationTargets:
             product_tier="GOLD", product_type="FUSION_H5", file_name="fusion_20260712.h5"
         )
         target = mig._target_path(DATASET_ID, DATASET_NAME, row, old)
-        assert target == data_root / DATASET_DIR / "20260712" / "fusion" / "fusion_20260712.h5"
+        assert target == data_root / DATASET_DIR / "fusion" / "fusion_20260712.h5"
 
     def test_explicit_source_column_wins(self, data_root):
         """Kalau kolom source sudah terisi, itu yang dipakai -- bukan tebakan
@@ -385,7 +452,7 @@ class TestMigrationTargets:
         row = self._row(product_tier="GOLD", source="GPM", product_type="SOMETHING_NEW",
                         file_name="thing.tif")
         target = mig._target_path(DATASET_ID, DATASET_NAME, row, old)
-        assert target.parent.parent.name == "gpm"
+        assert target.parent.parent.name == "gpm-imerg"
 
     def test_unknown_date_reports_failure(self, data_root):
         old = Path("nowhere/flood.tif")

@@ -19,7 +19,12 @@ DO $$ BEGIN
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 DO $$ BEGIN
-    CREATE TYPE product_tier_enum      AS ENUM ('RAW', 'BRONZE', 'SILVER', 'GOLD', 'FUSION');
+    -- Kosakata D14 (dinamai per kontrak) + nama lama yang dipertahankan supaya
+    -- dump pra-migrasi tetap valid saat dipulihkan. Lihat migrasi 020.
+    CREATE TYPE product_tier_enum      AS ENUM (
+        'RAW', 'ALIGNED', 'DESPECKLED', 'INDICES', 'ACCUMULATED', 'COG', 'FUSED',
+        'BRONZE', 'SILVER', 'GOLD', 'FUSION'
+    );
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 DO $$ BEGIN
@@ -227,7 +232,7 @@ CREATE TABLE IF NOT EXISTS data_products (
     product_uuid       UUID                NOT NULL DEFAULT uuid_generate_v4() UNIQUE,
     scene_id           INTEGER             NOT NULL REFERENCES satellite_scenes(scene_id) ON DELETE CASCADE,
     job_id             BIGINT              NOT NULL REFERENCES processing_jobs(job_id) ON DELETE RESTRICT,
-    product_tier       product_tier_enum   NOT NULL,              -- RAW/BRONZE/SILVER/GOLD/FUSION
+    product_tier       product_tier_enum   NOT NULL,              -- RAW/ALIGNED/rank2/COG/FUSED (D14)
     source             VARCHAR(20)         NOT NULL DEFAULT 'SENTINEL1',  -- SENTINEL1 | MODIS | GPM | FUSION
     product_type       VARCHAR(50)         NOT NULL,              -- 'CROPPED_TIFF', 'LEE_FILTERED', 'COG', etc.
     band_name          VARCHAR(10)         NOT NULL,              -- 'VV', 'VH', 'NDVI', 'RAIN_24H'
@@ -626,7 +631,9 @@ FROM satellite_scenes    ss
 JOIN regions_of_interest roi ON ss.region_id   = roi.region_id
 LEFT JOIN data_products  dp  ON dp.scene_id    = ss.scene_id
                              AND dp.is_latest  = TRUE
-                             AND dp.product_tier = 'GOLD'
+                             -- Rank 3 di kedua kosakata: baris pra-D14 tetap
+                             -- terjaring (migrasi 020 tidak mengubah baris).
+                             AND dp.product_tier IN ('COG', 'GOLD')
 LEFT JOIN quality_metrics qm ON qm.scene_id   = ss.scene_id
                              AND qm.product_id = dp.product_id
 WHERE ss.is_available = TRUE
@@ -709,11 +716,25 @@ BEGIN
         ADD COLUMN IF NOT EXISTS preview_options TEXT[]
             DEFAULT ARRAY['GRAYSCALE', 'COLORED', 'COMPOSITE']::TEXT[];
 
+    -- Migrasi 019: kontrol strategi fusi. Toleransi hanya dipakai
+    -- FULL_COVERAGE (dua strategi lain berjangkar S1 dan mengabaikannya).
+    ALTER TABLE datasets
+        ADD COLUMN IF NOT EXISTS fusion_output_only      BOOLEAN  NOT NULL DEFAULT FALSE,
+        ADD COLUMN IF NOT EXISTS s1_match_tolerance_days SMALLINT NOT NULL DEFAULT 2;
+    ALTER TABLE datasets
+        DROP CONSTRAINT IF EXISTS chk_datasets_s1_tolerance;
+    ALTER TABLE datasets
+        ADD CONSTRAINT chk_datasets_s1_tolerance
+        CHECK (s1_match_tolerance_days BETWEEN 0 AND 14);
+
     ALTER TABLE fusion_products
         ADD COLUMN IF NOT EXISTS fusion_strategy       VARCHAR(20) DEFAULT 'FULL_COVERAGE',
         ADD COLUMN IF NOT EXISTS processing_level      VARCHAR(20) DEFAULT 'PROCESSED',
         ADD COLUMN IF NOT EXISTS temporal_offset_modis INTEGER,
-        ADD COLUMN IF NOT EXISTS temporal_offset_gpm   INTEGER;
+        ADD COLUMN IF NOT EXISTS temporal_offset_gpm   INTEGER,
+        -- Migrasi 019: jarak hari S1 yang benar-benar terpakai. NULL = hari
+        -- itu tanpa S1 sama sekali (group sentinel1/ berisi NaN).
+        ADD COLUMN IF NOT EXISTS s1_offset_days        SMALLINT;
 
     -- Migrasi 018: satu stack fusion per (tanggal, region, LEVEL). Sumber yang
     -- diminta RAW + PROCESSED menghasilkan dua stack sehari; kunci tanpa level
@@ -725,12 +746,27 @@ BEGIN
         DROP CONSTRAINT IF EXISTS uq_fusion_date_region;
     ALTER TABLE fusion_products
         DROP CONSTRAINT IF EXISTS uq_fusion_date_region_level;
-    ALTER TABLE fusion_products
-        ADD CONSTRAINT uq_fusion_date_region_level
-        UNIQUE (feature_date, region_id, processing_level);
 
     CREATE INDEX IF NOT EXISTS idx_fusion_region_date_level
         ON fusion_products (region_id, feature_date, processing_level);
+
+    -- Migrasi 021: stack fusion milik DATASET, bukan (region, tanggal). Kunci
+    -- tanpa dataset_id membuat dua dataset atas AOI yang sama saling menimpa
+    -- baris fusion_products-nya.
+    ALTER TABLE fusion_products
+        ADD COLUMN IF NOT EXISTS dataset_id INTEGER;
+    ALTER TABLE fusion_products
+        DROP CONSTRAINT IF EXISTS fk_fusion_products_dataset;
+    ALTER TABLE fusion_products
+        ADD CONSTRAINT fk_fusion_products_dataset
+        FOREIGN KEY (dataset_id) REFERENCES datasets(dataset_id) ON DELETE CASCADE;
+    ALTER TABLE fusion_products
+        DROP CONSTRAINT IF EXISTS uq_fusion_dataset_date_level;
+    ALTER TABLE fusion_products
+        ADD CONSTRAINT uq_fusion_dataset_date_level
+        UNIQUE (dataset_id, feature_date, processing_level);
+    CREATE INDEX IF NOT EXISTS idx_fusion_dataset_date
+        ON fusion_products (dataset_id, feature_date);
 
     -- Migrasi 018: muat 'FUSION_PROCESSED' (16 karakter). Level ikut ke
     -- band_name supaya dedup is_latest -- (scene_id, band_name, product_tier,

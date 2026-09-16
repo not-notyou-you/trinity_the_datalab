@@ -70,7 +70,15 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-TIERS: tuple[str, ...] = ("raw", "bronze", "silver", "gold", "preview", "fusion")
+# Kosakata tier D14 dalam huruf kecil (bentuk yang dipakai kunci
+# storage_breakdown dan parameter ?tier= di API). Nama lama ikut supaya
+# dataset pra-migrasi tetap bisa dibaca; lihat etl/tier_names.py.
+TIERS: tuple[str, ...] = (
+    "raw", "aligned", "despeckled", "indices", "accumulated", "cog",
+    "preview", "fused",
+)
+LEGACY_TIERS: tuple[str, ...] = ("bronze", "silver", "gold", "fusion")
+ALL_TIERS: tuple[str, ...] = TIERS + LEGACY_TIERS
 
 SOURCES: tuple[str, ...] = ("sentinel1", "modis", "gpm")
 
@@ -81,10 +89,18 @@ SOURCES: tuple[str, ...] = ("sentinel1", "modis", "gpm")
 # tanpa indeks turunan, GPM curah hujan harian tanpa window akumulasi.
 TIER_SOURCES: dict[str, tuple[str, ...]] = {
     "raw": SOURCES,
+    "aligned": SOURCES,
+    # Rank 2 bercabang per-source: satu nama, satu satelit (D14).
+    "despeckled": ("sentinel1",),
+    "indices": ("modis",),
+    "accumulated": ("gpm",),
+    "cog": SOURCES,
+    "preview": (),
+    "fused": (),
+    # -- warisan pra-D14: dibaca, tidak pernah ditulis --
     "bronze": SOURCES,
     "silver": SOURCES,
     "gold": SOURCES,
-    "preview": (),
     "fusion": (),
 }
 
@@ -123,6 +139,128 @@ SOURCE_DB_VALUES: dict[str, str] = {
     "gpm": "GPM",
 }
 FUSION_DB_SOURCE = "FUSION"
+
+# ---------------------------------------------------------------------------
+# Layout per-satelit (relayout Fase B)
+# ---------------------------------------------------------------------------
+# Layout lama menaruh tier di jalur: {YYYYMMDD}/{tier}/{source}/{scene}/.
+# Bentuk itu menyulitkan hal yang paling sering diminta user -- "ambil
+# Sentinel-1 PROCESSED saja" -- karena berkasnya tersebar di satu folder per
+# tanggal per tier. Layout baru menaruh sumber di depan dan hanya punya dua
+# laci per sumber, persis kosakata yang dipilih user saat membuat dataset:
+#
+#     {id}_{slug}/sentinel-1/{RAW|PROCESSED}/
+#     {id}_{slug}/modis/{RAW|PROCESSED}/
+#     {id}_{slug}/gpm-imerg/{RAW|PROCESSED}/
+#     {id}_{slug}/fusion/{strategy}/
+#     {id}_{slug}/preview/{LEVEL}/{kind}/
+#
+# Tanggal pindah ke NAMA BERKAS. Konsekuensinya list_date_dirs tidak bisa lagi
+# menemukan tanggal dengan mencocokkan nama folder; tanggal dibaca dari nama
+# berkas (_DATE_IN_KEY_RE) atau dari database.
+#
+# Tier tidak hilang -- dia tetap jadi nilai data_products.product_tier dan
+# tetap dipakai lineage (DOCS/DECISIONS.md D14). Yang hilang adalah perannya
+# sebagai segmen path. Pemetaannya:
+#
+#     ALIGNED (terkalibrasi + ter-crop, tanpa Lee) -> {source}/RAW/
+#     COG     (analysis-ready)                     -> {source}/PROCESSED/
+#     RAW (ZIP SAFE) dan tier rank 2 (pre-COG)     -> _work/, dibuang
+#
+# Dua yang terakhir sengaja tidak punya laci: keduanya artefak antara, dan
+# menyimpannya akan menghidupkan lagi konsep tier di jalur yang justru ingin
+# dihilangkan. Harganya nyata dan harus disadari: mengulang Lee filter dengan
+# parameter berbeda berarti mengunduh ulang scene-nya.
+LEVELS: tuple[str, ...] = ("RAW", "PROCESSED")
+
+# Nama folder per sumber. Berbeda dari kunci internal (`sentinel1`, `gpm`)
+# karena folder ini yang dilihat user saat membuka hasil unduhan -- nama yang
+# dipakai literatur lebih berguna di sana daripada kunci yang dipakai kode.
+SOURCE_DIR_NAMES: dict[str, str] = {
+    "sentinel1": "sentinel-1",
+    "modis": "modis",
+    "gpm": "gpm-imerg",
+}
+DIR_NAME_TO_SOURCE: dict[str, str] = {v: k for k, v in SOURCE_DIR_NAMES.items()}
+
+# Tier yang isinya mendarat di tiap laci. Dipakai modul ETL untuk menerjemahkan
+# tier yang masih mereka pakai secara internal menjadi folder tujuan.
+LEVEL_BY_TIER: dict[str, str] = {
+    "ALIGNED": "RAW",
+    "COG": "PROCESSED",
+    # Warisan pra-D14, supaya dataset lama tetap teralamatkan.
+    "BRONZE": "RAW",
+    "GOLD": "PROCESSED",
+}
+
+FUSION_DIRNAME = "fusion"
+PREVIEW_DIRNAME = "preview"
+
+# Nama tier yang menunjuk artefak fusi, di kedua kosakata. Foldernya tetap
+# bernama "fusion" -- yang berubah cuma nama TIER-nya (FUSION -> FUSED, D14).
+_FUSION_TIER_NAMES: frozenset[str] = frozenset({"fusion", "fused"})
+
+
+def normalize_level(level: str) -> str:
+    """Level pemrosesan kanonik (huruf besar). Menolak yang tidak dikenal:
+    level yang salah ketik akan membuat berkas mendarat di laci yang tidak
+    pernah dilihat siapa pun."""
+    lv = str(level).strip().upper()
+    if lv not in LEVELS:
+        raise ValueError(f"Level tidak valid: {level!r}. Valid: {LEVELS}")
+    return lv
+
+
+def source_dir_name(source: str) -> str:
+    """Nama folder untuk sebuah source."""
+    return SOURCE_DIR_NAMES[normalize_source(source)]
+
+
+def get_source_level_dir(
+    dataset_id: int, dataset_name: str, source: str, level: str
+) -> Path:
+    """Laci satu sumber pada satu level: {source}/{RAW|PROCESSED}/."""
+    return (
+        get_dataset_root(dataset_id, dataset_name)
+        / source_dir_name(source)
+        / normalize_level(level)
+    )
+
+
+def ensure_source_level_dir(
+    dataset_id: int, dataset_name: str, source: str, level: str
+) -> Path:
+    p = get_source_level_dir(dataset_id, dataset_name, source, level)
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def level_for_tier(tier: str) -> str | None:
+    """Laci tujuan untuk artefak di `tier`, atau None kalau tier itu artefak
+    antara yang tidak disimpan (RAW/SILVER)."""
+    return LEVEL_BY_TIER.get(str(tier).strip().upper())
+
+
+def dated_filename(date_key_str: str, stem: str) -> str:
+    """Nama berkas berprefiks tanggal, mis. "20240920_modis_ndvi.tif".
+
+    Tanggal WAJIB ada di nama berkas sejak tier tidak lagi jadi folder: tanpa
+    folder tanggal, nama berkas adalah satu-satunya tempat tanggal bisa dibaca
+    kembali -- oleh list_dates, oleh storage_breakdown, dan oleh user yang
+    membuka foldernya. Berkas yang namanya sudah memuat tanggal (mis.
+    product_identifier Sentinel-1) dibiarkan apa adanya supaya tidak berprefiks
+    ganda.
+    """
+    if _DATE_IN_KEY_RE.search(stem):
+        return stem
+    return f"{date_key_str}_{stem}"
+
+
+def date_from_filename(name: str) -> str | None:
+    """Tanggal YYYYMMDD yang tertanam di nama berkas, atau None."""
+    m = _DATE_IN_KEY_RE.search(str(name))
+    return m.group(1) if m else None
+
 
 _DATE_DIR_RE = re.compile(r"^\d{8}$")
 # Tanggal pertama di product_identifier S1, mis. "..._1SDV_20240115T111407_...".
@@ -185,8 +323,8 @@ def scene_date_key(scene_key: str) -> str:
 
 def normalize_tier(tier: str) -> str:
     t = str(tier).lower()
-    if t not in TIERS:
-        raise ValueError(f"Tier tidak valid: {tier!r}. Valid: {TIERS}")
+    if t not in ALL_TIERS:
+        raise ValueError(f"Tier tidak valid: {tier!r}. Valid: {ALL_TIERS}")
     return t
 
 
@@ -245,9 +383,12 @@ def get_date_dir(dataset_id: int, dataset_name: str, date: date | datetime | str
 
 
 def list_date_dirs(dataset_root: Path) -> list[Path]:
-    """Folder tanggal di bawah satu root dataset, urut kronologis. Menerima
-    path langsung supaya bisa dipakai pemanggil yang menyapu data/datasets/
-    tanpa tahu id/nama dataset (api/routes/storage.py)."""
+    """Folder tanggal warisan layout lama, urut kronologis.
+
+    Setelah relayout tidak ada lagi folder tanggal, jadi untuk dataset baru
+    fungsi ini selalu mengembalikan []. Dipertahankan justru sebagai DETEKTOR
+    layout lama -- pemanggil yang menemukan isinya tidak kosong sedang melihat
+    dataset pra-relayout (lihat is_legacy_layout)."""
     if not dataset_root.is_dir():
         return []
     return sorted(
@@ -255,9 +396,38 @@ def list_date_dirs(dataset_root: Path) -> list[Path]:
     )
 
 
+def is_legacy_layout(dataset_root: Path) -> bool:
+    """True kalau dataset ini memakai struktur folder sebelum relayout.
+
+    Dipakai API/UI untuk menolak merender pohon penyimpanan dataset lama alih
+    -alih menampilkannya dengan kosakata yang sudah tidak berlaku."""
+    return bool(list_date_dirs(dataset_root))
+
+
 def list_dates(dataset_id: int, dataset_name: str) -> list[str]:
-    """Tanggal (YYYYMMDD) yang punya folder di disk untuk dataset ini."""
-    return [d.name for d in list_date_dirs(get_dataset_root(dataset_id, dataset_name))]
+    """Tanggal (YYYYMMDD) yang benar-benar punya berkas di dataset ini.
+
+    Dibaca dari NAMA BERKAS, bukan nama folder: sejak relayout tanggal tidak
+    lagi jadi segmen path. Berkas tanpa tanggal yang bisa dibaca dilewati --
+    satu-satunya yang begitu adalah cache granule, yang memang tidak dimiliki
+    tanggal mana pun."""
+    root = get_dataset_root(dataset_id, dataset_name)
+    if not root.is_dir():
+        return []
+    if is_legacy_layout(root):
+        return [d.name for d in list_date_dirs(root)]
+
+    dates: set[str] = set()
+    for source in SOURCES:
+        src_root = root / SOURCE_DIR_NAMES[source]
+        if not src_root.is_dir():
+            continue
+        for f in src_root.rglob("*"):
+            if f.is_file():
+                d = date_from_filename(f.name)
+                if d:
+                    dates.add(d)
+    return sorted(dates)
 
 
 def get_tier_dir(
@@ -281,18 +451,35 @@ def get_scene_dir(
     """
     Path folder satu scene. Tanggal diturunkan dari kunci scene-nya.
 
-    get_scene_dir(2, "Hakim D1", "silver", "sentinel1", "S1A_IW_GRDH_1SDV_20240115T...")
-        -> data/datasets/2_Hakim_D1/20240115/silver/sentinel1/S1A_IW_GRDH_1SDV_20240115T...
-    get_scene_dir(2, "Hakim D1", "gold", "modis", "20240115")
-        -> data/datasets/2_Hakim_D1/20240115/gold/modis
+    Tier diterjemahkan jadi laci (LEVEL_BY_TIER): BRONZE -> RAW/,
+    GOLD -> PROCESSED/. Tier antara (RAW, SILVER) tidak punya laci dan
+    diarahkan ke _work/, yang dibuang setelah scene selesai.
+
+    get_scene_dir(2, "Hakim D1", "gold", "sentinel1", "S1A_..._20240115T...")
+        -> data/datasets/2_Hakim_D1/sentinel-1/PROCESSED
+    get_scene_dir(2, "Hakim D1", "bronze", "modis", "20240115")
+        -> data/datasets/2_Hakim_D1/modis/RAW
+    get_scene_dir(2, "Hakim D1", "silver", "sentinel1", "S1A_...")
+        -> data/datasets/2_Hakim_D1/_work/S1A_.../silver/sentinel1
     """
-    source_dir = get_source_dir(
-        dataset_id, dataset_name, scene_date_key(scene_key), tier, source
+    tier_u = normalize_tier(tier).upper()
+    level = level_for_tier(tier_u)
+    if level is not None:
+        # Laci final: {source}/{RAW|PROCESSED}/. Tidak ada folder scene di
+        # dalamnya -- nama berkas sudah memuat tanggal (dan untuk Sentinel-1
+        # seluruh product_identifier), jadi folder tambahan hanya akan
+        # memecah satu deret waktu jadi puluhan folder berisi dua berkas.
+        return get_source_level_dir(dataset_id, dataset_name, source, level)
+
+    # Tier antara (RAW = ZIP SAFE, SILVER = Lee pre-COG): tidak punya laci,
+    # hidup di _work/ dan dibuang setelah scene selesai. Source ikut ke path
+    # supaya MODIS dan GPM -- yang kunci scene-nya sama-sama tanggal itu --
+    # tidak berbagi satu folder scratch.
+    return (
+        get_scratch_dir(dataset_id, dataset_name, scene_key)
+        / tier_u.lower()
+        / normalize_source(source)
     )
-    slug = scene_slug(scene_key)
-    # Kunci scene yang memang tanggal itu sendiri (MODIS/GPM harian) tidak
-    # diberi folder kedua — {tanggal}/gold/modis/{tanggal}/ cuma redundan.
-    return source_dir if _DATE_DIR_RE.match(slug) else source_dir / slug
 
 
 def ensure_scene_dir(
@@ -305,25 +492,41 @@ def ensure_scene_dir(
 
 
 def get_fusion_dir(dataset_id: int, dataset_name: str, scene_key: str) -> Path:
-    """Folder output fusion untuk satu tanggal: {YYYYMMDD}/fusion/.
-    Tier fusion tidak punya level source — isinya justru gabungan
-    sentinel1 + modis + gpm."""
-    return get_tier_dir(dataset_id, dataset_name, scene_date_key(scene_key), "fusion")
+    """Folder output fusion: fusion/ di root dataset.
+
+    Lepas dari folder tanggal sejak relayout: tanggal ada di nama berkas, dan
+    satu folder berisi seluruh deret waktu jauh lebih berguna untuk konsumen
+    yang memang ingin menumpuknya jadi satu array. `scene_key` dipertahankan
+    di tanda tangan karena pemanggilnya masih meneruskannya, tapi tidak lagi
+    memengaruhi path."""
+    return get_dataset_root(dataset_id, dataset_name) / FUSION_DIRNAME
 
 
-def ensure_fusion_dir(dataset_id: int, dataset_name: str, scene_key: str) -> Path:
+def ensure_fusion_dir(
+    dataset_id: int, dataset_name: str, scene_key: str, strategy_subfolder: str | None = None
+) -> Path:
+    """Folder output fusion, opsional dipecah per strategi.
+
+    `strategy_subfolder` (nilai `fusion_strategies.SUBFOLDER`, mis.
+    "co-occurrence") memisahkan output tiap strategi supaya satu dataset yang
+    dijalankan ulang dengan strategi berbeda tidak menimpa hasil sebelumnya --
+    membandingkan strategi justru inti dari fitur ini (D1). None berarti
+    langsung di fusion/, bentuk yang dipakai dataset sebelum strategi
+    benar-benar bercabang.
+    """
     p = get_fusion_dir(dataset_id, dataset_name, scene_key)
+    if strategy_subfolder:
+        p = p / strategy_subfolder
     p.mkdir(parents=True, exist_ok=True)
     return p
 
 
 def get_preview_dir(dataset_id: int, dataset_name: str, scene_key: str) -> Path:
-    """Folder preview untuk satu tanggal: {YYYYMMDD}/preview/.
+    """Folder preview: preview/ di root dataset.
 
-    Sama seperti fusion, tier ini lintas-source: satu folder tanggal memuat
-    render dari sentinel1 + modis + gpm sekaligus, jadi tidak punya level
-    {source}. Di dalamnya ada subfolder per level lalu per `PREVIEW_KINDS`."""
-    return get_tier_dir(dataset_id, dataset_name, scene_date_key(scene_key), "preview")
+    Sama seperti fusion, lintas-source dan lepas dari folder tanggal. Di
+    dalamnya ada subfolder per level lalu per `PREVIEW_KINDS`."""
+    return get_dataset_root(dataset_id, dataset_name) / PREVIEW_DIRNAME
 
 
 def ensure_preview_dir(dataset_id: int, dataset_name: str, scene_key: str) -> Path:
@@ -422,21 +625,56 @@ def tier_dirs_under(dataset_root: Path, tier: str) -> list[Path]:
     {tanggal}/{tier}/ untuk tiap tanggal, ditambah _granule_cache/ untuk tier
     raw. Dipakai untuk menyapu satu tier lintas tanggal."""
     tier = normalize_tier(tier)
+
+    # Layout lama: {tanggal}/{tier}/ untuk tiap tanggal.
     dirs = [d / tier for d in list_date_dirs(dataset_root) if (d / tier).is_dir()]
+    if dirs:
+        if tier == "raw":
+            cache = get_granule_cache_root(dataset_root)
+            if cache.is_dir():
+                dirs.append(cache)
+        return dirs
+
+    # Layout baru: tier diterjemahkan jadi laci per source.
+    if tier in _FUSION_TIER_NAMES:
+        p = dataset_root / FUSION_DIRNAME
+        return [p] if p.is_dir() else []
+    if tier == "preview":
+        p = dataset_root / PREVIEW_DIRNAME
+        return [p] if p.is_dir() else []
+
+    level = level_for_tier(tier)
+    if level is not None:
+        return [
+            d for d in (
+                dataset_root / SOURCE_DIR_NAMES[src] / level for src in SOURCES
+            ) if d.is_dir()
+        ]
+
+    # Tier antara: cuma cache granule yang bertahan di disk.
     if tier == "raw":
         cache = get_granule_cache_root(dataset_root)
         if cache.is_dir():
-            dirs.append(cache)
-    return dirs
+            return [cache]
+    return []
 
 
 def _source_dirs(dataset_id: int, dataset_name: str, tier: str, source: str) -> list[Path]:
     """Folder {tanggal}/{tier}/{source}/ yang ada di disk, lintas tanggal."""
     tier, source = validate_tier_source(tier, source)
     root = get_dataset_root(dataset_id, dataset_name)
-    return [
+
+    legacy = [
         d / tier / source for d in list_date_dirs(root) if (d / tier / source).is_dir()
     ]
+    if legacy:
+        return legacy
+
+    level = level_for_tier(tier)
+    if level is None:
+        return []
+    p = root / SOURCE_DIR_NAMES[source] / level
+    return [p] if p.is_dir() else []
 
 
 def list_sources(dataset_id: int, dataset_name: str, tier: str) -> list[str]:
@@ -446,9 +684,15 @@ def list_sources(dataset_id: int, dataset_name: str, tier: str) -> list[str]:
     allowed = TIER_SOURCES[tier]
     if not allowed:
         return []
+    root = get_dataset_root(dataset_id, dataset_name)
     found = set()
-    for d in tier_dirs_under(get_dataset_root(dataset_id, dataset_name), tier):
+    for d in tier_dirs_under(root, tier):
+        # Layout lama: d adalah {tanggal}/{tier}/, source ada di dalamnya.
         found.update(s for s in allowed if (d / s).is_dir())
+        # Layout baru: d SUDAH {source}/{LEVEL}/, jadi source-nya nama kakeknya.
+        src = DIR_NAME_TO_SOURCE.get(d.parent.name)
+        if src in allowed and any(f.is_file() for f in d.iterdir()):
+            found.add(src)
     return [s for s in allowed if s in found]
 
 
@@ -461,13 +705,25 @@ def list_scenes(dataset_id: int, dataset_name: str, tier: str, source: str) -> l
     Folder berawalan "_" dilewati (bukan scene)."""
     scenes: set[str] = set()
     for src_dir in _source_dirs(dataset_id, dataset_name, tier, source):
+        legacy_date = src_dir.parent.parent.name
         for entry in src_dir.iterdir():
             if entry.name.startswith(("_", ".")):
                 continue
             if entry.is_dir():
                 scenes.add(entry.name)
             elif entry.is_file():
-                scenes.add(src_dir.parent.parent.name)
+                if _DATE_DIR_RE.match(legacy_date):
+                    scenes.add(legacy_date)          # layout lama
+                else:
+                    # Layout baru: tidak ada folder scene, jadi kunci scene
+                    # adalah tanggal yang tertanam di nama berkas. Dua scene
+                    # Sentinel-1 pada hari yang sama karena itu berbagi satu
+                    # kunci -- konsekuensi yang disengaja dari menghilangkan
+                    # folder scene, dan sejalan dengan file browser yang
+                    # memang mengelompokkan per tanggal.
+                    d = date_from_filename(entry.name)
+                    if d:
+                        scenes.add(d)
     return sorted(scenes)
 
 
@@ -495,7 +751,20 @@ def list_sourceless_scenes(dataset_id: int, dataset_name: str, tier: str) -> lis
             f"Tier {tier!r} punya level source — pakai list_scenes(tier, source)."
         )
     root = get_dataset_root(dataset_id, dataset_name)
-    return [d.name for d in list_date_dirs(root) if (d / tier).is_dir()]
+
+    legacy = [d.name for d in list_date_dirs(root) if (d / tier).is_dir()]
+    if legacy:
+        return legacy
+
+    # Layout baru: satu folder lintas-tanggal, jadi "scene" dibaca dari
+    # tanggal yang tertanam di nama berkas.
+    base = root / (FUSION_DIRNAME if tier in _FUSION_TIER_NAMES else PREVIEW_DIRNAME)
+    if not base.is_dir():
+        return []
+    return sorted({
+        d for d in (date_from_filename(f.name) for f in base.rglob("*") if f.is_file())
+        if d
+    })
 
 
 def list_fusion_scenes(dataset_id: int, dataset_name: str) -> list[str]:
@@ -521,9 +790,26 @@ def get_scene_files(
     jadi yang dihitung cuma file langsung di sana — folder scene S1 yang
     kebetulan satu tanggal tidak ikut terbawa."""
     p = get_scene_dir(dataset_id, dataset_name, tier, source, scene_key)
+    if not p.exists():
+        return []
+
+    if level_for_tier(tier) is not None:
+        # Laci final memuat semua tanggal sekaligus, jadi scene disaring lewat
+        # nama berkas. Untuk kunci tanggal (MODIS/GPM) itu tanggalnya; untuk
+        # Sentinel-1 product_identifier-nya ikut jadi prefiks nama berkas,
+        # sehingga dua scene di hari yang sama tetap bisa dipisahkan.
+        slug = scene_slug(scene_key)
+        want_date = scene_date_key(scene_key)
+        return sorted(
+            f for f in p.iterdir()
+            if f.is_file() and (
+                slug in f.name
+                or f.name.startswith(slug.removesuffix(".SAFE"))
+                or (_DATE_DIR_RE.match(slug) and date_from_filename(f.name) == want_date)
+            )
+        )
+
     if _DATE_DIR_RE.match(scene_slug(scene_key)):
-        if not p.exists():
-            return []
         return sorted(f for f in p.iterdir() if f.is_file())
     return _files_under(p)
 
@@ -546,8 +832,17 @@ def get_sourceless_scene_files(
     tier = normalize_tier(tier)
     if TIER_SOURCES[tier]:
         raise ValueError(f"Tier {tier!r} punya level source — pakai get_scene_files().")
-    return _files_under(
-        get_tier_dir(dataset_id, dataset_name, scene_date_key(scene_key), tier)
+    root = get_dataset_root(dataset_id, dataset_name)
+    legacy_dir = root / scene_date_key(scene_key) / tier
+    if legacy_dir.is_dir():
+        return _files_under(legacy_dir)
+
+    # Layout baru: satu folder untuk semua tanggal, jadi disaring per berkas.
+    base = root / (FUSION_DIRNAME if tier in _FUSION_TIER_NAMES else PREVIEW_DIRNAME)
+    want = scene_date_key(scene_key)
+    return sorted(
+        f for f in _files_under(base)
+        if date_from_filename(f.name) in (want, None)
     )
 
 

@@ -67,8 +67,8 @@ def seed(db: DatabaseClient) -> dict:
         regions_of_interest (1 row if not exists)
         satellite_scenes    (1 row)
         processing_jobs     (5 rows — one per stage)
-        data_products       (7 rows — 2×RAW + 2×BRONZE + 2×SILVER + 1×GOLD fusion)
-        quality_metrics     (2 rows — VV + VH, against SILVER products)
+        data_products       (7 rows — 2×RAW + 2×ALIGNED + 2×DESPECKLED + 1×FUSED)
+        quality_metrics     (2 rows — VV + VH, against DESPECKLED products)
         data_lineage        (6 rows — CROP×2, LEE_FILTER×2, FUSION×2 (VV+VH -> 1 fusion product))
         alert_events        (1 info row)
 
@@ -175,7 +175,7 @@ def seed(db: DatabaseClient) -> dict:
 
     bronze_vv_id = meta.insert_data_product(
         scene_id=scene_id, job_id=crop_job_id,
-        product_tier=ProductTierEnum.BRONZE, source="SENTINEL1", product_type="CROPPED_TIFF",
+        product_tier=ProductTierEnum.ALIGNED, source="SENTINEL1", product_type="CROPPED_TIFF",
         band_name="VV",
         file_path="/processed/bronze/1/S1A_20240115_VV_crop.tif",
         file_name="S1A_20240115_VV_crop.tif",
@@ -184,7 +184,7 @@ def seed(db: DatabaseClient) -> dict:
     )
     bronze_vh_id = meta.insert_data_product(
         scene_id=scene_id, job_id=crop_job_id,
-        product_tier=ProductTierEnum.BRONZE, source="SENTINEL1", product_type="CROPPED_TIFF",
+        product_tier=ProductTierEnum.ALIGNED, source="SENTINEL1", product_type="CROPPED_TIFF",
         band_name="VH",
         file_path="/processed/bronze/1/S1A_20240115_VH_crop.tif",
         file_name="S1A_20240115_VH_crop.tif",
@@ -199,7 +199,7 @@ def seed(db: DatabaseClient) -> dict:
                                   {"bbox": "JABODETABEK", "resampling": "bilinear"})
     lineage.record_transformation(raw_vh_id, bronze_vh_id, "CROP", crop_job_id,
                                   {"bbox": "JABODETABEK", "resampling": "bilinear"})
-    logger.info("[SEED] CROP complete. BRONZE: VV=%d VH=%d", bronze_vv_id, bronze_vh_id)
+    logger.info("[SEED] CROP complete. ALIGNED: VV=%d VH=%d", bronze_vv_id, bronze_vh_id)
 
     # ------------------------------------------------------------------
     # 5. LEE_FILTER job (Module 3) → SILVER
@@ -212,7 +212,7 @@ def seed(db: DatabaseClient) -> dict:
 
     silver_vv_id = meta.insert_data_product(
         scene_id=scene_id, job_id=lee_job_id,
-        product_tier=ProductTierEnum.SILVER, source="SENTINEL1", product_type="LEE_FILTERED",
+        product_tier=ProductTierEnum.DESPECKLED, source="SENTINEL1", product_type="LEE_FILTERED",
         band_name="VV",
         file_path="/processed/silver/1/S1A_20240115_VV_lee.tif",
         file_name="S1A_20240115_VV_lee.tif",
@@ -221,7 +221,7 @@ def seed(db: DatabaseClient) -> dict:
     )
     silver_vh_id = meta.insert_data_product(
         scene_id=scene_id, job_id=lee_job_id,
-        product_tier=ProductTierEnum.SILVER, source="SENTINEL1", product_type="LEE_FILTERED",
+        product_tier=ProductTierEnum.DESPECKLED, source="SENTINEL1", product_type="LEE_FILTERED",
         band_name="VH",
         file_path="/processed/silver/1/S1A_20240115_VH_lee.tif",
         file_name="S1A_20240115_VH_lee.tif",
@@ -235,7 +235,7 @@ def seed(db: DatabaseClient) -> dict:
                                   {"window_size": 7, "looks": 1, "sigma": 0.9})
     lineage.record_transformation(bronze_vh_id, silver_vh_id, "LEE_FILTER", lee_job_id,
                                   {"window_size": 7, "looks": 1, "sigma": 0.9})
-    logger.info("[SEED] LEE_FILTER complete. SILVER: VV=%d VH=%d", silver_vv_id, silver_vh_id)
+    logger.info("[SEED] LEE_FILTER complete. DESPECKLED: VV=%d VH=%d", silver_vv_id, silver_vh_id)
 
     # ------------------------------------------------------------------
     # 6. QUALITY_ANALYTICS (Module 6) — runs against SILVER now, since GOLD
@@ -283,7 +283,7 @@ def seed(db: DatabaseClient) -> dict:
 
     gold_fusion_id = meta.insert_data_product(
         scene_id=scene_id, job_id=fusion_job_id,
-        product_tier=ProductTierEnum.FUSION, source="FUSION", product_type="FUSION_H5",
+        product_tier=ProductTierEnum.FUSED, source="FUSION", product_type="FUSION_H5",
         band_name="FUSION",
         file_path="/processed/gold/1/fusion_20240115.h5",
         file_name="fusion_20240115.h5",
@@ -297,7 +297,7 @@ def seed(db: DatabaseClient) -> dict:
                                   {"aoi_bbox": JABODETABEK_WKT})
     lineage.record_transformation(silver_vh_id, gold_fusion_id, "FUSION", fusion_job_id,
                                   {"aoi_bbox": JABODETABEK_WKT})
-    logger.info("[SEED] FUSION complete. GOLD: fusion=%d", gold_fusion_id)
+    logger.info("[SEED] FUSION complete. FUSED: fusion=%d", gold_fusion_id)
 
     # Info alert: data arrived and processed
     alert_id = meta.insert_alert_event(
@@ -328,12 +328,12 @@ def verify_seed(db: DatabaseClient, ids: dict) -> None:
         logger.info("[VERIFY] satellite_scenes count: %d", scene_count)
         assert scene_count >= 1
 
-        # 2. Gold products (single fused H5 per scene, not per-band)
-        gold_count = sess.scalar(
-            text("SELECT COUNT(*) FROM data_products WHERE product_tier = 'GOLD' AND is_latest = TRUE")
+        # 2. Fused products (single fused H5 per scene, not per-band)
+        fused_count = sess.scalar(
+            text("SELECT COUNT(*) FROM data_products WHERE product_tier IN ('FUSED', 'FUSION') AND is_latest = TRUE")
         )
-        logger.info("[VERIFY] GOLD latest products: %d", gold_count)
-        assert gold_count >= 1, "Expected 1 GOLD fusion product"
+        logger.info("[VERIFY] FUSED latest products: %d", fused_count)
+        assert fused_count >= 1, "Expected 1 FUSED product"
 
         # 3. Lineage chain
         lin_count = sess.scalar(
@@ -345,7 +345,7 @@ def verify_seed(db: DatabaseClient, ids: dict) -> None:
         # data_products selalu dibuat baru, sehingga job FUSION yang sama dapat
         # tambahan baris lineage tiap run. Yang perlu dijamin adalah rantainya
         # terbentuk (VV + VH -> fusion), bukan jumlah persisnya — sama seperti
-        # pemeriksaan gold_count di atas.
+        # pemeriksaan fused_count di atas.
         assert lin_count >= 2, f"Expected >=2 lineage records for FUSION job, got {lin_count}"
 
         # 4. Quality metrics
@@ -375,7 +375,7 @@ if __name__ == "__main__":
         verify_seed(db, inserted_ids)
         print("\n✅ Seed data inserted and verified successfully.")
         print(f"   Scene ID    : {inserted_ids['scene_id']}")
-        print(f"   GOLD FUSION : product_id={inserted_ids['gold_fusion_id']}")
+        print(f"   FUSED       : product_id={inserted_ids['gold_fusion_id']}")
         print(f"   QA VV       : metric_id={inserted_ids['vv_metric_id']}")
     except Exception as e:
         logger.error("Seed failed: %s", e, exc_info=True)

@@ -106,12 +106,52 @@ data/datasets/{dataset_id}_{slug}/
             └── fusion_metadata.json
 ```
 
+### On-disk layout
+
+```
+data/datasets/{id}_{slug}/
+├── metadata.json
+├── sentinel-1/{RAW,PROCESSED}/      # e.g. S1A_..._20240305T111407_VV_crop.tif
+├── modis/{RAW,PROCESSED}/           # e.g. modis_20240305_ndvi.tif
+├── gpm-imerg/{RAW,PROCESSED}/       # e.g. gpm_rain_24h_20240305.tif
+├── fusion/{co-occurrence,full-coverage,hybrid}/
+├── preview/{RAW,PROCESSED}/{grayscale,colored,composite}/
+├── _granule_cache/{modis,gpm}/      # raw NASA granules, shared across dates
+└── _work/                           # scratch, swept at end of every job
+```
+
 **Key structural decisions**:
-1. **Dimension**: `{source}/{processing_level}/{tier}/` (not `{tier}/{source}/`)
-2. **Only show what's configured**: If dataset has no S1, no `sentinel1/` folder. If S1[RAW-only], no `processed/` subfolder.
-3. **RAW tier naming**: RAW-level artifacts live in BRONZE (the minimum usable tier). No separate "RAW" tier folder; use folder name `raw/` under source.
-4. **Fusion split**: If dataset has both S1[RAW] and S1[PROCESSED], fusion produces TWO HDF5 files: `fusion/raw/` and `fusion/processed/`, each with conditional groups based on source configs.
-5. **Preview location**: Per-source-per-processing, not global. Grayscale/Colored/Composite split into subfolders per kind.
+
+1. **Source first, two drawers each.** The path uses exactly the vocabulary the
+   user picked at creation time (`sentinel1: [RAW, PROCESSED]`), so "give me
+   Sentinel-1 PROCESSED only" is one folder rather than files scattered across
+   one folder per date.
+2. **Dates live in filenames, not folders.** Every writer already embedded the
+   date (S1 carries the full `product_identifier`), so `list_dates` reads it
+   back from the filename. Preview PNGs get an explicit date prefix —
+   without it the second date would overwrite the first.
+3. **Tier is no longer a path segment**, but it is *not* gone: it remains the
+   value of `data_products.product_tier`, the vocabulary of `data_lineage`,
+   and the key of `storage_breakdown` (DOCS/DECISIONS.md D14). The mapping is
+   `BRONZE -> {source}/RAW/` and `GOLD -> {source}/PROCESSED/`.
+4. **Intermediate artifacts are not retained.** The SAFE zip (tier RAW) and the
+   Lee-filtered raster before COG export (tier SILVER) have no drawer: they
+   live in `_work/` and are swept when the job ends. The cost is explicit —
+   re-running the Lee filter with different parameters means re-downloading the
+   scene. In exchange, `{source}/RAW/` vs `{source}/PROCESSED/` means exactly
+   what D2 says it means, with nothing else competing for the same folder.
+   QA metrics survive in the `quality_metrics` table; only the
+   `metadata_qa.json` sidecar is transient.
+5. **Only what is configured exists.** No `modis/` folder if MODIS was never
+   requested; no `PROCESSED/` drawer for a RAW-only source.
+6. **Fusion and preview are cross-source and cross-date.** Both sit at the
+   dataset root: one folder holding the whole time series is the shape a
+   consumer actually wants to stack. Fusion splits by strategy; preview splits
+   by processing level then by render kind.
+7. **Datasets created before the relayout are not migrated.** They keep the old
+   `{YYYYMMDD}/{tier}/{source}/` tree, `folder_manager.is_legacy_layout()`
+   detects them, and the UI shows a "format lama" notice instead of rendering a
+   tree with vocabulary that no longer applies. Their files stay downloadable.
 
 ## Sentinel-1 Pipeline
 
@@ -213,23 +253,56 @@ Fusion reads from the **highest available tier** for each source:
 - Source configured as RAW → fusion reads from BRONZE
 - Source configured as both → **two separate fusion runs** per date (one RAW, one PROCESSED), producing two HDF5 files tagged by processing_level
 
-### Strategy: CO_OCCURRENCE
-- Only fuse dates where ALL configured sources have data on the SAME day
-- Skip dates with missing sources (no NaN fill)
-- Produces fewer fusion files but with perfect temporal alignment
+### Strategies: two axes, not one
 
-### Strategy: FULL_COVERAGE
-- Fuse every date that has data from ANY configured source
-- Missing sources: search ±1–2 day window; if still missing, fill layer with NaN
-- Produces one fusion file per day in date range
+A strategy answers **two separate questions**, and they are what actually
+distinguish the three. Implemented in `etl/fusion_strategies.py`
+(`plan_fusion()` returns a `FusionPlan` carrying both axes).
 
-### Strategy: HYBRID
-- Daily auxiliary data (MODIS, GPM) ingested every day → fill with ±1-2 day if missing
-- Sentinel-1 anchors the fusion dates (fusion only on S1 acquisition days)
-- Combines temporal density of FULL_COVERAGE with S1 co-occurrence precision
+| Strategy | Axis 1 — DOWNLOAD (which aux dates are fetched) | Axis 2 — ASSEMBLE (which dates become an HDF5) |
+|---|---|---|
+| `CO_OCCURRENCE` | S1 acquisition dates only | one file per S1 date, same-day aux |
+| `FULL_COVERAGE` | every day in range | one file per day; S1 borrowed from nearest date within tolerance, NaN if none |
+| `HYBRID` | every day in range | one file per S1 date; aux uses the daily density around the anchor |
+
+`HYBRID` is a genuine third strategy precisely because it picks a different
+axis from each of the others — it **downloads like FULL_COVERAGE and assembles
+like CO_OCCURRENCE**. It does *not* mean "generate both of the other two".
+
+**S1 match tolerance** (`FULL_COVERAGE` only): default ±2 days
+(`DEFAULT_S1_MATCH_TOLERANCE_DAYS`). Sentinel-1A alone revisits every ~12 days
+at the equator, so requiring same-day S1 would leave most days without it. On
+a tie the earlier scene wins, deterministically — an arbitrary pick would make
+the same dataset produce different output between runs. The actual gap is
+always recorded so consumers can filter more strictly afterwards.
+
+**Days with no S1 at all** (`FULL_COVERAGE` only): the file is still written.
+The `sentinel1/` group is present but filled with NaN — the same treatment
+missing MODIS/GPM already get. The group is *not* omitted, because
+`fusion_layers_for` uses group absence to mean "this sensor was never
+requested", which is a different situation from "requested but missing that
+day". The reference grid falls back to the AOI bbox at the same resolution
+`module8_gpm_download` already uses for its "Sentinel-1 grid", so S1-less days
+land on exactly the same grid as S1 days and the series can still be stacked.
+
+### Output layout
+
+Each strategy writes to its own subfolder, and the strategy also appears in
+the filename:
+
+```
+{date}/fusion/co-occurrence/fusion_{date}_cooccurrence_{level}.h5
+{date}/fusion/full-coverage/fusion_{date}_fullcoverage_{level}.h5
+{date}/fusion/hybrid/fusion_{date}_hybrid_{level}.h5
+```
+
+Without this separation, re-running a dataset under a different strategy would
+overwrite the previous result — and comparing strategies is the whole point
+(D1). The suffix is repeated in the filename because a file downloaded and
+moved elsewhere loses its folder context.
 
 ### Fusion Process (all strategies)
-1. Identify eligible dates per strategy
+1. Identify eligible dates per strategy (`plan_fusion()` — both axes above)
 2. For each date: locate GOLD (or BRONZE for RAW-level) products for each source
 3. Reproject all onto S1 reference grid (or largest-extent source if no S1)
    - Nearest-neighbor: categorical data (MODIS FLOOD) and GPM rainfall (0.1° cells kept as blocks)

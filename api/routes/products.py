@@ -20,10 +20,10 @@ from etl.database_client import (
     DataProduct,
     DatabaseClient,
     ProductSourceEnum,
-    ProductTierEnum,
 )
 from etl.lineage_tracker import LineageTracker
 from etl.metadata_manager import MetadataManager
+from etl import tier_names as tn
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -63,13 +63,13 @@ def _product_to_schema(p: DataProduct) -> ProductItem:
     description=(
         "List output products with optional filters for tier, source, band, "
         "scene and validity. Combine tier + source to get one sensor's "
-        "products at one stage, e.g. ?tier=GOLD&source=MODIS."
+        "products at one stage, e.g. ?tier=COG&source=MODIS. Nama tier lama tetap diterima dan menjaring artefak yang sama."
     ),
 )
 async def list_products(
     db:          DatabaseClient = Depends(get_db),
     scene_id:    int | None     = Query(None, description="Filter by scene_id"),
-    tier:        str | None     = Query(None, description="RAW | BRONZE | SILVER | GOLD | FUSION"),
+    tier:        str | None     = Query(None, description="RAW | ALIGNED | DESPECKLED | INDICES | ACCUMULATED | COG | FUSED"),
     source:      str | None     = Query(None, description="SENTINEL1 | MODIS | GPM | FUSION"),
     band_name:   str | None     = Query(None, description="VV | VH | FLOOD | NDVI | NDWI | RAIN_24H | ..."),
     dataset_id:  int | None     = Query(None, description="Filter by dataset_id"),
@@ -87,9 +87,9 @@ async def list_products(
             stmt = stmt.where(DataProduct.dataset_id == dataset_id)
         if tier:
             try:
-                stmt = stmt.where(DataProduct.product_tier == ProductTierEnum(tier.upper()))
+                stmt = stmt.where(DataProduct.product_tier.in_(tn.equivalent_tiers(tier)))
             except ValueError:
-                valid = ", ".join(t.value for t in ProductTierEnum)
+                valid = ", ".join(tn.TIERS)
                 raise HTTPException(400, f"Invalid tier: {tier}. Valid: {valid}")
         if source:
             try:

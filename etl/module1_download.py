@@ -26,7 +26,26 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
+from etl import download_guard as dg
+
 logger = logging.getLogger(__name__)
+
+
+def _long(path: Path) -> Path:
+    """Path aman dari batas MAX_PATH (260) Windows.
+
+    Nama produk S1 (~90 karakter) muncul dua kali di path scene (nama folder
+    .SAFE dan nama file .zip/.zip.part di dalamnya), jadi gampang melewati
+    260 karakter. LongPathsEnabled di registry bisa menghapus limit ini,
+    tapi banyak mesin (kebijakan domain/institusi) menguncinya, jadi
+    prefix extended-length ``\\\\?\\`` diberikan di sini alih-alih
+    bergantung ke konfigurasi mesin.
+    """
+    if os.name != "nt":
+        return path
+    resolved = path.resolve()
+    s = str(resolved)
+    return path if s.startswith("\\\\?\\") else Path("\\\\?\\" + s)
 
 
 @dataclass
@@ -144,11 +163,38 @@ def discover_scenes(
     return results
 
 
+def _zip_is_complete(path: Path) -> bool:
+    """ZIP lengkap = central directory terbaca. Cepat (tidak membaca isi)
+    dan menolak file terpotong."""
+    try:
+        with zipfile.ZipFile(_long(path)) as zf:
+            return bool(zf.namelist())
+    except (zipfile.BadZipFile, OSError):
+        return False
+
+
+def find_reusable_scene_zip(product_identifier: str, data_root: Path, exclude: Path) -> Path | None:
+    """Cari ZIP SAFE yang sama, sudah lengkap, di folder dataset lain
+    (layout {ds}/{tanggal}/raw/sentinel1/{pid}/ dan {ds}/_work/{pid}/raw/sentinel1/,
+    plus varian tanpa subfolder pid)."""
+    return dg.find_reusable_file(
+        f"{product_identifier}.zip",
+        [
+            "*/*/raw/sentinel1/{name}",
+            "*/*/raw/sentinel1/*/{name}",
+            "*/*/*/raw/sentinel1/{name}",
+            "*/*/*/raw/sentinel1/*/{name}",
+        ],
+        exclude, data_root, validate=_zip_is_complete, fs_path=_long,
+    )
+
+
 def download_scene(
     scene_meta: dict,
     output_dir: str = "recovered_temp",
     keep_raw: bool = False,
     progress_cb: Callable[[float, str], None] | None = None,
+    reuse_root: Path | None = None,
 ) -> DownloadResult:
     import requests
 
@@ -161,14 +207,21 @@ def download_scene(
         )
 
     out = Path(output_dir)
-    out.mkdir(parents=True, exist_ok=True)
+    _long(out).mkdir(parents=True, exist_ok=True)
     name = scene_meta["product_identifier"]
     url = scene_meta["download_url"]
     zip_path = out / f"{name}.zip"
 
-    if zip_path.exists():
+    if reuse_root is not None and not _long(zip_path).exists():
+        found = find_reusable_scene_zip(name, reuse_root, zip_path)
+        if found is not None:
+            how = dg.adopt_file(_long(found), _long(zip_path))
+            logger.info("[M1] ZIP dipakai ulang dari dataset lain (%s): %s", how, found)
+            _long(out / f"{name}.zip.part").unlink(missing_ok=True)
+
+    if _long(zip_path).exists():
         logger.info("[M1] ZIP sudah ada di disk, lewati download: %s", zip_path.name)
-        file_size_mb = zip_path.stat().st_size / (1024 ** 2)
+        file_size_mb = _long(zip_path).stat().st_size / (1024 ** 2)
     else:
         logger.info("[M1] Downloading: %s (%.0f MB)", name[:50], scene_meta.get("size_mb", 0))
 
@@ -183,7 +236,7 @@ def download_scene(
         )
 
         part_path = out / f"{name}.zip.part"
-        resume_from = part_path.stat().st_size if part_path.exists() else 0
+        resume_from = _long(part_path).stat().st_size if _long(part_path).exists() else 0
 
         if resume_from > 0:
             logger.info("[M1] Melanjutkan download dari %.0f MB...", resume_from / 1e6)
@@ -192,7 +245,9 @@ def download_scene(
         MAX_RETRIES = 3
         for attempt in range(1, MAX_RETRIES + 1):
             try:
-                with session.get(download_url, stream=True, timeout=600, allow_redirects=True) as resp:
+                with session.get(
+                    download_url, stream=True, timeout=dg.REQUEST_TIMEOUT, allow_redirects=True
+                ) as resp:
                     if resp.status_code == 401:
                         logger.info("[M1] Token expired, refreshing (attempt %d)...", attempt)
                         token = _get_cdse_token(user, pwd)
@@ -201,7 +256,7 @@ def download_scene(
 
                     if resp.status_code == 416:
                         logger.info("[M1] File sudah lengkap di .part, rename saja.")
-                        part_path.rename(zip_path)
+                        _long(part_path).rename(_long(zip_path))
                         break
 
                     resp.raise_for_status()
@@ -225,27 +280,29 @@ def download_scene(
                     downloaded = resume_from
                     write_mode = "ab" if resumed else "wb"
 
-                    with open(part_path, write_mode) as fout:
-                        for chunk in resp.iter_content(chunk_size=8 * 1024 * 1024):
+                    guard = dg.StallGuard()
+                    with open(_long(part_path), write_mode) as fout:
+                        for chunk in resp.iter_content(chunk_size=dg.CHUNK_SIZE):
                             if chunk:
                                 fout.write(chunk)
                                 downloaded += len(chunk)
+                                guard.update(len(chunk))
                                 if total:
                                     pct = downloaded / total * 100
-                                    if downloaded % (50 * 1024 * 1024) < 8 * 1024 * 1024:
+                                    if downloaded % (50 * 1024 * 1024) < dg.CHUNK_SIZE:
                                         logger.info("[M1] Download: %.0f%%  (%.0f / %.0f MB)", pct, downloaded / 1e6, total / 1e6)
                                         if progress_cb:
                                             progress_cb(pct, f"{downloaded / 1e6:.0f} / {total / 1e6:.0f} MB")
 
-                    part_path.rename(zip_path)
+                    _long(part_path).rename(_long(zip_path))
                     logger.info("[M1] Download selesai.")
                     break
 
             except (ConnectionError, TimeoutError, OSError) as exc:
                 if attempt < MAX_RETRIES:
                     logger.warning("[M1] Download terputus (attempt %d/%d): %s. Retry...", attempt, MAX_RETRIES, exc)
-                    if part_path.exists():
-                        resume_from = part_path.stat().st_size
+                    if _long(part_path).exists():
+                        resume_from = _long(part_path).stat().st_size
                         session.headers.update({"Range": f"bytes={resume_from}-"})
                         logger.info("[M1] Akan resume dari %.0f MB", resume_from / 1e6)
                 else:
@@ -253,10 +310,10 @@ def download_scene(
                     logger.info("[M1] File .part tersimpan di: %s", part_path)
                     raise
 
-        if not zip_path.exists():
+        if not _long(zip_path).exists():
             raise RuntimeError(f"Download tidak lengkap. Cek file: {part_path}")
 
-        file_size_mb = zip_path.stat().st_size / (1024 ** 2)
+        file_size_mb = _long(zip_path).stat().st_size / (1024 ** 2)
         logger.info("[M1] Download selesai: %.1f MB", file_size_mb)
 
     checksum_md5 = _md5(zip_path)
@@ -264,7 +321,7 @@ def download_scene(
     vv_path, vh_path = _extract_bands(zip_path, out)
 
     if not keep_raw:
-        zip_path.unlink()
+        _long(zip_path).unlink()
         logger.info("[M1] ZIP dihapus (keep_raw=False). Dihemat %.1f MB.", file_size_mb)
         zip_stored = ""
     else:
@@ -292,7 +349,7 @@ def download_scene(
 
 def _extract_bands(zip_path: Path, output_dir: Path) -> tuple[Path, Path]:
     logger.info("[M1] Mengekstrak band dari %s", zip_path.name)
-    with zipfile.ZipFile(zip_path, "r") as zf:
+    with zipfile.ZipFile(_long(zip_path), "r") as zf:
         all_files = zf.namelist()
         vv_files = [f for f in all_files
                     if "/measurement/" in f and "-vv-" in f.lower() and f.endswith(".tiff")]
@@ -307,9 +364,9 @@ def _extract_bands(zip_path: Path, output_dir: Path) -> tuple[Path, Path]:
         vv_out = output_dir / f"{stem}_VV.tif"
         vh_out = output_dir / f"{stem}_VH.tif"
 
-        with zf.open(vv_files[0]) as src, open(vv_out, "wb") as dst:
+        with zf.open(vv_files[0]) as src, open(_long(vv_out), "wb") as dst:
             shutil.copyfileobj(src, dst)
-        with zf.open(vh_files[0]) as src, open(vh_out, "wb") as dst:
+        with zf.open(vh_files[0]) as src, open(_long(vh_out), "wb") as dst:
             shutil.copyfileobj(src, dst)
 
     logger.info("[M1] Ekstraksi selesai: VV=%s | VH=%s", vv_out.name, vh_out.name)
@@ -318,7 +375,7 @@ def _extract_bands(zip_path: Path, output_dir: Path) -> tuple[Path, Path]:
 
 def _md5(path: Path, chunk: int = 8 * 1024 * 1024) -> str:
     h = hashlib.md5()
-    with open(path, "rb") as f:
+    with open(_long(path), "rb") as f:
         for block in iter(lambda: f.read(chunk), b""):
             h.update(block)
     return h.hexdigest()

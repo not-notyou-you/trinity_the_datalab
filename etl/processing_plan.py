@@ -6,12 +6,12 @@ keputusan konkret yang dipakai pipeline.
 Model per-satelit (DOCS/DESIGN.md, DOCS/ETL.md) menyatakan setiap sumber punya
 definisi RAW/PROCESSED-nya sendiri:
 
-    SENTINEL1  RAW        calibrate + reproject + crop            -> BRONZE
-               PROCESSED  + Lee filter + QA + COG                 -> SILVER, GOLD
-    MODIS      RAW        flood map saja                          -> BRONZE
-               PROCESSED  + NDVI + NDWI                           -> SILVER, GOLD
-    GPM        RAW        curah hujan harian (1 hari)             -> BRONZE
-               PROCESSED  + window akumulasi 24h/72h/7d (7 hari)  -> SILVER, GOLD
+    SENTINEL1  RAW        calibrate + reproject + crop            -> ALIGNED
+               PROCESSED  + Lee filter + QA + COG                 -> DESPECKLED, COG
+    MODIS      RAW        flood map saja                          -> ALIGNED
+               PROCESSED  + NDVI + NDWI                           -> INDICES, COG
+    GPM        RAW        curah hujan harian (1 hari)             -> ALIGNED
+               PROCESSED  + window akumulasi 24h/72h/7d (7 hari)  -> ACCUMULATED, COG
 
 Modul ini adalah SATU-SATUNYA tempat aturan itu ditulis sebagai kode. Tanpa
 itu, tiap modul (orchestrator, module7, module8, module9) akan menafsirkan
@@ -24,6 +24,8 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+
+from etl import tier_names as tn
 
 logger = logging.getLogger(__name__)
 
@@ -45,10 +47,10 @@ S1_PROCESSED_STAGES: tuple[str, ...] = ("LEE_FILTER", "QUALITY_ANALYTICS", "GOLD
 
 # Tier yang dihasilkan tiap level. Sama dengan _TIERS_BY_LEVEL di
 # database_client.derive_required_tiers — keduanya harus sepakat.
-_TIERS_BY_LEVEL: dict[str, frozenset[str]] = {
-    RAW: frozenset({"RAW", "BRONZE"}),
-    PROCESSED: frozenset({"RAW", "BRONZE", "SILVER", "GOLD"}),
-}
+# Tier yang boleh ditandai level RAW. Dinyatakan lewat RANK, bukan nama:
+# rank 2 bercabang per-source (D14) dan nama lama masih mungkin muncul dari
+# job yang mulai sebelum migrasi.
+_RAW_PATH_RANKS: frozenset[int] = frozenset({0, 1})
 
 # Band/window yang MERUPAKAN artefak RAW sumbernya. Sisanya turunan, jadi cuma
 # ada di jalur PROCESSED.
@@ -103,13 +105,17 @@ class SourcePlan:
 
     @property
     def max_tier(self) -> str:
-        return "GOLD" if self.has_processed else "BRONZE"
+        return tn.COG if self.has_processed else tn.ALIGNED
 
     def tiers(self) -> frozenset[str]:
-        """Tier yang boleh diproduksi sumber ini."""
-        out: set[str] = set()
-        for level in self.levels:
-            out |= _TIERS_BY_LEVEL[level]
+        """Tier yang boleh diproduksi sumber ini.
+
+        Tier rank 2 dinamai menurut source-nya (D14): DESPECKLED untuk S1,
+        INDICES untuk MODIS, ACCUMULATED untuk GPM.
+        """
+        out: set[str] = {tn.RAW, tn.ALIGNED}
+        if self.has_processed:
+            out |= {tn.RANK2_BY_SOURCE[self.source_name.upper()], tn.COG}
         return frozenset(out)
 
     # -- partisipasi di run lintas-sumber (fusion, preview) -----------------
@@ -136,10 +142,10 @@ class SourcePlan:
     def tier_for_run(self, run_level: str) -> str:
         """Tier yang dibaca fusion/preview untuk sumber ini pada run itu.
 
-        PROCESSED berakhir di GOLD (COG analysis-ready), RAW berhenti di
-        BRONZE (DOCS/ETL.md, "Which input tier does fusion use?").
+        PROCESSED berakhir di COG (analysis-ready), RAW berhenti di ALIGNED
+        (DOCS/ETL.md, "Which input tier does fusion use?").
         """
-        return "GOLD" if self.level_for_run(run_level) == PROCESSED else "BRONZE"
+        return tn.COG if self.level_for_run(run_level) == PROCESSED else tn.ALIGNED
 
     @property
     def has_both_levels(self) -> bool:
@@ -149,13 +155,12 @@ class SourcePlan:
     def level_for_tier(self, tier: str) -> str:
         """Nilai `data_products.processing_level` untuk artefak di `tier`.
 
-        RAW/BRONZE ditandai RAW hanya kalau user memang meminta level RAW;
+        RAW/ALIGNED ditandai RAW hanya kalau user memang meminta level RAW;
         kalau sumber ini murni PROCESSED, keduanya cuma langkah antara jalur
-        penuh dan ikut ditandai PROCESSED. SILVER/GOLD selalu PROCESSED —
-        tier itu tidak pernah lahir dari jalur RAW.
+        penuh dan ikut ditandai PROCESSED. Tier rank 2 dan COG selalu
+        PROCESSED — tier itu tidak pernah lahir dari jalur RAW.
         """
-        upper = str(tier).upper()
-        if upper in _TIERS_BY_LEVEL[RAW] and self.has_raw:
+        if tn.rank(tier) in _RAW_PATH_RANKS and self.has_raw:
             return RAW
         return PROCESSED
 
@@ -181,8 +186,9 @@ class SourcePlan:
 
         Sebuah band bisa punya DUA target ketika sumbernya dikonfigurasi
         RAW+PROCESSED: FLOOD (atau rainfall 24h) adalah deliverable RAW di
-        BRONZE sekaligus lapisan pertama jalur PROCESSED di SILVER, dan
-        DOCS/ETL.md menyatakan kedua artefak hidup berdampingan di disk.
+        ALIGNED sekaligus lapisan pertama jalur PROCESSED di tier rank 2
+        (INDICES untuk MODIS, ACCUMULATED untuk GPM), dan DOCS/ETL.md
+        menyatakan kedua artefak hidup berdampingan di disk.
         """
         if self.source_name == MODIS:
             base_bands = MODIS_RAW_BANDS
@@ -196,12 +202,13 @@ class SourcePlan:
             )
 
         out: dict[str, list[tuple[str, str]]] = {}
+        rank2 = tn.RANK2_BY_SOURCE[self.source_name.upper()]
         if self.has_raw:
             for band in base_bands:
-                out.setdefault(band, []).append(("BRONZE", RAW))
+                out.setdefault(band, []).append((tn.ALIGNED, RAW))
         if self.has_processed:
             for band in all_bands:
-                out.setdefault(band, []).append(("SILVER", PROCESSED))
+                out.setdefault(band, []).append((rank2, PROCESSED))
         return {band: tuple(targets) for band, targets in out.items()}
 
     def to_dict(self) -> dict:

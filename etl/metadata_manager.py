@@ -2,10 +2,12 @@
 from __future__ import annotations
 import logging
 import socket
+import threading
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from sqlalchemy import and_, func, select
 from sqlalchemy.orm import Session
+from etl import tier_names as tn
 from etl.database_client import (
     AlertEvent,
     AlertEventTypeEnum,
@@ -25,6 +27,21 @@ from etl.database_client import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Job yang sudah di-start_job tapi belum di-complete_job, per THREAD. Tingkat
+# modul, bukan atribut instance: module9 membuat MetadataManager-nya sendiri,
+# dan job yang dimulai lewat instance mana pun tetap harus bisa ditutup oleh
+# penangan error worker yang sama. Per thread karena beberapa dataset berjalan
+# bersamaan atas scene yang sama (try1/try2/try3 berbagi scene 45) -- menutup
+# "semua job RUNNING scene X" akan ikut menggagalkan job dataset lain.
+_open_jobs = threading.local()
+
+
+def _open_job_ids() -> set[int]:
+    ids = getattr(_open_jobs, "ids", None)
+    if ids is None:
+        ids = _open_jobs.ids = set()
+    return ids
 
 
 class MetadataManager:
@@ -82,6 +99,7 @@ class MetadataManager:
                 raise ValueError(f"job_id={job_id} not found")
             job.status = JobStatusEnum.RUNNING
             job.started_at = datetime.now(tz=timezone.utc)
+        _open_job_ids().add(job_id)
         logger.info("[JOB] job_id=%d -> RUNNING", job_id)
 
     def complete_job(
@@ -107,7 +125,30 @@ class MetadataManager:
                 job.cpu_usage_percent = cpu_usage_percent
             if memory_usage_mb is not None:
                 job.memory_usage_mb = memory_usage_mb
+        _open_job_ids().discard(job_id)
         logger.info("[JOB] job_id=%d -> %s", job_id, status.value)
+
+    def fail_open_jobs(self, exc: BaseException) -> list[int]:
+        """Tutup sebagai FAILED setiap job yang dimulai thread ini tapi belum
+        selesai.
+
+        Tahap pipeline memanggil start_job lalu bekerja lalu complete_job; kalau
+        pekerjaannya melempar (mis. MemoryError saat kalibrasi), complete_job
+        tidak pernah terpanggil dan job tertinggal RUNNING selamanya -- 16 job
+        CROP dataset 3 masih begitu. Dipanggil penangan error worker.
+        Tidak pernah melempar: tidak boleh menutupi error aslinya."""
+        closed: list[int] = []
+        for job_id in sorted(_open_job_ids()):
+            try:
+                self.complete_job(
+                    job_id, status=JobStatusEnum.FAILED,
+                    error_code=type(exc).__name__, error_message=str(exc)[:2000],
+                )
+                closed.append(job_id)
+            except Exception:
+                logger.exception("[JOB] gagal menutup job_id=%d", job_id)
+        _open_job_ids().clear()
+        return closed
 
     def insert_satellite_scene(
         self,
@@ -204,13 +245,16 @@ class MetadataManager:
         """
         if processing_level is not None:
             processing_level = ProcessingLevelEnum(str(processing_level).upper()).value
+        # Nama warisan tidak pernah ditulis lagi (D14): dipetakan ke nama baru
+        # di sini, satu-satunya jalur tulis data_products.
+        product_tier = tn.canonical_tier(product_tier, source)
 
         with self._db.session() as sess:
             sess.query(DataProduct).filter(
                 and_(
                     DataProduct.scene_id == scene_id,
                     DataProduct.band_name == band_name,
-                    DataProduct.product_tier == product_tier,
+                    DataProduct.product_tier.in_(tn.equivalent_tiers(product_tier)),
                     DataProduct.dataset_id == dataset_id,
                     DataProduct.is_latest == True,
                 )
@@ -276,7 +320,7 @@ class MetadataManager:
         with self._db.session() as sess:
             stmt = select(DataProduct).where(
                 DataProduct.scene_id == scene_id,
-                DataProduct.product_tier == ProductTierEnum(tier),
+                DataProduct.product_tier.in_(tn.equivalent_tiers(tier)),
             )
             if dataset_id is not None:
                 stmt = stmt.where(DataProduct.dataset_id == dataset_id)
@@ -412,13 +456,13 @@ class MetadataManager:
 
             results = []
             for row in rows:
-                # Deliverable terakhir pipeline sekarang tier FUSION, bukan
-                # GOLD (GOLD kini produk per-source, bukan ujung pipeline).
+                # Deliverable terakhir pipeline adalah FUSED (rank 4), di
+                # kedua kosakata supaya baris pra-D14 tetap terhitung.
                 has_final = sess.scalar(
                     select(func.count(DataProduct.product_id)).where(
                         and_(
                             DataProduct.scene_id == row.scene_id,
-                            DataProduct.product_tier == ProductTierEnum.FUSION,
+                            DataProduct.product_tier.in_(tn.tiers_at_rank(4)),
                             DataProduct.is_latest == True,
                             DataProduct.is_valid == True,
                         )
@@ -498,7 +542,7 @@ class MetadataManager:
             stmt = select(DataProduct).where(DataProduct.scene_id == scene_id)
 
             if tier:
-                stmt = stmt.where(DataProduct.product_tier == ProductTierEnum(tier))
+                stmt = stmt.where(DataProduct.product_tier.in_(tn.equivalent_tiers(tier)))
             if latest_only:
                 stmt = stmt.where(DataProduct.is_latest == True)
 
@@ -542,7 +586,7 @@ class MetadataManager:
                 select(func.count(DataProduct.product_id)).where(
                     and_(
                         DataProduct.scene_id == scene.scene_id,
-                        DataProduct.product_tier == ProductTierEnum.GOLD,
+                        DataProduct.product_tier.in_(tn.tiers_at_rank(3)),
                         DataProduct.is_latest == True,
                         DataProduct.is_valid == True,
                     )

@@ -251,7 +251,7 @@ class TestForeignKeys:
         job_id = meta.insert_processing_job(sample_scene, "CROP")
         pid    = meta.insert_data_product(
             scene_id=sample_scene, job_id=job_id,
-            product_tier="BRONZE", source="SENTINEL1", product_type="CROPPED_TIFF",
+            product_tier="ALIGNED", source="SENTINEL1", product_type="CROPPED_TIFF",
             band_name="VV", file_path="/tmp/vv_crop.tif", file_name="vv_crop.tif",
             file_size_mb=50.0, data_hash_sha256=fake_hash("BRONZE_SELF_REF"),
         )
@@ -301,7 +301,7 @@ class TestDataInsertion:
         meta.start_job(job_id)
         prod_id = meta.insert_data_product(
             scene_id=sample_scene, job_id=job_id,
-            product_tier="GOLD", source="SENTINEL1", product_type="COG",
+            product_tier="COG", source="SENTINEL1", product_type="COG",
             band_name="VV", file_path="/tmp/vv_cog.tif", file_name="vv_cog.tif",
             file_size_mb=40.0, data_hash_sha256=fake_hash("GOLD_VV_QA_TEST"),
         )

@@ -161,6 +161,32 @@
               <div id="fusionGroup">
                 <p class="wizard-title">Strategi Fusi</p>
                 <div class="fusion-list" id="fusionList"></div>
+
+                <!-- Hanya relevan untuk FULL_COVERAGE: strategi itu merakit
+                     satu berkas per hari termasuk hari tanpa scene S1, jadi
+                     harus tahu seberapa jauh boleh meminjam scene. -->
+                <div class="fusion-extra hidden" id="toleranceGroup">
+                  <label class="fusion-extra-row" for="s1Tolerance">
+                    <span>Toleransi pasangan Sentinel-1</span>
+                    <span class="fusion-extra-input">
+                      <input type="number" id="s1Tolerance" min="0" max="14" value="2" />
+                      <span class="fusion-extra-unit">hari</span>
+                    </span>
+                  </label>
+                  <p class="fusion-extra-hint">
+                    0 = hanya hari yang sama. Hari tanpa pasangan dalam jangkauan
+                    tetap dibuatkan berkas, dengan lapisan Sentinel-1 kosong.
+                  </p>
+                </div>
+
+                <label class="fusion-extra-row">
+                  <input type="checkbox" id="fusionOutputOnly" />
+                  <span>Simpan hasil fusi saja</span>
+                </label>
+                <p class="fusion-extra-hint">
+                  Berkas per-satelit dihapus setelah stack HDF5 selesai ditulis.
+                  Pemrosesannya tetap berjalan penuh &mdash; fusi membutuhkannya.
+                </p>
               </div>
               <p class="wizard-title">Opsi Preview (opsional)</p>
               <div class="preview-opts" id="previewOptions"></div>
@@ -326,7 +352,7 @@
 <div class="modal-overlay hidden" id="cancelModal">
   <div class="modal">
     <h3>Batalkan dataset ini?</h3>
-    <p>Proses akan dihentikan dan data sementara (RAW, BRONZE, SILVER) akan dihapus. Data GOLD yang sudah selesai tetap disimpan.</p>
+    <p>Proses akan dihentikan dan data sementara (RAW, ALIGNED, DESPECKLED/INDICES/ACCUMULATED) akan dihapus. Data COG dan FUSED yang sudah selesai tetap disimpan.</p>
     <div class="modal-actions">
       <button class="btn btn-ghost" id="cancelModalCancel">Batal</button>
       <button class="btn btn-danger" id="cancelModalConfirm">Ya, Batalkan</button>

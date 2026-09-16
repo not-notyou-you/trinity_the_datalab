@@ -181,15 +181,21 @@ Note: `selected_satellites` and `processing_level` are NOT on this table — the
 | PREVIEW | PNG visualizations for human inspection | PREVIEW stage | Grayscale/Colored/Composite per processing level | Grayscale/Colored per processing level | Typically not created (coarse res) |
 | FUSION | HDF5 multi-source stacks, ML-ready | FUSION stage | Multi-source per processing level | Multi-source per processing level | Multi-source per processing level |
 
-**Mapping to folder structure**: `data/datasets/{id}/{source}/{processing_level}/{tier}/`
-- `sentinel1/raw/bronze/` → S1 RAW-level artifacts at BRONZE tier
-- `sentinel1/processed/silver/` → S1 PROCESSED-level artifacts at SILVER tier
-- `modis/processed/gold/` → MODIS PROCESSED-level artifacts at GOLD tier
-- `gpm/raw/bronze/` → GPM RAW-level artifacts at BRONZE tier
-- `fusion/raw/` → HDF5 fusions using RAW inputs
-- `fusion/processed/` → HDF5 fusions using PROCESSED inputs
+**Mapping to folder structure**: `data/datasets/{id}_{slug}/{source}/{RAW|PROCESSED}/`
+(full tree in DOCS/ETL.md "On-disk layout")
+- `sentinel-1/RAW/` → tier BRONZE: calibrated + cropped, no Lee filter
+- `sentinel-1/PROCESSED/` → tier GOLD: COG with overviews
+- `modis/PROCESSED/` → tier GOLD: NDVI/NDWI as COG
+- `gpm-imerg/RAW/` → tier BRONZE: daily rainfall, no accumulation
+- `fusion/{co-occurrence,full-coverage,hybrid}/` → HDF5 stacks, one folder per strategy
+- `_work/` → tiers RAW (SAFE zip) and SILVER (Lee pre-COG): intermediates, swept at job end
 
-**RAW tier quirk**: There is no "RAW" folder tier. The minimum tier for RAW-level processing is BRONZE (cropped unfiltered data). This is because you can't meaningfully use uncropped, uncalibrated rasters. The folder structure uses `{source}/raw/bronze/` not `{source}/raw/raw/`.
+Tiers RAW and SILVER therefore have **no drawer of their own**: they exist as
+`product_tier` values and lineage edges, not as retained files (D15).
+
+**Granule cache quirk**: raw MODIS/GPM granules live in `_granule_cache/`, outside any per-date grouping, because one daily GPM granule feeds the 72h/7d windows of later dates — it cannot be owned by a single date. They are still *accounted* as tier `raw` in `storage_breakdown`.
+
+**Layout**: tier is no longer a path segment — see DOCS/ETL.md "On-disk layout". It remains the value of `product_tier` and the vocabulary of lineage and storage reporting.
 
 ## Key Indexes
 

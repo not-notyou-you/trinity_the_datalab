@@ -22,6 +22,15 @@ from etl import module10_generate_preview as m10
 DATASET_ID = 7
 DATASET_NAME = "Preview Test"
 DATE_KEY = "20260712"
+
+
+def png(stem: str) -> str:
+    """Nama berkas PNG preview.
+
+    Berprefiks tanggal sejak relayout: folder preview tidak lagi bersarang di
+    bawah folder tanggal, jadi tanpa prefiks ini render tanggal kedua akan
+    menimpa tanggal pertama."""
+    return f"{DATE_KEY}_{stem}.png"
 S1_SCENE = "S1D_IW_GRDH_1SDV_20260712T111407.SAFE"
 
 
@@ -72,13 +81,13 @@ class TestRendering:
         color = fm.get_preview_kind_dir(DATASET_ID, DATASET_NAME, DATE_KEY, "colored")
         composite = fm.get_preview_kind_dir(DATASET_ID, DATASET_NAME, DATE_KEY, "composite")
 
-        assert sorted(p.name for p in gray.glob("*.png")) == ["s1_vh.png", "s1_vv.png"]
-        assert sorted(p.name for p in color.glob("*.png")) == ["s1_vh.png", "s1_vv.png"]
+        assert sorted(p.name for p in gray.glob("*.png")) == [png("s1_vh"), png("s1_vv")]
+        assert sorted(p.name for p in color.glob("*.png")) == [png("s1_vh"), png("s1_vv")]
         # Komposit RGB punya foldernya sendiri: isinya tiga band digabung,
         # bukan satu band yang diberi colormap, jadi tidak bisa dijelaskan
         # skema yang sama dengan colored_info.json.
         assert sorted(p.name for p in composite.glob("*.png")) == [
-            "s1_rgb_composite.png",
+            png("s1_rgb_composite"),
         ]
         assert (gray / "grayscale_info.json").exists()
         assert (color / "colored_info.json").exists()
@@ -90,7 +99,7 @@ class TestRendering:
         assert result["counts"]["colored"] == 2
         assert result["counts"]["composite"] == 1
         assert result["processing_level"] == "PROCESSED"
-        assert result["derived_from"] == "GOLD"
+        assert result["derived_from"] == "COG"
 
     def test_sentinel1_converted_to_db(self, data_root):
         """GOLD menyimpan sigma0 linear; tanpa konversi dB, stretch persentil
@@ -131,14 +140,14 @@ class TestRendering:
         m10.generate_previews(DATASET_ID, DATASET_NAME, DATE_KEY, s1_scene_key=S1_SCENE)
 
         gray = fm.get_preview_kind_dir(DATASET_ID, DATASET_NAME, DATE_KEY, "grayscale")
-        img = Image.open(gray / "s1_vv.png")
+        img = Image.open(gray / png("s1_vv"))
         assert img.mode == "LA"
         alpha = np.array(img)[..., 1]
         assert alpha[0, 0] == 0       # baris NoData
         assert alpha[-1, -1] == 255   # baris berdata
 
         color = fm.get_preview_kind_dir(DATASET_ID, DATASET_NAME, DATE_KEY, "colored")
-        cimg = Image.open(color / "s1_vv.png")
+        cimg = Image.open(color / png("s1_vv"))
         assert cimg.mode == "RGBA"
         assert np.array(cimg)[0, 0, 3] == 0
 
@@ -150,7 +159,7 @@ class TestRendering:
             DATASET_ID, DATASET_NAME, DATE_KEY, s1_scene_key=S1_SCENE, max_width=100
         )
         gray = fm.get_preview_kind_dir(DATASET_ID, DATASET_NAME, DATE_KEY, "grayscale")
-        assert Image.open(gray / "s1_vv.png").size == (100, 50)
+        assert Image.open(gray / png("s1_vv")).size == (100, 50)
 
     def test_gpm_uses_fixed_zero_based_range(self, data_root):
         """Nol harus berarti nol untuk hujan, bukan minimum data — kalau tidak,
@@ -216,7 +225,7 @@ class TestRendering:
         assert pct["Banjir (tidak biasa)"] == 25.0
         assert pct["Tidak ada data"] == 25.0
 
-        rgba = np.array(Image.open(color / "modis_flood.png"))
+        rgba = np.array(Image.open(color / png("modis_flood")))
         # 10 px diperbesar kelipatan bulat -> blok nearest, bukan PNG 10 px.
         assert rgba.shape[1] == 1020
         assert tuple(rgba[0, 0]) == (0x21, 0x71, 0xB5, 255)   # air
@@ -245,8 +254,8 @@ class TestRendering:
             DATASET_ID, DATASET_NAME, DATE_KEY, s1_scene_key=S1_SCENE
         )
         gray = fm.get_preview_kind_dir(DATASET_ID, DATASET_NAME, DATE_KEY, "grayscale")
-        s1_size = Image.open(gray / "s1_vv.png").size
-        assert Image.open(gray / "gpm_rain_24h.png").size == s1_size
+        s1_size = Image.open(gray / png("s1_vv")).size
+        assert Image.open(gray / png("gpm_rain_24h")).size == s1_size
         assert result["grid"]["aligned_to"] == "s1_vv"
 
         color = fm.get_preview_kind_dir(DATASET_ID, DATASET_NAME, DATE_KEY, "colored")
@@ -288,11 +297,11 @@ class TestResilience:
         _write_tif(ndvi, np.full((20, 20), 0.4))
         m10.generate_previews(DATASET_ID, DATASET_NAME, DATE_KEY)
         color = fm.get_preview_kind_dir(DATASET_ID, DATASET_NAME, DATE_KEY, "colored")
-        assert (color / "modis_ndvi.png").exists()
+        assert (color / png("modis_ndvi")).exists()
 
         _write_tif(ndvi, np.full((20, 20), np.nan))
         m10.generate_previews(DATASET_ID, DATASET_NAME, DATE_KEY)
-        assert not (color / "modis_ndvi.png").exists()
+        assert not (color / png("modis_ndvi")).exists()
 
     def test_no_gold_at_all_still_writes_metadata(self, data_root):
         """Tanpa satu pun input, tetap tulis sidecar kosong daripada melempar:
@@ -319,10 +328,10 @@ class TestResilience:
         m10.generate_previews(DATASET_ID, DATASET_NAME, DATE_KEY, s1_scene_key=S1_SCENE)
 
         gray = fm.get_preview_kind_dir(DATASET_ID, DATASET_NAME, DATE_KEY, "grayscale")
-        (gray / "s1_vv.png").write_bytes(b"stale")
+        (gray / png("s1_vv")).write_bytes(b"stale")
 
         m10.generate_previews(DATASET_ID, DATASET_NAME, DATE_KEY, s1_scene_key=S1_SCENE)
-        assert (gray / "s1_vv.png").read_bytes()[:4] == b"\x89PNG"
+        assert (gray / png("s1_vv")).read_bytes()[:4] == b"\x89PNG"
 
         result = m10.generate_previews(
             DATASET_ID, DATASET_NAME, DATE_KEY, s1_scene_key=S1_SCENE, overwrite=False

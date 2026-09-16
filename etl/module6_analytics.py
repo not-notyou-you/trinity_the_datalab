@@ -54,11 +54,22 @@ def compute_band_metrics(
         nodata = src.nodata if src.nodata is not None else nodata_value
 
     total = int(data.size)
-    if isinstance(nodata, float) and np.isnan(nodata):
-        valid_mask = ~np.isnan(data)
-    else:
-        valid_mask = data != nodata
+    # NaN selalu invalid, apa pun nilai nodata di header: COG GOLD memakai
+    # nodata numerik sementara piksel di luar footprint reprojeksi bisa NaN.
+    valid_mask = np.isfinite(data)
+    if not (isinstance(nodata, float) and np.isnan(nodata)):
+        valid_mask &= data != nodata
     valid = data[valid_mask]
+    if valid.size and float(valid.min()) >= 0.0:
+        # Sigma0 LINEAR (module1b: DN^2/A^2), bukan dB. Kolom *_db dan batas
+        # VALID_BACKSCATTER_* dinyatakan dalam dB, jadi statistiknya dihitung
+        # setelah konversi. Dulu nilai linear dilaporkan apa adanya sebagai
+        # "dB" (try3: mean 0.50, max 145.6), speckle_index std/mean linear
+        # selalu >1 sehingga komponen speckle skor selalu 0, dan VV/VH
+        # mendapat skor identik 69.81. Piksel <=0 di data linear = tanpa sinyal
+        # (module1b menulis 0 di luar LUT) dan tidak punya nilai dB.
+        positive = valid > 0
+        valid = 10.0 * np.log10(valid[positive])
     nodata_count = total - int(valid.size)
     nodata_percent = round((nodata_count / total) * 100, 2) if total else 0.0
 
@@ -134,10 +145,10 @@ def run(
     for band_name, file_path in gold_products.items():
         m = compute_band_metrics(file_path, band_name)
         results.append(m)
-        products = meta.get_products_by_scene(scene_id, tier="GOLD")
+        products = meta.get_products_by_scene(scene_id, tier="COG")
         product_id = next((p["product_id"] for p in products if p["band_name"] == band_name), None)
         if not product_id:
-            logger.warning("[M6] No GOLD product for scene=%d band=%s", scene_id, band_name)
+            logger.warning("[M6] No COG product for scene=%d band=%s", scene_id, band_name)
             continue
         meta.insert_quality_metrics(
             scene_id=scene_id,

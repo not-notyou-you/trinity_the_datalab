@@ -107,7 +107,7 @@ def export_scene_to_gold(
         band MODIS yang gagal di hulu tidak boleh menjatuhkan ekspor GOLD band
         lain di scene yang sama.
     """
-    gold_dir = fm.ensure_scene_dir(dataset_id, dataset_name, "gold", source, scene_key)
+    gold_dir = fm.ensure_scene_dir(dataset_id, dataset_name, "cog", source, scene_key)
     exported: dict[str, str] = {}
 
     for band, silver_path in silver_files.items():

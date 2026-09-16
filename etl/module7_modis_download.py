@@ -57,10 +57,13 @@ from rasterio.enums import Resampling
 from rasterio.merge import merge
 from rasterio.warp import calculate_default_transform, reproject
 
+from etl import download_guard as dg
 from etl import folder_manager as fm
 from etl.pipeline_logger import PipelineLogger
 from etl.processing_plan import MODIS as MODIS_SOURCE_NAME
 from etl.processing_plan import PROCESSED, SourcePlan, normalize_levels
+
+from etl import tier_names as tn
 
 logger = logging.getLogger(__name__)
 
@@ -197,6 +200,10 @@ JABODETABEK_BBOX = (106.4, -6.7, 107.2, -5.9)
 
 DST_CRS = "EPSG:4326"
 MAX_RETRIES = 3
+# Di bawah porsi ini band dianggap degraded: file tetap ditulis (awan memang
+# data yang sah), tapi hari itu tidak boleh dilaporkan GOOD. Jakarta musim
+# hujan sering 100% tertutup awan menurut QA state MOD09.
+MIN_VALID_FRACTION = 0.05
 
 
 def band_filename(band: str, date_key: str) -> str:
@@ -254,7 +261,34 @@ def _discover_tile_files(
 
     doy = date.timetuple().tm_yday
     url = f"{base}/{product}/{date.year}/{doy:03d}/"
-    resp = requests.get(url, headers=_auth_headers(), timeout=30)
+    resp = None
+    last_error: str = ""
+    for attempt in range(1, MAX_RETRIES + 1):
+        # Listing dulu satu request tanpa retry, dan exception jaringannya
+        # (ReadTimeout, ConnectionError) bukan RuntimeError sehingga lolos dari
+        # fallback NRT -> arsip standar di pemanggil. Satu timeout LAADS karena
+        # itu menghapus satu band sehari penuh (try1: FLOOD 2025-01-08).
+        try:
+            resp = requests.get(url, headers=_auth_headers(), timeout=dg.REQUEST_TIMEOUT)
+        except requests.RequestException as exc:
+            last_error = f"{type(exc).__name__}: {exc}"
+            resp = None
+        else:
+            # Hanya 5xx yang diulang: 4xx (mis. 404 = direktori tanggal itu
+            # memang tidak ada) adalah jawaban final, bukan gangguan.
+            if resp.status_code < 500:
+                break
+            last_error = f"HTTP {resp.status_code}"
+        if attempt < MAX_RETRIES:
+            logger.warning(
+                "[M7] listing LAADS gagal (attempt %d/%d) %s: %s",
+                attempt, MAX_RETRIES, url, last_error,
+            )
+            time.sleep(2 ** attempt)
+    if resp is None:
+        raise RuntimeError(
+            f"gagal listing LAADS setelah {MAX_RETRIES} percobaan ({last_error}): {url}"
+        )
     if resp.status_code != 200:
         raise RuntimeError(f"gagal listing LAADS ({resp.status_code}): {url}")
 
@@ -340,6 +374,8 @@ def _download_with_retry(
     if out_path.exists() and out_path.stat().st_size > 0:
         logger.info("[M7] sudah ada di disk, lewati download: %s", out_path.name)
         return _md5(out_path)
+    if dg.reuse_granule(out_path, "modis", fm.DATA_ROOT, "[M7]"):
+        return _md5(out_path)
 
     tmp_path = out_path.with_suffix(out_path.suffix + ".part")
     last_exc: Exception | None = None
@@ -352,15 +388,19 @@ def _download_with_retry(
             {"item": item_label, "attempt": attempt, "max_retries": MAX_RETRIES, "url": url},
         )
         try:
-            with requests.get(url, headers=_auth_headers(), stream=True, timeout=300) as r:
+            with requests.get(
+                url, headers=_auth_headers(), stream=True, timeout=dg.REQUEST_TIMEOUT
+            ) as r:
                 r.raise_for_status()
                 expected_size = int(r.headers.get("Content-Length", 0))
                 downloaded = 0
+                guard = dg.StallGuard()
                 with open(tmp_path, "wb") as f:
-                    for chunk in r.iter_content(chunk_size=8 * 1024 * 1024):
+                    for chunk in r.iter_content(chunk_size=dg.CHUNK_SIZE):
                         f.write(chunk)
                         downloaded += len(chunk)
-                        if expected_size and downloaded % (50 * 1024 * 1024) < 8 * 1024 * 1024:
+                        guard.update(len(chunk))
+                        if expected_size and downloaded % (50 * 1024 * 1024) < dg.CHUNK_SIZE:
                             _plog_event(
                                 plog, dataset_id, scene_id, "DOWNLOAD", "RUNNING",
                                 f"{item_label}: {downloaded / 1e6:.0f}/{expected_size / 1e6:.0f} MB",
@@ -497,6 +537,18 @@ def _eos_grid_georef(struct_meta: str, field: str) -> dict:
             "bounds": BoundingBox(ulx, lry, lrx, uly),
         }
     raise RuntimeError(f"field {field} tidak ditemukan di StructMetadata")
+
+
+def _require_hdf4_reader() -> None:
+    """Pastikan pyhdf bisa diimport sebelum mulai download. Tanpa ini setiap
+    granule tetap diunduh lalu gagal dibaca satu per satu."""
+    try:
+        import pyhdf.SD  # noqa: F401
+    except ImportError as exc:
+        raise RuntimeError(
+            "pyhdf tidak terpasang (dibutuhkan untuk membaca HDF4 MODIS) — "
+            "jalankan `pip install -r requirements.txt`"
+        ) from exc
 
 
 def _read_eos_grid_field(hdf_path: Path, subdataset: str) -> tuple[np.ndarray, dict]:
@@ -759,6 +811,9 @@ def _build_band_for_date(
             else:
                 _normalized_index_tile(hdf_path, product_used, band, tile_tif)
             tile_tifs.append(tile_tif)
+        except ImportError:
+            # Masalah environment, bukan data: tile lain pasti gagal juga.
+            raise
         except Exception as exc:
             logger.warning(
                 "[M7] %s tile %s gagal (tanggal %s): %s",
@@ -771,7 +826,9 @@ def _build_band_for_date(
 
     _mosaic_and_crop(tile_tifs, aoi_bbox, out_path)
     valid_fraction = _valid_fraction(out_path)
-    logger.info(
+    low_coverage = valid_fraction < MIN_VALID_FRACTION
+    logger.log(
+        logging.WARNING if low_coverage else logging.INFO,
         "[M7] %s tanggal %s: %.1f%% piksel AOI valid%s",
         band, date.date().isoformat(), valid_fraction * 100,
         " (sisanya awan/tanpa data)" if band != "FLOOD" else " (sisanya insufficient data)",
@@ -784,9 +841,10 @@ def _build_band_for_date(
         "checksum_md5": _md5(out_path),
         "source_tiles": source_checksums,
         "skipped": False,
-        "degraded": bool(failed_tiles),
+        "degraded": bool(failed_tiles) or low_coverage,
         "failed_tiles": failed_tiles,
         "valid_fraction": round(valid_fraction, 4),
+        "low_coverage": low_coverage,
     }
     if product == MODIS_REFLECTANCE_PRODUCT:
         period_end = query_date + timedelta(days=MOD09A1_PERIOD_DAYS - 1)
@@ -817,7 +875,7 @@ def _band_targets(
 
     Tier tertinggi jadi yang pertama karena dialah yang dibangun; target lain
     (kalau ada) diisi dengan menyalin berkas itu."""
-    ordered = sorted(targets, key=lambda t: 0 if t[0] == "SILVER" else 1)
+    ordered = sorted(targets, key=lambda t: 0 if tn.rank(t[0]) == 2 else 1)
     out = []
     for tier, level in ordered:
         scene_dir = fm.ensure_scene_dir(
@@ -874,6 +932,16 @@ def download_modis_scene(
         "[M7] dataset_id=%s level=%s band=%s",
         dataset_id, list(plan.levels), list(wanted_bands),
     )
+
+    try:
+        _require_hdf4_reader()
+    except RuntimeError as exc:
+        _plog_event(
+            plog, dataset_id, f"MODIS_{date_start.strftime('%Y%m%d')}",
+            "DOWNLOAD", "FAILED", str(exc),
+            {"error_type": "MissingDependency", "error_message": str(exc)},
+        )
+        raise
 
     raw_dir = fm.get_granule_cache_dir(dataset_id, dataset_name, "modis")
     raw_dir.mkdir(parents=True, exist_ok=True)
@@ -932,14 +1000,18 @@ def download_modis_scene(
 
             if out_path.exists():
                 logger.info("[M7] output sudah ada, skip: %s", out_path.name)
+                valid_fraction = _valid_fraction(out_path)
+                low_coverage = valid_fraction < MIN_VALID_FRACTION
                 bands[band] = _record({
                     "band": band,
                     "product": product,
                     "path": str(out_path),
                     "checksum_md5": _md5(out_path),
                     "skipped": True,
-                    "degraded": False,
+                    "degraded": low_coverage,
                     "failed_tiles": [],
+                    "valid_fraction": round(valid_fraction, 4),
+                    "low_coverage": low_coverage,
                 })
                 continue
 
@@ -956,6 +1028,9 @@ def download_modis_scene(
                             plog=plog, dataset_id=dataset_id, scene_label=scene_label,
                         ))
                         break
+                    except ImportError:
+                        # Jangan fallback (download produk lain) untuk error environment.
+                        raise
                     except Exception as exc:
                         attempt_errors.append(f"{candidate}: {exc}")
                         if candidate != products[-1]:
@@ -966,6 +1041,8 @@ def download_modis_scene(
                             )
                 else:
                     raise RuntimeError("; ".join(attempt_errors))
+            except ImportError:
+                raise
             except Exception as exc:
                 logger.warning(
                     "[M7] band %s gagal tanggal %s: %s", band, date.date().isoformat(), exc
@@ -1013,6 +1090,13 @@ def download_modis_scene(
             {
                 "date": date.date().isoformat(),
                 "bands_ok": sorted(bands), "bands_failed": sorted(band_errors),
+                "bands_low_coverage": sorted(
+                    band for band, b in bands.items() if b.get("low_coverage")
+                ),
+                "valid_fraction": {
+                    band: b["valid_fraction"] for band, b in bands.items()
+                    if "valid_fraction" in b
+                },
                 "degraded": degraded,
             },
         )

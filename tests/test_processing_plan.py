@@ -85,10 +85,13 @@ class TestSourcePlan:
             assert stage not in s1(RAW).s1_skip_stages()
 
     def test_tiers_per_level(self):
-        assert s1(RAW).tiers() == {"RAW", "BRONZE"}
-        assert s1(PROCESSED).tiers() == {"RAW", "BRONZE", "SILVER", "GOLD"}
-        assert s1(RAW).max_tier == "BRONZE"
-        assert s1(RAW, PROCESSED).max_tier == "GOLD"
+        assert s1(RAW).tiers() == {"RAW", "ALIGNED"}
+        assert s1(PROCESSED).tiers() == {"RAW", "ALIGNED", "DESPECKLED", "COG"}
+        assert s1(RAW).max_tier == "ALIGNED"
+        assert s1(RAW, PROCESSED).max_tier == "COG"
+        # Tier rank 2 bercabang per-source (D14).
+        assert modis(PROCESSED).tiers() == {"RAW", "ALIGNED", "INDICES", "COG"}
+        assert gpm(PROCESSED).tiers() == {"RAW", "ALIGNED", "ACCUMULATED", "COG"}
 
     @pytest.mark.parametrize(
         "levels,tier,expected",
@@ -121,19 +124,19 @@ class TestSourcePlan:
         assert gpm(PROCESSED).gpm_days() == 7
 
     def test_targets_raw_only(self):
-        assert modis(RAW).targets() == {"FLOOD": (("BRONZE", RAW),)}
-        assert gpm(RAW).targets() == {"24h": (("BRONZE", RAW),)}
+        assert modis(RAW).targets() == {"FLOOD": (("ALIGNED", RAW),)}
+        assert gpm(RAW).targets() == {"24h": (("ALIGNED", RAW),)}
 
     def test_targets_processed_only(self):
         targets = modis(PROCESSED).targets()
         assert set(targets) == {"FLOOD", "NDVI", "NDWI"}
-        assert all(t == (("SILVER", PROCESSED),) for t in targets.values())
+        assert all(t == (("INDICES", PROCESSED),) for t in targets.values())
 
     def test_targets_both_levels_coexist(self):
         """DOCS/ETL.md: artefak RAW dan PROCESSED hidup berdampingan."""
         targets = modis(RAW, PROCESSED).targets()
-        assert targets["FLOOD"] == (("BRONZE", RAW), ("SILVER", PROCESSED))
-        assert targets["NDVI"] == (("SILVER", PROCESSED),)
+        assert targets["FLOOD"] == (("ALIGNED", RAW), ("INDICES", PROCESSED))
+        assert targets["NDVI"] == (("INDICES", PROCESSED),)
 
     def test_targets_rejects_sentinel1(self):
         with pytest.raises(ValueError, match="MODIS/GPM"):
@@ -166,7 +169,7 @@ class TestProcessingPlan:
 
     def test_required_tiers_is_union(self):
         plan = plan_from_configs(1, {"SENTINEL1": ["RAW"], "MODIS": ["PROCESSED"]})
-        assert plan.required_tiers() == {"RAW", "BRONZE", "SILVER", "GOLD"}
+        assert plan.required_tiers() == {"RAW", "ALIGNED", "INDICES", "COG"}
 
     def test_fusion_needs_two_sources_and_strategy(self):
         one = plan_from_configs(1, {"SENTINEL1": ["PROCESSED"]})
@@ -266,8 +269,20 @@ def _run_modis(levels, tmp_path):
 
 
 def _written(dataset_id, name, tier, source, date_key):
-    d = fm.get_dataset_root(dataset_id, name) / date_key / tier / source
-    return sorted(p.name for p in d.iterdir() if p.is_file()) if d.exists() else []
+    """Berkas yang benar-benar ditulis untuk satu tier/source/tanggal.
+
+    Path-nya diminta ke folder_manager, bukan disusun ulang di sini: sejak
+    relayout tier bukan lagi segmen path (BRONZE -> {source}/RAW/,
+    GOLD -> {source}/PROCESSED/, sisanya _work/), dan menyusunnya sendiri
+    di test berarti test-nya akan setuju dengan dirinya sendiri alih-alih
+    dengan kode yang dipakai produksi."""
+    d = fm.get_scene_dir(dataset_id, name, tier, source, date_key)
+    if not d.exists():
+        return []
+    return sorted(
+        p.name for p in d.iterdir()
+        if p.is_file() and date_key in p.name
+    )
 
 
 class TestModisBranching:
@@ -275,13 +290,13 @@ class TestModisBranching:
         _, meta = _run_modis(["RAW"], tmp_path)
 
         assert modis_stub == ["FLOOD"], "NDVI/NDWI adalah indeks turunan"
-        assert _written(7, "plan_test", "bronze", "modis", "20240305") == [
+        assert _written(7, "plan_test", "aligned", "modis", "20240305") == [
             "modis_20240305_flood.tif"
         ]
-        assert _written(7, "plan_test", "silver", "modis", "20240305") == []
+        assert _written(7, "plan_test", "indices", "modis", "20240305") == []
         target = meta["outputs"][0]["bands"]["FLOOD"]["targets"]
-        assert set(target) == {"BRONZE"}
-        assert target["BRONZE"]["processing_level"] == RAW
+        assert set(target) == {"ALIGNED"}
+        assert target["ALIGNED"]["processing_level"] == RAW
 
     def test_raw_does_not_touch_reflectance_product(self, modis_stub, tmp_path):
         """MOD09GA tidak diunduh sama sekali di level RAW."""
@@ -292,30 +307,30 @@ class TestModisBranching:
         _, meta = _run_modis(["PROCESSED"], tmp_path)
 
         assert modis_stub == ["FLOOD", "NDVI", "NDWI"]
-        assert _written(7, "plan_test", "silver", "modis", "20240305") == [
+        assert _written(7, "plan_test", "indices", "modis", "20240305") == [
             "modis_20240305_flood.tif",
             "modis_20240305_ndvi.tif",
             "modis_20240305_ndwi.tif",
         ]
-        assert _written(7, "plan_test", "bronze", "modis", "20240305") == []
+        assert _written(7, "plan_test", "aligned", "modis", "20240305") == []
         for band in ("FLOOD", "NDVI", "NDWI"):
             targets = meta["outputs"][0]["bands"][band]["targets"]
-            assert set(targets) == {"SILVER"}
-            assert targets["SILVER"]["processing_level"] == PROCESSED
+            assert set(targets) == {"INDICES"}
+            assert targets["INDICES"]["processing_level"] == PROCESSED
 
     def test_both_levels_write_flood_twice_but_build_once(self, modis_stub, tmp_path):
         _, meta = _run_modis(["RAW", "PROCESSED"], tmp_path)
 
         # Dibangun sekali; salinan BRONZE adalah copy file, bukan build ulang.
         assert modis_stub == ["FLOOD", "NDVI", "NDWI"]
-        assert _written(7, "plan_test", "bronze", "modis", "20240305") == [
+        assert _written(7, "plan_test", "aligned", "modis", "20240305") == [
             "modis_20240305_flood.tif"
         ]
-        assert len(_written(7, "plan_test", "silver", "modis", "20240305")) == 3
+        assert len(_written(7, "plan_test", "indices", "modis", "20240305")) == 3
 
         flood = meta["outputs"][0]["bands"]["FLOOD"]["targets"]
-        assert flood["BRONZE"]["processing_level"] == RAW
-        assert flood["SILVER"]["processing_level"] == PROCESSED
+        assert flood["ALIGNED"]["processing_level"] == RAW
+        assert flood["INDICES"]["processing_level"] == PROCESSED
 
 
 # ---------------------------------------------------------------------------
@@ -359,35 +374,35 @@ class TestGpmBranching:
 
         assert gpm_stub == [("24h", 1)], "level RAW tidak boleh menarik hari tetangga"
         assert set(meta["windows"]) == {"24h"}
-        assert _written(8, "plan_test", "bronze", "gpm", "20240305") == [
+        assert _written(8, "plan_test", "aligned", "gpm", "20240305") == [
             "gpm_rain_24h_20240305.tif"
         ]
-        assert _written(8, "plan_test", "silver", "gpm", "20240305") == []
-        assert meta["windows"]["24h"]["targets"]["BRONZE"]["processing_level"] == RAW
+        assert _written(8, "plan_test", "accumulated", "gpm", "20240305") == []
+        assert meta["windows"]["24h"]["targets"]["ALIGNED"]["processing_level"] == RAW
 
     def test_processed_builds_all_windows(self, gpm_stub):
         _, meta = _run_gpm(["PROCESSED"])
 
         assert gpm_stub == [("24h", 1), ("72h", 3), ("7d", 7)]
         assert set(meta["windows"]) == {"24h", "72h", "7d"}
-        assert _written(8, "plan_test", "silver", "gpm", "20240305") == [
+        assert _written(8, "plan_test", "accumulated", "gpm", "20240305") == [
             "gpm_rain_24h_20240305.tif",
             "gpm_rain_72h_20240305.tif",
             "gpm_rain_7d_20240305.tif",
         ]
-        assert _written(8, "plan_test", "bronze", "gpm", "20240305") == []
+        assert _written(8, "plan_test", "aligned", "gpm", "20240305") == []
 
     def test_both_levels_put_daily_rain_in_both_tiers(self, gpm_stub):
         _, meta = _run_gpm(["RAW", "PROCESSED"])
 
         assert gpm_stub == [("24h", 1), ("72h", 3), ("7d", 7)]
-        assert _written(8, "plan_test", "bronze", "gpm", "20240305") == [
+        assert _written(8, "plan_test", "aligned", "gpm", "20240305") == [
             "gpm_rain_24h_20240305.tif"
         ]
-        assert len(_written(8, "plan_test", "silver", "gpm", "20240305")) == 3
+        assert len(_written(8, "plan_test", "accumulated", "gpm", "20240305")) == 3
         targets = meta["windows"]["24h"]["targets"]
-        assert targets["BRONZE"]["processing_level"] == RAW
-        assert targets["SILVER"]["processing_level"] == PROCESSED
+        assert targets["ALIGNED"]["processing_level"] == RAW
+        assert targets["ACCUMULATED"]["processing_level"] == PROCESSED
 
 
 # ---------------------------------------------------------------------------
@@ -412,8 +427,8 @@ class TestProcessingLevelColumn:
             )
 
     def test_level_is_persisted(self, db_client, meta, sample_scene, sample_dataset):
-        raw_id = self._insert(meta, sample_scene, sample_dataset, "BRONZE", "VV", RAW)
-        proc_id = self._insert(meta, sample_scene, sample_dataset, "SILVER", "VV", PROCESSED)
+        raw_id = self._insert(meta, sample_scene, sample_dataset, "ALIGNED", "VV", RAW)
+        proc_id = self._insert(meta, sample_scene, sample_dataset, "DESPECKLED", "VV", PROCESSED)
         assert self._level_of(db_client, raw_id) == RAW
         assert self._level_of(db_client, proc_id) == PROCESSED
 
@@ -422,7 +437,7 @@ class TestProcessingLevelColumn:
         job_id = meta.insert_processing_job(sample_scene, "DOWNLOAD", parameters={})
         pid = meta.insert_data_product(
             scene_id=sample_scene, job_id=job_id, dataset_id=sample_dataset,
-            product_tier="GOLD", source="SENTINEL1", product_type="COG",
+            product_tier="COG", source="SENTINEL1", product_type="COG",
             band_name="VH", file_path="/tmp/default.tif", file_name="default.tif",
             file_size_mb=1.0, data_hash_sha256="b" * 64,
         )
@@ -433,7 +448,7 @@ class TestProcessingLevelColumn:
         with pytest.raises(ValueError):
             meta.insert_data_product(
                 scene_id=sample_scene, job_id=job_id, dataset_id=sample_dataset,
-                product_tier="BRONZE", source="SENTINEL1", product_type="CROPPED_TIFF",
+                product_tier="ALIGNED", source="SENTINEL1", product_type="CROPPED_TIFF",
                 band_name="VV", file_path="/tmp/bad.tif", file_name="bad.tif",
                 file_size_mb=1.0, data_hash_sha256="c" * 64,
                 processing_level="BRONZE",
@@ -441,7 +456,7 @@ class TestProcessingLevelColumn:
 
     def test_check_constraint_guards_raw_sql(self, db_client, meta, sample_scene, sample_dataset):
         """Jaring pengaman untuk penulis yang tidak lewat MetadataManager."""
-        product_id = self._insert(meta, sample_scene, sample_dataset, "BRONZE", "VV", RAW)
+        product_id = self._insert(meta, sample_scene, sample_dataset, "ALIGNED", "VV", RAW)
         with pytest.raises(IntegrityError):
             with db_client.session() as sess:
                 sess.execute(

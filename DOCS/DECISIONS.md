@@ -8,6 +8,19 @@
 
 **Trade-off**: More complex pipeline orchestration. Fusion stage must branch on strategy.
 
+**Status implementasi**: strategi baru benar-benar bercabang sejak
+`etl/fusion_strategies.py` ada. Sebelum itu `fusion_strategy` cuma *dicatat*
+(ditulis ke `f.attrs["fusion_strategy"]` dan `fusion_products`) tapi tidak
+pernah jadi percabangan, dan seluruh pipeline berjangkar pada scene S1 —
+sehingga ketiga strategi menghasilkan berkas yang identik kecuali satu atribut
+teks. Klaim "core novelty" di atas baru benar setelah itu.
+
+Strategi terurai jadi **dua sumbu** — unduh (tanggal aux mana diambil) dan
+rakit (tanggal mana jadi berkas HDF5). HYBRID adalah strategi ketiga yang sah
+justru karena memilih sumbu berbeda dari masing-masing: unduh seperti
+FULL_COVERAGE, rakit seperti CO_OCCURRENCE. Lihat DOCS/ETL.md "Strategies: two
+axes, not one" untuk tabelnya.
+
 ## D2: Per-Satellite Processing Level (Not Global Toggle)
 
 **Decision**: Each satellite has its own RAW/PROCESSED definition, configured independently. Users can request RAW, PROCESSED, or both per source.
@@ -15,27 +28,31 @@
 **Why**: "Processing" means fundamentally different things for each sensor. Sentinel-1 RAW vs PROCESSED is about speckle filtering (Lee filter ablation). MODIS RAW vs PROCESSED is about whether derived indices (NDVI, NDWI) are computed. GPM RAW vs PROCESSED is about single-day rainfall vs multi-day accumulation windows. A single global toggle would force all three to the same level, preventing mixed configurations like "filtered S1 + raw MODIS flood map + accumulated GPM rainfall."
 
 **Per-satellite definitions**:
-- **S1 RAW**: Calibrate + reproject + crop (no Lee filter, no QA) → BRONZE
-- **S1 PROCESSED**: + Lee filter 7×7 + QA analytics + COG export → SILVER → GOLD
-- **MODIS RAW**: Flood map only (no NDVI/NDWI) → BRONZE
-- **MODIS PROCESSED**: + NDVI + NDWI from reflectance → SILVER → GOLD
-- **GPM RAW**: Daily rainfall only → BRONZE
-- **GPM PROCESSED**: + 24h/72h/7d accumulation → SILVER → GOLD
+- **S1 RAW**: Calibrate + reproject + crop (no Lee filter, no QA) → ALIGNED
+- **S1 PROCESSED**: + Lee filter 7×7 + QA analytics + COG export → DESPECKLED → COG
+- **MODIS RAW**: Flood map only (no NDVI/NDWI) → ALIGNED
+- **MODIS PROCESSED**: + NDVI + NDWI from reflectance → INDICES → COG
+- **GPM RAW**: Daily rainfall only → ALIGNED
+- **GPM PROCESSED**: + 24h/72h/7d accumulation → ACCUMULATED → COG
 
 **Trade-off**: More complex UI (per-source checkboxes instead of one toggle) and more complex pipeline orchestration. Mitigated by a "Pilih Semua" master toggle for users who don't need fine control.
 
 **Schema impact**: Processing config moves from a TEXT[] column on `datasets` to a separate `dataset_source_config` junction table with per-source `processing_levels`.
 
+**Konsekuensi penamaan**: karena "PROCESSED" berarti tiga operasi yang tidak sejenis, tier hasilnya juga tidak bisa satu nama — lihat [D14](#d14-tier-dinamai-per-kontrak-bukan-medallion-supersede-d3).
+
 ## D3: Lakehouse (6 Tiers) Instead of Flat Storage
 
-**Decision**: RAW → BRONZE → SILVER → GOLD → PREVIEW → FUSION tier hierarchy with automatic cleanup.
+> **Sebagian di-supersede oleh [D14](#d14-tier-dinamai-per-kontrak-bukan-medallion-supersede-d3).** Keputusan *berjenjang vs datar* di bawah ini tetap berlaku; hanya **nama** tier yang berubah. Baca `BRONZE` sebagai `ALIGNED`, `SILVER` sebagai `DESPECKLED`/`INDICES`/`ACCUMULATED` (per source), `GOLD` sebagai `COG`, `FUSION` sebagai `FUSED`.
+
+**Decision**: RAW → ALIGNED → (DESPECKLED | INDICES | ACCUMULATED) → COG → PREVIEW → FUSED tier hierarchy with automatic cleanup.
 
 **Why**:
 - RAW enables re-calibration without re-downloading (~1.6 GB/scene saved)
-- BRONZE is the checkpoint before expensive filtering
-- SILVER enables quality inspection on filtered output
-- GOLD is the analysis-ready single-sensor format (COG)
-- FUSION is the ML-ready multi-modal format (HDF5)
+- ALIGNED is the checkpoint before expensive per-source processing
+- The rank-2 tier enables quality inspection on processed output
+- COG is the analysis-ready single-sensor format
+- FUSED is the ML-ready multi-modal format (HDF5)
 - Users only keep tiers they need; cleanup frees disk automatically
 
 ## D4: HDF5 for Fusion (Not Multi-Band GeoTIFF)
@@ -106,7 +123,7 @@
 
 **Alternative (not chosen)**: Pure LocalStorage would be faster (no network call) but loses data if user clears cache or switches device. Hybrid (try backend, fallback to localStorage) adds complexity for marginal benefit.
 
-**Constraint**: Endpoint returns only config fields (region_id, sources, fusion_strategy, preview_options), **not** datasets table keys like dataset_id or name. This ensures user deliberately re-enters dates and dataset name (not duplicating).
+**Constraint**: Endpoint returns config fields (region_id, sources, fusion_strategy, preview_options, date_start, date_end), **not** datasets table keys like dataset_id or name. Date range IS included and pre-filled by the frontend (unlike `name`, which the user must always re-enter) -- it's still just a preset the user can edit before submitting, not a lock, so it doesn't reintroduce accidental duplication risk.
 
 **UI Behavior**:
 - Button only shows if at least 1 dataset exists
@@ -114,3 +131,89 @@
 - On success: form fields auto-populate, focus first editable field
 - On failure: inline error message, user can still proceed manually
 - User can edit any field after populate (clone is preset, not locked)
+
+## D14: Tier Dinamai per Kontrak, Bukan Medallion (Supersede D3)
+
+**Decision**: Buang kosakata medallion (BRONZE/SILVER/GOLD). Tier dinamai menurut **jaminan yang dipenuhi artefak**, dan khusus tahap "nilai tambah PROCESSED" nama dipecah per-source karena ketiga satelit memang mengerjakan hal yang tidak sejenis.
+
+| Rank | Nama lama | Nama baru | Berlaku untuk | Kontrak |
+|---|---|---|---|---|
+| 0 | `RAW` | `RAW` | semua | format native vendor (SAFE / HDF4 / NetCDF4), apa adanya |
+| 1 | `BRONZE` | `ALIGNED` | semua | EPSG:4326 + crop AOI + satuan fisis |
+| 2 | `SILVER` | `DESPECKLED` | sentinel1 | Lee filter 7×7 sudah diterapkan |
+| 2 | `SILVER` | `INDICES` | modis | NDVI + NDWI sudah dihitung |
+| 2 | `SILVER` | `ACCUMULATED` | gpm | jendela 24h/72h/7d sudah dibangun |
+| 3 | `GOLD` | `COG` | semua | Cloud-Optimized GeoTIFF, HTTP range-readable |
+| 4 | `FUSION` | `FUSED` | lintas-source | HDF5 multi-modal |
+| — | `PREVIEW` | `PREVIEW` | semua | PNG turunan, di luar rantai lineage |
+
+**Why**:
+
+1. **BRONZE/SILVER/GOLD tidak lagi berarti apa yang dijanjikan medallion.** GOLD bukan mutu lebih tinggi dari SILVER — pikselnya identik, hanya dibungkus ulang jadi COG. Itu keputusan *format*, bukan *kualitas*. Medallion juga hanya punya tiga level sementara pipeline ini punya enam; `FUSION` dan `PREVIEW` sudah tidak muat sejak awal.
+
+2. **SILVER adalah satu nama untuk tiga operasi yang berbeda jenis** — Lee filter memperbaiki variabel yang sama, NDVI/NDWI menciptakan variabel baru, akumulasi membuat agregat temporal baru. Ini konsekuensi langsung dari D2 (processing level per-satelit): begitu "PROCESSED" didefinisikan per-sensor, tier hasilnya juga tidak bisa satu nama.
+
+3. **ALIGNED dan COG justru seragam, jadi tidak dipecah.** Ketiga source menjamin hal yang identik di rank 1 dan rank 3. Memberi tiga nama berbeda di situ akan mengarang perbedaan yang tidak ada — kesalahan cermin dari nomor 2 — dan memaksa `storage_breakdown` serta filter `?tier=` memakai tiga kosakata untuk satu konsep.
+
+4. **User tidak pernah memilih tier.** Yang dipilih di UI adalah mode per-satelit (RAW/PROCESSED) dan `fusion_strategy`. Tier adalah konsekuensi, bukan input. Nama yang deskriptif membuat isi folder hasil unduhan bisa dibaca tanpa perlu membuka dokumentasi.
+
+5. **Lineage jadi self-documenting.** Baris `data_lineage` yang berbunyi `aligned → indices` langsung terbaca tanpa harus melihat `transformation_type`.
+
+**Mekanisme — nama dipisah dari peringkat**: `TIER_ORDER` sebagai list tidak lagi memadai karena rank 2 punya tiga nilai. Ganti dengan `rank(tier) -> int` yang mengembalikan 0–4 sesuai tabel di atas. Seluruh aritmetika yang ada tetap hidup tanpa perubahan logika:
+
+- `dataset_manager.compute_max_tier` — `max(..., key=rank)`
+- `dataset_manager.compute_tiers_to_delete` — perbandingan indeks jadi perbandingan `rank`
+- pemetaan tahap-pipeline → indeks tier tertinggi ([dataset_manager.py:30](../etl/dataset_manager.py#L30))
+- aturan fusion "baca tier tertinggi yang tersedia per source" — jadi `max(rank)` per source, hasilnya `COG` untuk PROCESSED dan `ALIGNED` untuk RAW
+
+**Call-site terdampak**:
+
+| Berkas | Yang berubah |
+|---|---|
+| [etl/dataset_manager.py:28](../etl/dataset_manager.py#L28) | `TIER_ORDER` list → fungsi `rank()`; validasi tier ikut source |
+| [etl/folder_manager.py:73](../etl/folder_manager.py#L73) | `TIERS` + `TIER_SOURCES` — rank 2 dipetakan per-source, bukan `SOURCES` penuh |
+| [etl/database_client.py:321](../etl/database_client.py#L321) | komentar urutan tier yang harus sinkron dengan `rank()` |
+| [etl/module4_gold_export.py](../etl/module4_gold_export.py) | rename → `module4_cog_export.py`; `GOLD_PRODUCT_TYPES` → `COG_PRODUCT_TYPES` |
+| [etl/module5_orchestrator.py:650](../etl/module5_orchestrator.py#L650) | pemanggil `compute_tiers_to_delete` |
+| `api/schemas.py` | `ProductTierEnum` — nilai baru |
+| [api/routes/products.py:72](../api/routes/products.py#L72) | deskripsi query `tier=`; nilai rank 2 butuh `IN (...)` tiga nilai |
+| [api/routes/preview.py:157](../api/routes/preview.py#L157), [quality.py:217](../api/routes/quality.py#L217), [scenes.py:79](../api/routes/scenes.py#L79) | konstanta `ProductTierEnum.SILVER` / `.GOLD` |
+| DB | migration: rename nilai pada kolom `product_tier`; rank 2 dipetakan menurut `source` baris tersebut |
+
+**Trade-off**: query "ambil semua produk tahap-menengah lintas source" tidak lagi satu perbandingan kesetaraan, melainkan `IN ('DESPECKLED','INDICES','ACCUMULATED')`. Ini harga yang disengaja: satu nama seragam di posisi itu hanya benar kalau operasinya seragam, dan operasinya tidak seragam.
+
+**Alternatif yang tidak dipilih**:
+
+- **Nama per-satelit untuk SEMUA rank** (mis. S1 `geocoded` / MODIS `floodmap` / GPM `daily` di rank 1). Ditolak karena memecah dua tier yang kontraknya benar-benar identik — lihat alasan 3. Juga memaksa peneliti menghafal tiga kamus untuk menyebut tahap yang setara saat membandingkan source dalam satu ablation study.
+- **CEOS Processing Level (L1/L2/L3/L4)**. Standar komunitas EO dan pemetaannya hampir pas, tapi `L2` tetap satu nama untuk tiga operasi berbeda — tidak menyelesaikan keluhan utama — dan angka lebih buram dibaca di path folder ketimbang kata.
+- **Dua sumbu terpisah** (`processing_level` × `artifact_form`). Paling benar secara arsitektur, tapi mengubah kedalaman folder dan seluruh skema DB untuk keuntungan yang sudah dicakup penamaan kontrak.
+- **Hapus tier dari API/UI, sisakan internal.** Sebagian sudah terjadi (user memang tidak memilih tier), tapi tier tetap harus muncul di `storage_breakdown` dan file browser, jadi namanya tetap perlu jujur.
+
+**Catatan koreksi dokumentasi** (ketidaksinkronan yang ditemukan saat keputusan ini disusun, harus dibereskan bersama migrasi):
+
+1. ~~[DOCS/ETL.md:110](ETL.md#L110) menyatakan layout `{source}/{processing_level}/{tier}/` sementara kode membangun `{YYYYMMDD}/{tier}/{source}/`.~~ **Sudah dibereskan** oleh relayout D15: layout sekarang `{source}/{RAW|PROCESSED}/` dan docs-nya ditulis ulang. Ironisnya bentuk yang diklaim docs lama justru lebih dekat ke bentuk akhir daripada yang dibangun kode saat itu.
+2. [DOCS/DESIGN.md:192](DESIGN.md#L192) menyebut "RAW tier quirk: tidak ada folder tier RAW". Sudah tidak berlaku — `folder_manager.TIERS` memuat `raw` sebagai tier tersendiri. Dengan D14 catatan quirk ini dihapus seluruhnya: `raw/` (native) dan `aligned/` (georeferenced) adalah dua kontrak berbeda yang namanya masing-masing sudah jelas, sehingga tidak ada lagi yang perlu dijelaskan sebagai pengecualian.
+
+## D15: Amandemen D14 — Tier Bukan Lagi Segmen Path
+
+**Decision**: Layout on-disk berubah jadi sumber-di-depan dengan dua laci per sumber (`{source}/{RAW|PROCESSED}/`). Nama tier kontrak dari D14 (`ALIGNED`, `DESPECKLED`, `INDICES`, `ACCUMULATED`, `COG`) **tidak jadi dipakai sebagai nama folder**; tier tetap hidup sebagai nilai `data_products.product_tier`, kosakata `data_lineage`, dan kunci `storage_breakdown`.
+
+**Why**: D14 menjawab "nama tier mana yang jujur". Relayout menjawab pertanyaan yang lebih dulu perlu dijawab — **apakah tier pantas jadi segmen path sama sekali**. Ternyata tidak: yang paling sering diminta user adalah "ambil Sentinel-1 PROCESSED saja", dan di layout lama itu tersebar di satu folder per tanggal per tier. Begitu sumber dan level jadi dua segmen path, tier tidak menyisakan pekerjaan di jalur.
+
+Pemetaannya jatuh tepat pada definisi D2:
+
+| Tier | Laci | Isi |
+|---|---|---|
+| `BRONZE` | `{source}/RAW/` | terkalibrasi + ter-crop, tanpa Lee — definisi "S1 RAW" di D2 |
+| `GOLD` | `{source}/PROCESSED/` | COG analysis-ready |
+| `RAW`, `SILVER` | `_work/` | artefak antara, disapu di akhir job |
+
+**Trade-off yang disengaja**: mengulang Lee filter dengan parameter berbeda berarti mengunduh ulang scene-nya (~1,6 GB), karena ZIP SAFE tidak lagi disimpan. Harganya dibayar supaya `{source}/RAW/` dan `{source}/PROCESSED/` berarti persis seperti yang dijanjikan D2, tanpa artefak lain berebut folder yang sama. Sidecar `metadata_qa.json` ikut hilang; metrik kualitasnya sendiri tetap di tabel `quality_metrics`.
+
+**Konsekuensi lain**:
+- Tanggal wajib ada di nama berkas. Ketiga sumber sudah melakukannya; hanya PNG preview yang perlu ditambahi prefiks — tanpa itu render tanggal kedua menimpa tanggal pertama.
+- `list_date_dirs` berubah fungsi jadi detektor layout lama (`is_legacy_layout`).
+- Dua scene Sentinel-1 pada hari yang sama berbagi satu "kunci scene" di listing, karena tidak ada lagi folder scene. Berkasnya tetap terpisah lewat `product_identifier` di nama.
+- `_work/` disapu di akhir SETIAP job, bukan hanya saat `fusion_output_only` — isinya scratch menurut definisinya sendiri.
+
+**Tidak ada migrasi**: dataset pra-relayout dibiarkan apa adanya, dideteksi `is_legacy_layout()`, dan panel Struktur menampilkan pesan "format lama" alih-alih merender pohon dengan kosakata yang sudah tidak berlaku. Berkasnya tetap bisa diunduh utuh.

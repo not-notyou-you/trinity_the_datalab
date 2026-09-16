@@ -49,10 +49,13 @@ from rasterio.transform import from_origin
 from rasterio.warp import reproject
 from shapely.geometry import box, mapping
 
+from etl import download_guard as dg
 from etl import folder_manager as fm
 from etl.pipeline_logger import PipelineLogger
 from etl.processing_plan import GPM as GPM_SOURCE_NAME
 from etl.processing_plan import PROCESSED, SourcePlan, normalize_levels
+
+from etl import tier_names as tn
 
 logger = logging.getLogger(__name__)
 
@@ -255,6 +258,8 @@ def _download_with_retry(
     if out_path.exists() and out_path.stat().st_size > 0:
         logger.info("[M8] sudah ada di disk, lewati download: %s", out_path.name)
         return _md5(out_path)
+    if dg.reuse_granule(out_path, "gpm", fm.DATA_ROOT, "[M8]"):
+        return _md5(out_path)
 
     tmp_path = out_path.with_suffix(out_path.suffix + ".part")
     last_exc: Exception | None = None
@@ -267,15 +272,19 @@ def _download_with_retry(
             {"item": item_label, "attempt": attempt, "max_retries": MAX_RETRIES, "url": url},
         )
         try:
-            with requests.get(url, headers=_auth_headers(), stream=True, timeout=300) as r:
+            with requests.get(
+                url, headers=_auth_headers(), stream=True, timeout=dg.REQUEST_TIMEOUT
+            ) as r:
                 r.raise_for_status()
                 expected_size = int(r.headers.get("Content-Length", 0))
                 downloaded = 0
+                guard = dg.StallGuard()
                 with open(tmp_path, "wb") as f:
-                    for chunk in r.iter_content(chunk_size=8 * 1024 * 1024):
+                    for chunk in r.iter_content(chunk_size=dg.CHUNK_SIZE):
                         f.write(chunk)
                         downloaded += len(chunk)
-                        if expected_size and downloaded % (50 * 1024 * 1024) < 8 * 1024 * 1024:
+                        guard.update(len(chunk))
+                        if expected_size and downloaded % (50 * 1024 * 1024) < dg.CHUNK_SIZE:
                             _plog_event(
                                 plog, dataset_id, scene_id, "DOWNLOAD", "RUNNING",
                                 f"{item_label}: {downloaded / 1e6:.0f}/{expected_size / 1e6:.0f} MB",
@@ -540,7 +549,7 @@ def _window_targets(
     """(tier, processing_level, path) untuk satu window, tier tertinggi dulu.
 
     Tier tertinggi dibangun; target lain diisi dengan menyalin berkas itu."""
-    ordered = sorted(targets, key=lambda t: 0 if t[0] == "SILVER" else 1)
+    ordered = sorted(targets, key=lambda t: 0 if tn.rank(t[0]) == 2 else 1)
     out = []
     for tier, level in ordered:
         scene_dir = fm.ensure_scene_dir(

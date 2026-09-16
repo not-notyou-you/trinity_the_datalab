@@ -67,6 +67,8 @@ async def create_dataset(
             name=req.name,
             sources=req.sources,
             fusion_strategy=req.fusion_strategy,
+            fusion_output_only=req.fusion_output_only,
+            s1_match_tolerance_days=req.s1_match_tolerance_days,
             preview_options=req.preview_options,
             description=req.description,
             quality_settings=req.quality_settings.model_dump() if req.quality_settings else None,
@@ -89,10 +91,11 @@ async def get_last_dataset_config(
     db: DatabaseClient = Depends(get_db),
 ) -> DatasetLastConfigResponse:
     """Config dataset terakhir yang dibuat: region, sources + level pemrosesan,
-    strategi fusi, opsi preview.
+    strategi fusi, opsi preview, dan rentang tanggal.
 
-    Tanpa `name` dan rentang tanggal -- keduanya sengaja harus diisi ulang user
-    supaya tidak tanpa sengaja menduplikasi dataset (DOCS/DECISIONS.md D13).
+    Tanpa `name` -- sengaja harus diisi ulang user supaya tidak tanpa sengaja
+    menduplikasi dataset (DOCS/DECISIONS.md D13). Rentang tanggal diikutkan
+    sebagai preset yang bisa diedit di wizard, bukan dikunci.
     """
     config = db.get_last_dataset_config()
     if not config:
@@ -557,6 +560,81 @@ async def get_preview_image(
     )
 
 
+# Tahap per satelit untuk panel Detail: tier di disk dikelompokkan jadi
+# "download" (rank 0-1, artefak hasil unduh + crop) dan "processing"
+# (rank 2-3, nilai tambah per-source + COG). Urutan = urutan pipeline.
+# Nama pra-D14 (bronze/gold/...) sengaja tidak ikut: folder_manager
+# menyelesaikannya ke laci yang sama dengan nama barunya, jadi berkasnya akan
+# terhitung dua kali.
+_DETAIL_STAGES: tuple[tuple[str, str], ...] = (
+    ("raw", "download"), ("aligned", "download"),
+    ("despeckled", "processing"), ("indices", "processing"),
+    ("accumulated", "processing"), ("cog", "processing"),
+)
+
+
+@router.get(
+    "/{dataset_id}/storage/by-source",
+    summary="Data per satelit: scene yang sudah diunduh/diproses + storage per tahap",
+)
+async def get_dataset_storage_by_source(
+    dataset_id: int, db: DatabaseClient = Depends(get_db)
+) -> dict:
+    info = _mgr(db).get_dataset(dataset_id)
+    if info is None:
+        raise HTTPException(404, f"Dataset {dataset_id} tidak ditemukan")
+    name = info["name"]
+
+    def _scene_items(files_by_scene: dict[str, list]) -> list[dict]:
+        return [
+            {"scene": sc, "size_bytes": sum(f.stat().st_size for f in files),
+             "file_count": len(files)}
+            for sc, files in sorted(files_by_scene.items())
+        ]
+
+    sources: dict[str, dict] = {}
+    for src in fm.SOURCES:
+        stages = []
+        for tier, phase in _DETAIL_STAGES:
+            if src not in fm.TIER_SOURCES.get(tier, ()):
+                continue
+            files_by_scene = {
+                sc: fm.get_scene_files(dataset_id, name, tier, src, sc)
+                for sc in fm.list_scenes(dataset_id, name, tier, src)
+            }
+            loose = fm.list_loose_files(dataset_id, name, tier, src)
+            if loose:
+                files_by_scene[fm.GRANULE_CACHE_LABEL] = loose
+            scenes = [s for s in _scene_items(files_by_scene) if s["file_count"]]
+            if not scenes:
+                continue
+            stages.append({
+                "tier": tier.upper(),
+                "phase": phase,
+                "size_bytes": sum(s["size_bytes"] for s in scenes),
+                "file_count": sum(s["file_count"] for s in scenes),
+                "scenes": scenes,
+            })
+        if stages:
+            sources[src] = {
+                "size_bytes": sum(st["size_bytes"] for st in stages),
+                "stages": stages,
+            }
+
+    fusion = None
+    fused_scenes = [
+        s for s in _scene_items({
+            sc: fm.get_sourceless_scene_files(dataset_id, name, "fused", sc)
+            for sc in fm.list_sourceless_scenes(dataset_id, name, "fused")
+        }) if s["file_count"]
+    ]
+    if fused_scenes:
+        fusion = {"size_bytes": sum(s["size_bytes"] for s in fused_scenes),
+                  "scenes": fused_scenes}
+
+    return {"dataset_id": dataset_id, "sources": sources, "fusion": fusion}
+
+
 @router.get(
     "/{dataset_id}/storage/summary",
     response_model=DatasetStorageSummary,
@@ -572,6 +650,9 @@ async def get_dataset_storage_summary(
     breakdown = fm.storage_breakdown(dataset_id, info["name"])
     return DatasetStorageSummary(
         dataset_id=dataset_id,
+        legacy_layout=fm.is_legacy_layout(
+            fm.get_dataset_root(dataset_id, info["name"])
+        ),
         tiers={
             tier: TierStorageItem(
                 size_bytes=t["size_bytes"],

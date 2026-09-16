@@ -1,5 +1,6 @@
 # etl/database_client.py
 from __future__ import annotations
+
 import logging
 import os
 import time
@@ -38,6 +39,8 @@ from sqlalchemy.exc import OperationalError, SQLAlchemyError
 from sqlalchemy.orm import DeclarativeBase, Session, relationship, sessionmaker
 from sqlalchemy.pool import QueuePool
 
+from etl import tier_names as tn
+
 logger = logging.getLogger(__name__)
 
 
@@ -55,7 +58,24 @@ class JobStatusEnum(str, PyEnum):
 
 
 class ProductTierEnum(str, PyEnum):
+    """Nilai `data_products.product_tier`.
+
+    Kosakata D14 (dinamai menurut kontrak yang dipenuhi artefaknya) plus
+    kosakata lama yang DIPERTAHANKAN supaya baris pra-migrasi masih bisa
+    dibaca kembali jadi objek. Nama lama tidak pernah ditulis lagi oleh kode
+    baru; lihat etl/tier_names.py untuk pemetaan dan peringkatnya.
+
+    Keduanya tidak bisa jadi alias Python (alias menuntut nilai yang sama),
+    jadi ini anggota biasa yang ditandai warisan lewat komentar.
+    """
     RAW = "RAW"
+    ALIGNED = "ALIGNED"
+    DESPECKLED = "DESPECKLED"
+    INDICES = "INDICES"
+    ACCUMULATED = "ACCUMULATED"
+    COG = "COG"
+    FUSED = "FUSED"
+    # -- warisan pra-D14, dibaca tapi tidak pernah ditulis --
     BRONZE = "BRONZE"
     SILVER = "SILVER"
     GOLD = "GOLD"
@@ -315,16 +335,23 @@ def source_configs_to_api(configs: "list[DatasetSourceConfig]") -> dict[str, dic
     }
 
 
-# Tier yang dihasilkan tiap processing level. RAW dan BRONZE muncul di
+# Tier yang dihasilkan tiap processing level. RAW dan ALIGNED muncul di
 # keduanya: download selalu menghasilkan artefak RAW, dan crop/kalibrasi
-# selalu menghasilkan BRONZE. Yang membedakan adalah lanjutan ke SILVER/GOLD.
-# Urutannya mengikuti TIER_ORDER di etl/dataset_manager.py -- keduanya harus
-# sepakat, karena compute_max_tier() di sana mengindeks daftar ini.
-_TIERS_BY_LEVEL: dict[str, tuple[str, ...]] = {
-    ProcessingLevelEnum.RAW.value: ("RAW", "BRONZE"),
-    ProcessingLevelEnum.PROCESSED.value: ("RAW", "BRONZE", "SILVER", "GOLD"),
-}
-_TIER_SORT_ORDER = ("RAW", "BRONZE", "SILVER", "GOLD", "FUSION")
+# selalu menghasilkan ALIGNED. Yang membedakan adalah lanjutan ke tier rank 2
+# (per-source) lalu COG. Peringkatnya dipegang etl/tier_names.rank().
+def _tiers_for(level: str, source: str) -> tuple[str, ...]:
+    """Tier yang dihasilkan satu source pada satu level.
+
+    Source ikut jadi argumen karena rank 2 bercabang (D14): PROCESSED
+    menghasilkan DESPECKLED untuk S1, INDICES untuk MODIS, ACCUMULATED untuk
+    GPM. Versi lama fungsi ini membuang kunci source dan karena itu secara
+    harfiah tidak bisa memancarkan ketiganya.
+    """
+    if level == ProcessingLevelEnum.RAW.value:
+        return (tn.RAW, tn.ALIGNED)
+    if level == ProcessingLevelEnum.PROCESSED.value:
+        return (tn.RAW, tn.ALIGNED, tn.RANK2_BY_SOURCE[source.upper()], tn.COG)
+    return ()
 
 
 def derive_required_tiers(
@@ -337,17 +364,57 @@ def derive_required_tiers(
     NOT NULL dan masih dipakai orchestrator untuk memutuskan tahap mana yang
     dilewati. Fungsi ini yang menjembatani keduanya.
 
-    FUSION hanya ikut kalau ada strategi fusi DAN ada sumber yang PROCESSED:
-    fusi menyusun stack dari artefak GOLD, jadi dataset yang semua sumbernya
+    FUSED hanya ikut kalau ada strategi fusi DAN ada sumber yang PROCESSED:
+    fusi menyusun stack dari artefak COG, jadi dataset yang semua sumbernya
     RAW-only tidak punya bahan untuk difusikan.
     """
     tiers: set[str] = set()
-    for levels in configs.values():
+    for source, levels in configs.items():
         for level in levels:
-            tiers.update(_TIERS_BY_LEVEL.get(level, ()))
-    if with_fusion and "GOLD" in tiers:
-        tiers.add("FUSION")
-    return [tier for tier in _TIER_SORT_ORDER if tier in tiers]
+            tiers.update(_tiers_for(level, source))
+    if with_fusion and tn.COG in tiers:
+        tiers.add(tn.FUSED)
+    return sorted(tiers, key=tn.sort_key)
+
+
+def _validate_s1_tolerance(value) -> int | None:
+    """Validasi `datasets.s1_match_tolerance_days`. None = pakai default kolom.
+
+    Batas atas 14 hari melebihi satu siklus revisit penuh Sentinel-1A (~12
+    hari): di luar itu "scene terdekat" sudah bisa berasal dari lintasan yang
+    kondisinya sama sekali berbeda, dan menyebut hasilnya fusi akan
+    menyesatkan. Dicek di sini supaya payload yang salah tidak perlu menyentuh
+    database; CHECK constraint tetap ada sebagai jaring pengaman.
+    """
+    if value is None:
+        return None
+    try:
+        days = int(value)
+    except (TypeError, ValueError):
+        raise ValueError(
+            f"s1_match_tolerance_days harus bilangan bulat, bukan {value!r}"
+        ) from None
+    if not 0 <= days <= 14:
+        raise ValueError(
+            f"s1_match_tolerance_days di luar jangkauan: {days} (0-14)"
+        )
+    return days
+
+
+def _validate_fusion_output_only(value, fusion_strategy: "str | None") -> bool:
+    """`fusion_output_only` hanya masuk akal kalau ada fusi.
+
+    Tanpa strategi fusi tidak ada stack HDF5 yang ditulis, jadi menghapus
+    artefak per-satelit akan menyisakan dataset kosong. Ditolak, bukan
+    diam-diam diabaikan: user yang mencentangnya jelas mengharapkan sesuatu.
+    """
+    enabled = bool(value)
+    if enabled and fusion_strategy is None:
+        raise ValueError(
+            "fusion_output_only butuh fusion_strategy: tanpa fusi, menghapus "
+            "artefak per-satelit tidak menyisakan output apa pun"
+        )
+    return enabled
 
 
 def _validate_fusion_strategy(value, source_count: int) -> "str | None":
@@ -845,6 +912,17 @@ class Dataset(Base):
         ARRAY(Text),
         server_default=text("ARRAY['GRAYSCALE', 'COLORED', 'COMPOSITE']::TEXT[]"),
     )
+    # Migrasi 019 -- kontrol strategi fusi.
+    # Hapus artefak per-satelit setelah stack fusi tanggal itu ditulis. BUKAN
+    # "lewati pemrosesan": fusi tetap butuh bahannya.
+    fusion_output_only = Column(
+        Boolean, nullable=False, server_default=text("FALSE")
+    )
+    # Hanya dipakai FULL_COVERAGE. CO_OCCURRENCE dan HYBRID berjangkar pada
+    # scene S1, jadi tidak pernah perlu meminjam dari hari lain.
+    s1_match_tolerance_days = Column(
+        SmallInteger, nullable=False, server_default=text("2")
+    )
     quality_settings = Column(JSONB, nullable=False, default={})
     dataset_kind = Column(String(10), nullable=False, default="STANDARD")
     status = Column(String(20), nullable=False, default="DRAFT")
@@ -1325,6 +1403,14 @@ class DatabaseClient:
         payload["preview_options"] = _validate_preview_options(
             payload.get("preview_options")
         )
+        payload["fusion_output_only"] = _validate_fusion_output_only(
+            payload.get("fusion_output_only"), fusion_strategy
+        )
+        tolerance = _validate_s1_tolerance(payload.get("s1_match_tolerance_days"))
+        if tolerance is None:
+            payload.pop("s1_match_tolerance_days", None)
+        else:
+            payload["s1_match_tolerance_days"] = tolerance
         if not payload.get("required_tiers"):
             payload["required_tiers"] = derive_required_tiers(
                 configs, with_fusion=fusion_strategy is not None
@@ -1359,18 +1445,19 @@ class DatabaseClient:
         Sebelumnya" (DOCS/DECISIONS.md D13, DOCS/API.md GET
         /api/datasets/last-config).
 
-        Sengaja HANYA mengembalikan field konfigurasi -- bukan `name` atau
-        rentang tanggal. Itu keputusan produk: user harus sadar mengisi ulang
-        nama dan tanggal supaya tidak tanpa sengaja menduplikasi dataset.
+        Sengaja TIDAK mengembalikan `name` -- itu keputusan produk: user harus
+        sadar mengisi ulang nama supaya tidak tanpa sengaja menduplikasi
+        dataset. Rentang tanggal DIIKUTSERTAKAN sebagai preset (bisa diedit
+        user di wizard), bukan dikunci.
 
         Dataset yang sudah di-soft-delete dilewati: config yang dikembalikan
         harus mencerminkan sesuatu yang masih dianggap ada oleh user.
 
         Returns:
             dict berisi region_id, region_name, sources, fusion_strategy,
-            preview_options, created_from_dataset_id, created_at. Dict KOSONG
-            kalau belum ada dataset sama sekali -- route API menerjemahkannya
-            jadi 404.
+            preview_options, date_start, date_end, created_from_dataset_id,
+            created_at. Dict KOSONG kalau belum ada dataset sama sekali --
+            route API menerjemahkannya jadi 404.
         """
         with self.session() as sess:
             dataset = sess.scalar(
@@ -1395,7 +1482,11 @@ class DatabaseClient:
                 "region_name": region_name,
                 "sources": source_configs_to_api(list(dataset.source_configs)),
                 "fusion_strategy": dataset.fusion_strategy,
+                "fusion_output_only": dataset.fusion_output_only,
+                "s1_match_tolerance_days": dataset.s1_match_tolerance_days,
                 "preview_options": list(dataset.preview_options or []),
+                "date_start": dataset.date_start,
+                "date_end": dataset.date_end,
                 "created_from_dataset_id": dataset.dataset_id,
                 "created_at": dataset.created_at,
             }
@@ -1415,13 +1506,19 @@ class FusionProduct(Base):
         # (DOCS/ETL.md, "Which input tier does fusion use?"). Dengan kunci lama
         # (feature_date, region_id) stack kedua akan menimpa yang pertama dan
         # ablation study-nya kehilangan salah satu sisi perbandingan.
+        #
+        # dataset_id ikut kunci sejak migrasi 021: tanpa itu dua dataset atas
+        # AOI dan tanggal yang sama berbagi satu baris, dan dataset yang selesai
+        # terakhir menimpa feature_stack_path dataset lain.
         UniqueConstraint(
-            "feature_date", "region_id", "processing_level",
-            name="uq_fusion_date_region_level",
+            "dataset_id", "feature_date", "processing_level",
+            name="uq_fusion_dataset_date_level",
         ),
     )
 
     fusion_id          = Column(BigInteger, primary_key=True, autoincrement=True)
+    dataset_id         = Column(Integer, ForeignKey("datasets.dataset_id",
+                                                     ondelete="CASCADE"))
     feature_date       = Column(Date, nullable=False)
     region_id          = Column(Integer, ForeignKey("regions_of_interest.region_id",
                                                      ondelete="RESTRICT"), nullable=False)
@@ -1440,6 +1537,9 @@ class FusionProduct(Base):
     processing_level   = Column(String(20), server_default=text("'PROCESSED'"))
     temporal_offset_modis = Column(Integer)
     temporal_offset_gpm   = Column(Integer)
+    # Migrasi 019: jarak hari S1 yang benar-benar terpakai. 0 = same-day,
+    # NULL = hari itu tanpa S1 (group sentinel1/ berisi NaN).
+    s1_offset_days     = Column(SmallInteger)
     created_at         = Column(DateTime(timezone=True), nullable=False, server_default=text("NOW()"))
 
     def __repr__(self) -> str:

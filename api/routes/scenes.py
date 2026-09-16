@@ -31,6 +31,8 @@ from etl.database_client import (
 )
 from etl.metadata_manager import MetadataManager
 
+from etl import tier_names as tn
+
 router  = APIRouter()
 logger  = logging.getLogger(__name__)
 
@@ -50,7 +52,7 @@ async def list_scenes(
     orbit_direction: str | None     = Query(None,  description="ASCENDING or DESCENDING"),
     date_from:       datetime | None = Query(None, description="Acquisition from (UTC ISO)"),
     date_to:         datetime | None = Query(None, description="Acquisition to (UTC ISO)"),
-    only_gold:       bool           = Query(False, description="Only scenes with GOLD product"),
+    only_gold:       bool           = Query(False, description="Only scenes with a COG product"),
     limit:           int            = Query(20,    ge=1, le=200, description="Results per page"),
     offset:          int            = Query(0,     ge=0,         description="Pagination offset"),
 ) -> SceneListResponse:
@@ -76,7 +78,7 @@ async def list_scenes(
             stmt = stmt.where(SatelliteScene.acquisition_datetime <= date_to)
         if only_gold:
             gold_scene_ids = select(DataProduct.scene_id).where(
-                DataProduct.product_tier == ProductTierEnum.GOLD,
+                DataProduct.product_tier.in_(tn.tiers_at_rank(3)),
                 DataProduct.is_latest    == True,
                 DataProduct.is_valid     == True,
             )

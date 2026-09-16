@@ -40,7 +40,9 @@ POST /api/datasets
 
 **Validation**:
 - `sources`: At least 1 key required. Each key must have non-empty `processing` array.
-- `fusion_strategy`: Required if `sources` has >1 key, must be null/omitted if only 1 key. Values: `CO_OCCURRENCE`, `FULL_COVERAGE`, `HYBRID`.
+- `fusion_strategy`: Required if `sources` has >1 key, must be null/omitted if only 1 key. Values: `CO_OCCURRENCE`, `FULL_COVERAGE`, `HYBRID`. See DOCS/ETL.md "Strategies: two axes, not one" — the strategy controls **both** which aux dates are downloaded and which dates become an HDF5.
+- `fusion_output_only` (bool, default `false`): keep only the fusion HDF5s; per-satellite artifacts are deleted **after** each date's stack is written. Not a "skip processing" switch — fusion reads those artifacts, so they are still built. Rejected with 400 if no `fusion_strategy` is set, since that would leave the dataset empty.
+- `s1_match_tolerance_days` (int 0–14, default `2`): `FULL_COVERAGE` only. How far it may borrow a Sentinel-1 scene from a neighbouring date. `0` means same-day only. Days with no scene in range still produce a file, with the `sentinel1/` group filled with NaN; the gap actually used is recorded in `fusion_products.s1_offset_days` (NULL when there was no scene at all).
 - `preview_options`: Optional. Values: `GRAYSCALE`, `COLORED`, `COMPOSITE`.
 - `location`: Preset name, free-text (geocoded), or `"lat1,lon1,lat2,lon2"` bbox string.
 
@@ -122,6 +124,8 @@ GET /api/datasets/last-config
     },
     "fusion_strategy": "HYBRID",
     "preview_options": ["COLORED", "COMPOSITE"],
+    "date_start": "2026-08-01",
+    "date_end": "2026-08-31",
     "created_from_dataset_id": 42,
     "created_at": "2026-09-06T14:08:51Z"
   }

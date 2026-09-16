@@ -1,30 +1,50 @@
 // Urutan eksekusi tahap per scene. PREVIEW harus ikut walau bukan tier
-// lineage: tierCompletionRatios mencocokkan current_stage lewat indexOf di
-// sini, dan stage yang tidak terdaftar mengembalikan -1 -- membuat scene
-// yang sedang di tahap PREVIEW terbaca belum mencapai GOLD dan ring progres
-// mundur sesaat tiap scene melewatinya.
 const STAGE_ORDER = ['DOWNLOAD','CROP','LEE_FILTER','QUALITY_ANALYTICS','GOLD_EXPORT','PREVIEW','FUSION','CLEANUP'];
-const TIER_ORDER = ['RAW', 'BRONZE', 'SILVER', 'GOLD', 'FUSION'];
-const TIER_STAGE = { RAW: 'DOWNLOAD', BRONZE: 'CROP', SILVER: 'LEE_FILTER', GOLD: 'GOLD_EXPORT', FUSION: 'FUSION' };
 // Palet tier: lima hue kategorikal, divalidasi terhadap permukaan gelap
 // #121A2B (lightness band, chroma floor, pemisahan CVD pasangan bersebelahan,
 // dan kontras). SILVER dulu #9FB0C9 yang chroma-nya di bawah ambang (terbaca
 // abu-abu) dan cuma berjarak dE 12 dari GOLD -- dua tier bersebelahan yang
 // sulit dibedakan bahkan dengan penglihatan warna normal.
-const TIER_COLORS = { RAW: '#9070E8', BRONZE: '#C4762E', SILVER: '#4A8CE0', GOLD: '#2FA07E', FUSION: '#B565D8' };
 
 // Palet source untuk panel Struktur. Sengaja jadi satu-satunya dimensi warna
 // di panel itu -- tier di sana ditandai teks, bukan warna -- supaya satu hue
 // tidak pernah berarti dua hal dalam satu komponen.
 const SOURCE_COLORS = { sentinel1: '#5B8DEF', modis: '#2FA07E', gpm: '#C4762E' };
 const SOURCE_LABELS = { sentinel1: 'Sentinel-1', modis: 'MODIS', gpm: 'GPM', fusion: 'Fusion', preview: 'Preview' };
+// Urutan tampil satelit, sama dengan SOURCE_ORDER di etl/processing_plan.py.
+const SOURCE_ORDER_KEYS = ['sentinel1', 'modis', 'gpm'];
 
 // Tier yang punya folder di disk, untuk rincian storage. Beda dari TIER_ORDER
 // di atas: itu rantai lineage yang bisa diminta user dan digambar di ring
-// progres, sementara PREVIEW adalah turunan (PNG hasil render dari GOLD) yang
+// progres, sementara PREVIEW adalah turunan (PNG hasil render dari COG) yang
 // tidak pernah ada di required_tiers tapi tetap memakan disk dan tetap harus
 // muncul di rincian. Urutannya mengikuti urutan eksekusi pipeline.
-const STORAGE_TIER_ORDER = ['RAW', 'BRONZE', 'SILVER', 'GOLD', 'PREVIEW', 'FUSION'];
+const STORAGE_TIER_ORDER = [
+  'RAW', 'ALIGNED', 'DESPECKLED', 'INDICES', 'ACCUMULATED', 'COG', 'PREVIEW', 'FUSED',
+  // Nama pra-D14, supaya dataset lama tetap terurut benar kalau sempat dirender.
+  'BRONZE', 'SILVER', 'GOLD', 'FUSION',
+];
+
+// Label tier di layar. Dipetakan ke LACI tempat berkasnya benar-benar berada,
+// karena itulah yang user lihat saat membuka hasil unduhan: ALIGNED ada di
+// {source}/RAW/, COG di {source}/PROCESSED/. Tier yang tidak punya laci
+// (artefak antara) memakai namanya sendiri.
+const TIER_LABEL = {
+  ALIGNED: 'RAW', BRONZE: 'RAW',
+  COG: 'PROCESSED', GOLD: 'PROCESSED',
+  FUSED: 'FUSION',
+};
+function tierLabel(t) { return TIER_LABEL[String(t).toUpperCase()] || t; }
+
+// Laci tempat tier itu bermuara, untuk lapisan tengah pohon Struktur.
+// Tier rank 2 (DESPECKLED/INDICES/ACCUMULATED) adalah artefak antara yang
+// disapu di akhir job, jadi biasanya tidak muncul -- tapi kalau sempat
+// terlihat saat job berjalan, tempatnya di jalur PROCESSED.
+const TIER_LEVEL = {
+  RAW: 'RAW', ALIGNED: 'RAW', BRONZE: 'RAW',
+  DESPECKLED: 'PROCESSED', INDICES: 'PROCESSED', ACCUMULATED: 'PROCESSED',
+  SILVER: 'PROCESSED', COG: 'PROCESSED', GOLD: 'PROCESSED',
+};
 
 // Tier lintas-source: tidak bisa dipecah per sensor, jadi dikeluarkan dari
 // legenda source supaya tidak terbaca sebagai sensor keempat.
@@ -37,7 +57,7 @@ const state = {
   // Galeri preview per dataset: payload /api/datasets/{id}/preview, plus
   // tanggal dan jenis yang sedang dipilih (bertahan saat panel digambar ulang
   // oleh polling).
-  previews: {}, previewScene: {}, previewKind: {},
+  previews: {}, previewScene: {}, previewKind: {}, previewLevel: {},
   // Lokasi: daftar dari /api/regions, filter pencarian, dan pilihan yang dipakai
   // "Buat Dataset". selectedRegionId adalah satu-satunya sumber kebenaran lokasi.
   regions: [], selectedRegionId: null, locationQuery: '',
@@ -85,41 +105,49 @@ function statusToClass(status) {
   return 'active';
 }
 
-function buildRingSVG(ratios, size) {
+// Radar progres kartu dataset: satu cincin per lapisan kerja yang benar-benar
+// dijalankan dataset ini (dari /status -> layers). Urutan dari dalam ke luar
+// mengikuti urutan pipeline; satelit yang tidak diunduh tidak punya cincin.
+const LAYER_COLORS = {
+  // "Muda" = pastel pucat (saturasi rendah, hampir putih), "neon" = saturasi
+  // penuh -- sengaja dibuat jauh supaya unduh vs proses satu satelit tidak
+  // tertukar.
+  sentinel1_download: '#D6ECFF', sentinel1_processing: '#00B7FF',
+  modis_download: '#D8F7DC',     modis_processing: '#39FF14',
+  gpm_download: '#FFF4C7',       gpm_processing: '#FFE600',
+  fusion: '#D400FF',
+};
+const LAYER_LABELS = {
+  download: 'unduh', processing: 'proses', fusion: 'fusi',
+};
+function buildRingSVG(layers, size) {
   size = size || 96;
-  const tiers = TIER_ORDER;
   const cx = size / 2, cy = size / 2;
-  const baseR = size * 0.12;
-  const step = size * 0.09;
+  const n = Math.max(layers.length, 1);
+  // Jari-jari dibagi rata supaya 1 sampai 7 cincin tetap mengisi kanvas.
+  const outer = size / 2 - 4, inner = size * 0.1;
+  const step = n > 1 ? (outer - inner) / (n - 1) : 0;
+  const width = Math.max(2.5, Math.min(6, step * 0.7 || 6));
   let circles = '';
-  tiers.forEach((t, i) => {
-    const r = baseR + step * i;
-    const circumference = 2 * Math.PI * r;
-    const ratio = ratios[t] || 0;
-    const dash = circumference * ratio;
-    circles += '<circle cx="' + cx + '" cy="' + cy + '" r="' + r + '" fill="none" stroke="' + TIER_COLORS[t] + '" stroke-opacity="0.16" stroke-width="4"></circle>';
-    circles += '<circle cx="' + cx + '" cy="' + cy + '" r="' + r + '" fill="none" stroke="' + TIER_COLORS[t] + '" stroke-width="4" stroke-linecap="round" stroke-dasharray="' + dash + ' ' + (circumference - dash) + '" transform="rotate(-90 ' + cx + ' ' + cy + ')"></circle>';
+  layers.forEach((l, i) => {
+    const r = n > 1 ? inner + step * i : outer * 0.6;
+    const color = LAYER_COLORS[l.key] || '#35D0C0';
+    const c = 2 * Math.PI * r;
+    const dash = c * Math.max(0, Math.min(1, l.ratio || 0));
+    const title = (SOURCE_LABELS[l.source] || l.source) + ' ' + (LAYER_LABELS[l.phase] || l.phase) + ': ' + Math.round((l.ratio || 0) * 100) + '%';
+    circles += '<g><title>' + escapeHTML(title) + '</title>' +
+      '<circle cx="' + cx + '" cy="' + cy + '" r="' + r + '" fill="none" stroke="' + color + '" stroke-opacity="0.16" stroke-width="' + width + '"></circle>' +
+      '<circle cx="' + cx + '" cy="' + cy + '" r="' + r + '" fill="none" stroke="' + color + '" stroke-width="' + width + '" stroke-linecap="round" stroke-dasharray="' + dash + ' ' + (c - dash) + '" transform="rotate(-90 ' + cx + ' ' + cy + ')"></circle></g>';
   });
   return '<svg viewBox="0 0 ' + size + ' ' + size + '" width="' + size + '" height="' + size + '">' + circles + '</svg>';
 }
-
-function tierCompletionRatios(scenes, requiredTiers) {
-  const tiers = TIER_ORDER;
-  const ratios = {};
-  const total = scenes.length;
-  tiers.forEach(t => {
-    if (!requiredTiers.includes(t)) { ratios[t] = 0; return; }
-    if (total === 0) { ratios[t] = 0; return; }
-    const stageIdx = STAGE_ORDER.indexOf(TIER_STAGE[t]);
-    let reached = 0;
-    scenes.forEach(s => {
-      const curIdx = STAGE_ORDER.indexOf(s.current_stage);
-      if (curIdx > stageIdx) reached++;
-      else if (curIdx === stageIdx && s.stage_status === 'COMPLETED') reached++;
-    });
-    ratios[t] = reached / total;
-  });
-  return ratios;
+function ringLegendHTML(layers) {
+  if (!layers.length) return '';
+  return '<div class="ring-legend">' + layers.map(l =>
+    '<span class="ring-legend-item"><i style="background:' + (LAYER_COLORS[l.key] || '#35D0C0') + '"></i>' +
+    escapeHTML((SOURCE_SHORT[l.source] || SOURCE_LABELS[l.source] || l.source) + (l.phase === 'fusion' ? '' : ' ' + (LAYER_LABELS[l.phase] || l.phase))) +
+    ' ' + Math.round((l.ratio || 0) * 100) + '%</span>'
+  ).join('') + '</div>';
 }
 
 function switchTab(name) {
@@ -702,8 +730,8 @@ const SATELLITE_SOURCES = [
 
 const FUSION_STRATEGIES = [
   { value: 'CO_OCCURRENCE', label: 'CO-OCCURRENCE', desc: 'hanya tanggal yang semua sumber punya data' },
-  { value: 'FULL_COVERAGE', label: 'FULL COVERAGE', desc: 'setiap hari, offset 1-2 hari ditoleransi' },
-  { value: 'HYBRID', label: 'HYBRID', desc: 'auxiliary harian, Sentinel-1 jadi jangkar' },
+  { value: 'FULL_COVERAGE', label: 'FULL COVERAGE', desc: 'setiap hari; MODIS/GPM diunduh harian, unduhan jauh lebih besar' },
+  { value: 'HYBRID', label: 'HYBRID', desc: 'unduh harian, rakit per tanggal Sentinel-1' },
 ];
 
 const PREVIEW_OPTION_DEFS = [
@@ -857,7 +885,23 @@ function syncFusionVisibility() {
   $id('fusionGroup').classList.toggle('hidden', !multi);
   if (!multi) {
     document.querySelectorAll('input[name="fusionStrategy"]').forEach(r => { r.checked = false; });
+    $id('fusionOutputOnly').checked = false;
   }
+  syncToleranceVisibility();
+}
+
+// Toleransi hanya dipakai FULL_COVERAGE. CO_OCCURRENCE dan HYBRID berjangkar
+// pada scene Sentinel-1, jadi tidak pernah perlu meminjam dari hari lain --
+// menampilkan kolomnya di sana akan menyiratkan pengaruh yang tidak ada.
+function syncToleranceVisibility() {
+  $id('toleranceGroup').classList.toggle(
+    'hidden', selectedFusionStrategy() !== 'FULL_COVERAGE'
+  );
+}
+
+function selectedTolerance() {
+  const raw = parseInt($id('s1Tolerance').value, 10);
+  return Number.isFinite(raw) ? Math.min(14, Math.max(0, raw)) : 2;
 }
 
 /* ---- Navigasi wisaya ---------------------------------------------------- */
@@ -950,6 +994,10 @@ function renderWizardReview() {
     ['Tanggal', ($id('fDateStart').value || '-') + ' s/d ' + ($id('fDateEnd').value || '-')],
     ['Sumber', describeSourceSelection(collectSources())],
     ['Strategi fusi', selectedFusionStrategy() || (multi ? 'belum dipilih' : 'tidak dipakai (1 sumber)')],
+    ...(selectedFusionStrategy() === 'FULL_COVERAGE'
+      ? [['Toleransi S1', selectedTolerance() + ' hari']] : []),
+    ...(multi && $id('fusionOutputOnly').checked
+      ? [['Penyimpanan', 'hasil fusi saja (berkas per-satelit dihapus)']] : []),
     ['Preview', previews.length ? previews.join(', ') : 'tidak dibuat'],
   ];
   box.innerHTML = rows.map(r =>
@@ -982,9 +1030,13 @@ function setCloneError(msg) {
 function renderClonePreview(cfg) {
   const box = $id('clonePreview');
   if (!cfg) { box.classList.add('hidden'); box.innerHTML = ''; return; }
+  const dateLine = (cfg.date_start && cfg.date_end)
+    ? '<div class="clone-line">Tanggal: ' + escapeHTML(cfg.date_start) + ' s/d ' + escapeHTML(cfg.date_end) + '</div>'
+    : '';
   box.innerHTML =
     '<p class="clone-preview-title">Konfigurasi Terakhir</p>' +
     '<div class="clone-line">' + escapeHTML(cfg.region_name || 'lokasi tidak diketahui') + '</div>' +
+    dateLine +
     '<div class="clone-line">' + escapeHTML(describeSourceSelection(cfg.sources || {})) + '</div>' +
     '<div class="clone-line">Strategi: ' + escapeHTML(cfg.fusion_strategy || 'tidak dipakai') + '</div>';
   box.classList.remove('hidden');
@@ -1024,9 +1076,12 @@ async function refreshCloneAvailability() {
 }
 
 // Klon adalah preset, bukan kunci: semua field tetap bisa diedit sesudahnya,
-// dan nama + tanggal sengaja TIDAK ikut supaya dataset hasil klon tidak
+// termasuk tanggal (diisi ulang dari config terakhir supaya user tidak perlu
+// mengetik ulang). Nama sengaja TIDAK ikut supaya dataset hasil klon tidak
 // diam-diam menduplikasi yang lama (DOCS/DECISIONS.md D13).
 function applyLastConfig(cfg) {
+  if (cfg.date_start) $id('fDateStart').value = cfg.date_start;
+  if (cfg.date_end) $id('fDateEnd').value = cfg.date_end;
   SATELLITE_SOURCES.forEach(s => setSourceState(s.key, false, []));
   Object.keys(cfg.sources || {}).forEach(k => {
     if (sourceEnableBox(k)) setSourceState(k, true, cfg.sources[k].processing || []);
@@ -1086,7 +1141,13 @@ $id('masterAll').addEventListener('change', (e) => {
 });
 
 $id('previewOptions').addEventListener('change', renderWizardReview);
-$id('fusionList').addEventListener('change', () => { renderWizardReview(); setWizardError(''); });
+$id('fusionList').addEventListener('change', () => {
+  syncToleranceVisibility();
+  renderWizardReview();
+  setWizardError('');
+});
+$id('fusionOutputOnly').addEventListener('change', renderWizardReview);
+$id('s1Tolerance').addEventListener('change', renderWizardReview);
 $id('fDateStart').addEventListener('change', renderWizardReview);
 $id('fDateEnd').addEventListener('change', renderWizardReview);
 
@@ -1170,6 +1231,12 @@ $id('createForm').addEventListener('submit', async (e) => {
     // backend dari sini, jadi tidak lagi dikirim frontend.
     sources: collectSources(),
     fusion_strategy: enabledSourceKeys().length > 1 ? selectedFusionStrategy() : null,
+    // Keduanya hanya bermakna kalau ada fusi: backend menolak
+    // fusion_output_only tanpa strategi, karena tanpa stack HDF5 menghapus
+    // artefak per-satelit tidak menyisakan output apa pun.
+    fusion_output_only: enabledSourceKeys().length > 1 && $id('fusionOutputOnly').checked,
+    s1_match_tolerance_days: selectedFusionStrategy() === 'FULL_COVERAGE'
+      ? selectedTolerance() : null,
     preview_options: previewOptions,
     quality_settings: Object.keys(qs).length ? qs : null,
     // Sakelar tahap pipeline, bukan ambang mutu data: tanpa satu pun opsi
@@ -1264,11 +1331,49 @@ function renderDatasets() {
   });
 }
 
+// Ringkasan level per satelit: "S1[R+P]", "MODIS[P]". Satu huruf per level
+// supaya tiga satelit tetap muat satu baris di kartu yang sempit.
+function sourceChipsHTML(ds) {
+  const cfgs = ds.source_configs || [];
+  if (!cfgs.length) return '';
+  return '<div class="card-sources">' + cfgs.map(c => {
+    const initials = (c.processing || []).map(p => p.charAt(0)).join('+') || '-';
+    return '<span class="chip" style="--chip-color:' + sourceColor(c.source) + '">'
+      + escapeHTML(SOURCE_SHORT[c.source] || c.source) + '[' + initials + ']</span>';
+  }).join('') + '</div>';
+}
+
+// Hitungan scene dan ukuran per satelit. Keduanya datang dari listing
+// endpoint (satu query agregat untuk seluruh halaman), bukan dari panggilan
+// detail per kartu.
+function perSourceStatsHTML(ds) {
+  const scenes = ds.scenes_by_source || {};
+  const bytes = ds.bytes_by_source || {};
+  const keys = (ds.source_configs || [])
+    .map(c => c.source)
+    .filter(k => scenes[k] || bytes[k]);
+  if (!keys.length) return '';
+
+  const sceneLine = keys
+    .map(k => (SOURCE_SHORT[k] || k) + ': ' + (scenes[k] || 0) + ' scene')
+    .join(' · ');
+  const byteLine = keys
+    .map(k => (SOURCE_SHORT[k] || k) + ' ' + humanBytes(bytes[k] || 0))
+    .join(' | ');
+  return '<div class="card-persource">' + escapeHTML(sceneLine) + '</div>'
+    + '<div class="card-persource dim">' + escapeHTML(byteLine) + '</div>';
+}
+
+// Strategi fusi ditampilkan di kartu karena dialah yang menentukan bentuk
+// output -- berapa berkas HDF5 dan dari tanggal mana (DOCS/ETL.md).
+function fusionLabelHTML(ds) {
+  if (!ds.fusion_strategy) return '';
+  const extra = ds.fusion_output_only ? ' &middot; hasil fusi saja' : '';
+  return '<div class="card-fusion">Strategi Fusi: <strong>'
+    + escapeHTML(ds.fusion_strategy) + '</strong>' + extra + '</div>';
+}
+
 function cardShellHTML(ds) {
-  const prog = state.progress[ds.dataset_id];
-  const scenes = prog ? prog.scenes : [];
-  const ratios = tierCompletionRatios(scenes, ds.required_tiers);
-  const ringHTML = buildRingSVG(ratios);
   const statusClass = statusToClass(ds.status);
   const canPause = ['QUEUED', 'PREPARING', 'DOWNLOADING', 'PROCESSING'].includes(ds.status);
   const canResume = ds.status === 'PAUSED';
@@ -1276,16 +1381,24 @@ function cardShellHTML(ds) {
   const canCancel = ['DOWNLOADING', 'PROCESSING'].includes(ds.status);
   const canDownload = ds.total_size_bytes > 0;
   const spinning = ACTIVE_STATUSES.has(ds.status) && ds.status !== 'PAUSED';
+  const prog = state.progress[ds.dataset_id];
+  const layers = (prog && prog.layers) || [];
   return (
-    '<div class="card-head">' +
-      '<div class="card-ring' + (spinning ? ' spinning' : '') + '">' + ringHTML + '</div>' +
+    '<div class="card-head' + (spinning ? ' spinning' : '') + '">' +
+      (layers.length ? '<div class="card-ring' + (spinning ? ' spinning' : '') + '">' + buildRingSVG(layers) + '</div>' : '') +
       '<div class="card-info">' +
         '<div class="card-title-row">' +
           '<span class="card-name">' + escapeHTML(ds.name) + '</span>' +
           '<span class="badge ' + statusClass + '">' + ds.status + '</span>' +
         '</div>' +
         '<div class="card-meta">' + escapeHTML(ds.location_label || '-') + ' &middot; ' + ds.date_start + ' - ' + ds.date_end + '</div>' +
-        '<div class="card-tiers">' + ds.required_tiers.map(t => '<span class="chip" style="--chip-color:' + TIER_COLORS[t] + '">' + t + '</span>').join('') + '</div>' +
+        // Chip per-satelit, bukan per-tier: tier bukan pilihan user dan namanya
+        // tidak pernah muncul di layar lain, sementara "S1[R+P]" adalah persis
+        // yang user centang di wizard.
+        sourceChipsHTML(ds) +
+        perSourceStatsHTML(ds) +
+        fusionLabelHTML(ds) +
+        ringLegendHTML(layers) +
       '</div>' +
     '</div>' +
     '<div class="card-stats">' +
@@ -1422,16 +1535,86 @@ async function handleCardAction(action, id) {
   }
 }
 
-function renderSceneTable(box, id) {
+// Panel Detail: per satelit, daftar data yang sudah diunduh dan diproses,
+// dengan bar storage tiap tahap. Warna tahap sama dengan radar di kartu
+// (pastel = unduh, neon = proses), jadi keduanya dibaca dengan kunci yang sama.
+// Tabel status pipeline S1 per scene tetap ada di bawahnya untuk pesan error.
+state.detailData = {};
+state.detailOpenStages = new Set();
+
+async function renderSceneTable(box, id) {
+  if (state.detailData[id]) drawDetailPanel(box, id);
+  else if (!box._html) { box._html = '<div class="empty-small">Memuat detail…</div>'; box.innerHTML = box._html; }
+  try {
+    state.detailData[id] = await api('/api/datasets/' + id + '/storage/by-source');
+  } catch (e) {
+    if (!state.detailData[id]) { box._html = '<div class="empty-small">' + escapeHTML(e.message) + '</div>'; box.innerHTML = box._html; }
+    return;
+  }
+  drawDetailPanel(box, id);
+}
+
+const DETAIL_PHASE_LABEL = { download: 'Diunduh', processing: 'Diproses', fusion: 'Difusi' };
+
+function detailStageHTML(id, src, st, total) {
+  const key = id + ':' + src + ':' + st.tier;
+  const color = LAYER_COLORS[src + '_' + st.phase] || LAYER_COLORS.fusion;
+  const pct = total > 0 ? st.size_bytes / total * 100 : 0;
+  const open = state.detailOpenStages.has(key);
+  return '<div class="detail-stage">' +
+    '<button class="detail-stage-head" data-detail-stage="' + escapeHTML(key) + '" aria-expanded="' + open + '">' +
+      '<span class="detail-caret">' + (open ? '▾' : '▸') + '</span>' +
+      '<span class="detail-phase" style="--phase-color:' + color + '">' + (DETAIL_PHASE_LABEL[st.phase] || st.phase) + '</span>' +
+      '<span class="detail-tier">' + escapeHTML(st.tier) + '</span>' +
+      '<span class="detail-count">' + st.scenes.length + ' data · ' + st.file_count + ' berkas</span>' +
+      '<span class="detail-size">' + humanBytes(st.size_bytes) + ' · ' + (pct < 1 && pct > 0 ? '<1' : Math.round(pct)) + '%</span>' +
+    '</button>' +
+    '<div class="detail-track"><div class="detail-bar" style="width:' + Math.max(pct, st.size_bytes ? 1 : 0).toFixed(2) + '%;background:' + color + '"></div></div>' +
+    (open ? '<ul class="detail-scenes">' + st.scenes.map(sc =>
+      '<li><span class="mono">' + escapeHTML(sc.scene) + '</span><span class="detail-scene-meta">' + sc.file_count + ' berkas · ' + humanBytes(sc.size_bytes) + '</span></li>'
+    ).join('') + '</ul>' : '') +
+  '</div>';
+}
+
+function drawDetailPanel(box, id) {
+  const data = state.detailData[id] || { sources: {}, fusion: null };
+  const srcKeys = SOURCE_ORDER_KEYS.filter(k => data.sources[k]);
+  let html = '';
+  if (!srcKeys.length && !data.fusion) {
+    html += '<div class="empty-small">Belum ada data yang diunduh</div>';
+  }
+  srcKeys.forEach(src => {
+    const info = data.sources[src];
+    html += '<div class="detail-source">' +
+      '<div class="detail-source-head"><span class="detail-source-name">' + escapeHTML(sourceLabel(src)) + '</span>' +
+      '<span class="detail-size">' + humanBytes(info.size_bytes) + '</span></div>' +
+      info.stages.map(st => detailStageHTML(id, src, st, info.size_bytes)).join('') +
+    '</div>';
+  });
+  if (data.fusion) {
+    const st = { tier: 'FUSED', phase: 'fusion', size_bytes: data.fusion.size_bytes,
+      file_count: data.fusion.scenes.reduce((n, s) => n + s.file_count, 0), scenes: data.fusion.scenes };
+    html += '<div class="detail-source">' +
+      '<div class="detail-source-head"><span class="detail-source-name">Fusion</span>' +
+      '<span class="detail-size">' + humanBytes(st.size_bytes) + '</span></div>' +
+      detailStageHTML(id, 'fusion', st, st.size_bytes) +
+    '</div>';
+  }
   const prog = state.progress[id];
-  const html = (!prog || prog.scenes.length === 0)
-    ? '<div class="empty-small">Belum ada scene</div>'
-    : '<table class="scene-table"><thead><tr><th>Scene</th><th>Tahap</th><th>Status</th><th>Catatan</th></tr></thead><tbody>' +
+  if (prog && prog.scenes.length) {
+    html += '<div class="struct-title">Status pipeline Sentinel-1</div>' +
+      '<table class="scene-table"><thead><tr><th>Scene</th><th>Tahap</th><th>Status</th><th>Catatan</th></tr></thead><tbody>' +
       prog.scenes.map(s => '<tr><td class="mono">' + escapeHTML(s.product_identifier) + '</td><td>' + (s.current_stage || '-') + '</td><td><span class="badge ' + statusToClass(s.stage_status) + '">' + s.stage_status + '</span></td><td class="mono small">' + escapeHTML(s.last_error || '') + '</td></tr>').join('') +
       '</tbody></table>';
+  }
   if (box._html === html) return;
   box._html = html;
   box.innerHTML = html;
+  box.querySelectorAll('[data-detail-stage]').forEach(btn => btn.addEventListener('click', () => {
+    const k = btn.dataset.detailStage;
+    if (state.detailOpenStages.has(k)) state.detailOpenStages.delete(k); else state.detailOpenStages.add(k);
+    drawDetailPanel(box, id);
+  }));
 }
 
 let pendingDeleteId = null;
@@ -1499,7 +1682,7 @@ async function loadLiveScenes() {
     const box = document.getElementById('liveScenes');
     if (scenes.length === 0) { box.innerHTML = '<div class="empty-small">Belum ada data</div>'; return; }
     box.innerHTML = '<table class="scene-table"><thead><tr><th>Tanggal</th><th>Tier</th><th>Ukuran</th></tr></thead><tbody>' +
-      scenes.map(s => '<tr><td>' + new Date(s.scene_date).toLocaleString('id-ID') + '</td><td><span class="chip" style="--chip-color:' + (TIER_COLORS[s.tier] || '#35D0C0') + '">' + s.tier + '</span></td><td>' + s.size_mb.toFixed(1) + ' MB</td></tr>').join('') +
+      scenes.map(s => '<tr><td>' + new Date(s.scene_date).toLocaleString('id-ID') + '</td><td><span class="chip" style="--chip-color:#35D0C0">' + tierLabel(s.tier) + '</span></td><td>' + s.size_mb.toFixed(1) + ' MB</td></tr>').join('') +
       '</tbody></table>';
   } catch (e) {}
 }
@@ -1579,8 +1762,7 @@ async function renderStructurePanel(box, id) {
   try { quality = await api('/api/quality/dataset/' + id + '/by-source'); } catch (e) {}
 
   const html =
-    renderStorageBreakdown(id, storage) +
-    renderQualityBySource(quality) +
+    renderStorageBreakdown(id, storage, quality) +
     '<div class="struct-files" id="structfiles-' + id + '"></div>' +
     '<div class="preview-section" id="preview-' + id + '"></div>';
   // Ganti langsung isinya kalau ada perubahan saja -- kalau datanya sama
@@ -1599,7 +1781,8 @@ async function renderStructurePanel(box, id) {
 
 function bindStructurePanel(box, id) {
   box.querySelectorAll('[data-tier-files]').forEach(btn => {
-    btn.addEventListener('click', () => loadTierFiles(id, btn.dataset.tierFiles));
+    btn.addEventListener('click', () =>
+      loadTierFiles(id, btn.dataset.tierFiles, btn.dataset.source || null));
   });
 }
 
@@ -1659,20 +1842,21 @@ const PREVIEW_KIND_LABELS = {
 // akan pernah datang kalau sebabnya checkbox yang dimatikan.
 function renderPreviewEmpty(id) {
   const ds = state.datasets.find(d => d.dataset_id === id);
-  const reachesGold = ds && ds.required_tiers &&
-    (ds.required_tiers.includes('GOLD') || ds.required_tiers.includes('FUSION'));
+  // COG/FUSED, plus nama pra-D14 untuk dataset lama.
+  const reachesCog = ds && ds.required_tiers &&
+    ['COG', 'FUSED', 'GOLD', 'FUSION'].some(t => ds.required_tiers.includes(t));
 
   let msg;
   if (ds && ds.generate_preview === false) {
     msg = 'Preview dimatikan untuk dataset ini. Centang "Buat Preview" saat membuat dataset ' +
           'untuk menghasilkannya, atau jalankan ulang render lewat CLI ' +
           'python -m etl.module10_generate_preview.';
-  } else if (!reachesGold) {
-    msg = 'Preview dirender dari tier GOLD, sementara dataset ini berhenti sebelum GOLD. ' +
-          'Pilih tier GOLD atau FUSION untuk mendapatkannya.';
+  } else if (!reachesCog) {
+    msg = 'Preview dirender dari tier COG, sementara dataset ini berhenti sebelum COG. ' +
+          'Pilih tier COG atau FUSED untuk mendapatkannya.';
   } else {
     msg = 'Belum ada preview untuk dataset ini. Preview dibuat otomatis setelah tahap ' +
-          'GOLD selesai; dataset yang dibuat sebelum fitur ini ada bisa dirender ulang ' +
+          'COG selesai; dataset yang dibuat sebelum fitur ini ada bisa dirender ulang ' +
           'lewat CLI python -m etl.module10_generate_preview.';
   }
 
@@ -1690,7 +1874,17 @@ function drawPreviewGallery(id) {
   const sceneKey = state.previewScene[id];
   const kind = state.previewKind[id];
   const scene = data.scenes.find(s => s.scene === sceneKey) || data.scenes[0];
-  const block = scene.kinds[kind] || { images: [], info: {} };
+  // Level pemrosesan jadi dimensi sendiri: satu tanggal bisa punya dua set PNG
+  // (RAW dirender dari tier ALIGNED, PROCESSED dari COG) yang isinya berbeda --
+  // itu justru alasan preview/{LEVEL}/ ada. Tanpa memilihnya, hanya level
+  // default yang pernah terlihat.
+  const levels = scene.processing_levels || [];
+  const level = levels.includes(state.previewLevel[id])
+    ? state.previewLevel[id]
+    : (levels[0] || null);
+  const levelBlock = (scene.by_level && level && scene.by_level[level]) || null;
+  const kindsOf = (levelBlock || scene).kinds || {};
+  const block = kindsOf[kind] || { images: [], info: {} };
 
   const dateTabs = data.scenes.length > 1
     ? '<div class="preview-dates">' + data.scenes.map(s =>
@@ -1699,12 +1893,19 @@ function drawPreviewGallery(id) {
       ).join('') + '</div>'
     : '<span class="preview-single-date">' + formatDateKey(scene.scene) + '</span>';
 
+  const levelTabs = levels.length > 1
+    ? '<div class="preview-levels" role="tablist">' + levels.map(l =>
+        '<button class="preview-kind' + (l === level ? ' active' : '') + '" role="tab"' +
+          ' aria-selected="' + (l === level) + '" data-preview-level="' + l + '">' + l +
+        '</button>').join('') + '</div>'
+    : '';
+
   const kindTabs = '<div class="preview-kinds" role="tablist">' +
     data.kinds.map(k =>
       '<button class="preview-kind' + (k === kind ? ' active' : '') + '" role="tab"' +
         ' aria-selected="' + (k === kind) + '" data-preview-kind="' + k + '">' +
         (PREVIEW_KIND_LABELS[k] || k) +
-        '<span class="preview-kind-count">' + ((scene.kinds[k] || {}).count || 0) + '</span>' +
+        '<span class="preview-kind-count">' + ((kindsOf[k] || {}).count || 0) + '</span>' +
       '</button>').join('') +
     '</div>';
 
@@ -1712,9 +1913,31 @@ function drawPreviewGallery(id) {
     ? '<p class="preview-blurb">' + escapeHTML(block.info.purpose) + '</p>'
     : '';
 
+  // Kelompokkan per satelit. Komposit RGB lintas-band tapi tetap milik S1,
+  // jadi ikut di grupnya sendiri lewat img.source yang sudah dibawa sidecar.
+  const groups = {};
+  block.images.forEach(img => {
+    const src = img.source || String(img.key || '').split('_')[0];
+    (groups[src] = groups[src] || []).push(img);
+  });
+  const groupKeys = Object.keys(groups).sort(
+    (a, b) => SOURCE_ORDER_KEYS.indexOf(a) - SOURCE_ORDER_KEYS.indexOf(b)
+  );
+
   const cards = block.images.length === 0
     ? '<div class="empty-small">Tidak ada gambar ' + escapeHTML(kind) + ' untuk tanggal ini</div>'
-    : '<div class="preview-grid">' + block.images.map(img => {
+    : groupKeys.map(src =>
+        '<div class="preview-group">' +
+          '<div class="preview-group-head">' +
+            '<span class="struct-swatch" style="background:' + sourceColor(src) + '"></span>' +
+            escapeHTML(sourceLabel(src)) +
+            (level ? ' <span class="preview-group-level">' + escapeHTML(level) + '</span>' : '') +
+          '</div>' +
+          previewCardsHTML(groups[src]) +
+        '</div>').join('');
+
+  function previewCardsHTML(images) {
+    return '<div class="preview-grid">' + images.map(img => {
         const range = Array.isArray(img.value_range)
           ? img.value_range[0] + ' – ' + img.value_range[1] + (img.units ? ' ' + img.units : '')
           : '';
@@ -1737,7 +1960,8 @@ function drawPreviewGallery(id) {
                     escapeHTML(img.interpretation) + '</span>' : '') +
             '</figcaption>' +
           '</figure>';
-      }).join('') + '</div>';
+    }).join('') + '</div>';
+  }
 
   // Lapisan yang tidak sempat dirender (mis. MODIS/GPM gagal diunduh) tetap
   // disebut: galeri yang diam-diam kekurangan lima gambar akan terbaca
@@ -1752,7 +1976,7 @@ function drawPreviewGallery(id) {
       '<span class="preview-title-icon">' + ICONS.image + '</span>Preview' +
       '<span class="preview-size">' + humanBytes(data.total_size_bytes) + '</span>' +
     '</div>' +
-    '<div class="preview-bar">' + dateTabs + kindTabs + '</div>' +
+    '<div class="preview-bar">' + dateTabs + levelTabs + kindTabs + '</div>' +
     blurb + cards + missing;
   // Menulis ulang <img loading="lazy"> yang sama membuat gambar kosong sesaat
   // lalu muncul lagi; kalau isinya tidak berubah, biarkan DOM apa adanya.
@@ -1763,6 +1987,12 @@ function drawPreviewGallery(id) {
   box.querySelectorAll('[data-preview-scene]').forEach(btn => {
     btn.addEventListener('click', () => {
       state.previewScene[id] = btn.dataset.previewScene;
+      drawPreviewGallery(id);
+    });
+  });
+  box.querySelectorAll('[data-preview-level]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      state.previewLevel[id] = btn.dataset.previewLevel;
       drawPreviewGallery(id);
     });
   });
@@ -1783,100 +2013,161 @@ function formatDateKey(key) {
   return d.toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' });
 }
 
-function renderStorageBreakdown(id, storage) {
-  const tiers = STORAGE_TIER_ORDER.map(t => [t, storage.tiers[t.toLowerCase()]]).filter(([, v]) => v && v.file_count > 0);
-  if (tiers.length === 0) return '<div class="empty-small">Belum ada berkas di disk</div>';
+// Tata letak: satu kartu per satelit dalam grid responsif. Di dalam kartu,
+// tiap laci (tier) satu baris grid berkolom tetap (nama | bar | ukuran, lalu
+// info | aksi) supaya angka antar baris sejajar, dikelompokkan per level
+// (RAW / PROCESSED) lewat subjudul tipis -- bukan <details> bersarang yang
+// dulu membuat indentasi tiga lapis. Kualitas per satelit jadi kaki kartu.
+function renderStorageBreakdown(id, storage, quality) {
+  if (storage.legacy_layout) {
+    return '<div class="struct-title">Struktur penyimpanan</div>'
+      + '<div class="empty-small">Dataset ini memakai struktur folder lama dan '
+      + 'tidak bisa ditelusuri di sini. Berkasnya tetap utuh di disk. '
+      + '<a class="btn-link" href="/api/datasets/' + id + '/download">Unduh semua</a>'
+      + '</div>';
+  }
 
-  const maxBytes = Math.max.apply(null, tiers.map(([, v]) => v.size_bytes));
-  const usedSources = Object.keys(storage.sources).filter(s => !SOURCELESS_TIERS.includes(s));
+  const bySource = {};
+  const crossSource = [];
+  STORAGE_TIER_ORDER.forEach(tier => {
+    const info = storage.tiers[tier.toLowerCase()];
+    if (!info || !info.file_count) return;
+    const entries = Object.entries(info.sources || {});
+    if (!entries.length) { crossSource.push([tier, info]); return; }
+    entries.forEach(([src, v]) => {
+      const level = TIER_LEVEL[tier.toUpperCase()] || 'RAW';
+      bySource[src] = bySource[src] || {};
+      (bySource[src][level] = bySource[src][level] || []).push([tier, v]);
+    });
+  });
 
-  const legend = usedSources.length > 1
-    ? '<div class="struct-legend">' + usedSources.map(src =>
-        '<span class="struct-legend-item">' +
-          '<span class="struct-swatch" style="background:' + sourceColor(src) + '"></span>' +
-          escapeHTML(sourceLabel(src)) +
-          '<span class="struct-legend-size">' + humanBytes(storage.sources[src].size_bytes) + '</span>' +
-        '</span>').join('') +
-      '</div>'
-    : '';
+  const sourceKeys = SOURCE_ORDER_KEYS.filter(k => bySource[k])
+    .concat(Object.keys(bySource).filter(k => !SOURCE_ORDER_KEYS.includes(k)));
+  if (!sourceKeys.length && !crossSource.length) {
+    return '<div class="struct-title">Struktur penyimpanan</div><div class="empty-small">Belum ada berkas di disk</div>';
+  }
 
-  const rows = tiers.map(([tier, info]) => {
-    const widthPct = maxBytes > 0 ? (info.size_bytes / maxBytes) * 100 : 0;
-    const entries = Object.entries(info.sources);
+  const sum = list => list.reduce((n, [, v]) => n + v.size_bytes, 0);
+  const qualBySrc = {};
+  ((quality && quality.sources) || []).forEach(q => { qualBySrc[String(q.source).toLowerCase()] = q; });
 
-    // Tier fusion dan preview tidak punya pecahan source -- isinya justru
-    // gabungan ketiganya, jadi digambar sebagai satu batang netral.
-    const segments = entries.length > 0
-      ? entries.map(([src, v]) => {
-          const share = info.size_bytes > 0 ? (v.size_bytes / info.size_bytes) * 100 : 0;
-          return '<span class="struct-seg" style="flex:' + share + ' 1 0;background:' + sourceColor(src) + '"' +
-            ' title="' + escapeHTML(sourceLabel(src) + ' · ' + tier + ' · ' + humanBytes(v.size_bytes) + ' · ' + v.file_count + ' berkas') + '"></span>';
-        }).join('')
-      : '<span class="struct-seg struct-seg-mixed" style="flex:1 1 0" title="' +
-          escapeHTML('Gabungan semua source · ' + humanBytes(info.size_bytes)) + '"></span>';
+  function rowHTML(tier, v, src, total, color) {
+    const pct = total > 0 ? v.size_bytes / total * 100 : 0;
+    const q = '?tier=' + tier.toLowerCase() + (src ? '&source=' + src : '');
+    return '<div class="sg-row">' +
+      '<span class="sg-name">' + escapeHTML(tier) + '</span>' +
+      '<span class="sg-track"><span class="sg-bar" style="width:' + Math.max(pct, 1.5).toFixed(1) + '%;background:' + color + '"></span></span>' +
+      '<span class="sg-size">' + humanBytes(v.size_bytes) + '</span>' +
+      '<span class="sg-meta">' + v.file_count + ' berkas · ' + v.scene_count + ' scene</span>' +
+      '<span class="sg-actions">' +
+        '<button class="btn-link" data-tier-files="' + tier.toLowerCase() + '"' + (src ? ' data-source="' + src + '"' : '') + '>Berkas</button>' +
+        '<a class="btn-link" href="/api/datasets/' + id + '/download' + q + '">Unduh</a>' +
+      '</span>' +
+    '</div>';
+  }
 
-    const chips = entries.map(([src, v]) =>
-      '<a class="struct-chip" style="--src-color:' + sourceColor(src) + '"' +
-        ' href="/api/datasets/' + id + '/download?tier=' + tier.toLowerCase() + '&source=' + src + '"' +
-        ' title="' + escapeHTML('Unduh ' + sourceLabel(src) + ' ' + tier) + '">' +
-        escapeHTML(sourceLabel(src)) + ' <span class="struct-chip-size">' + humanBytes(v.size_bytes) + '</span>' +
-      '</a>').join('');
+  function qualityHTML(src) {
+    const qd = qualBySrc[src];
+    if (!qd) return '';
+    const cls = qd.quality_flag === 'GOOD' ? 'ok' : qd.quality_flag === 'POOR' ? 'danger' : 'warn';
+    const bands = Object.entries(qd.bands || {})
+      .map(([b, v]) => '<span class="qual-band">' + escapeHTML(b) + ' <b>' + v.toFixed(1) + '</b></span>').join('');
+    return '<div class="sg-foot">' +
+      '<span class="sg-foot-label">Kualitas</span>' +
+      '<span class="badge ' + cls + '">' + (qd.quality_score == null ? '-' : qd.quality_score.toFixed(1)) + '</span>' +
+      '<span class="qual-kind">' + (qd.kind === 'RADIOMETRIC' ? 'radiometrik' : 'kelengkapan') + '</span>' +
+      (bands ? '<span class="qual-bands">' + bands + '</span>' : '') +
+    '</div>';
+  }
 
-    return '<div class="struct-row">' +
-        '<div class="struct-head">' +
-          '<span class="struct-tier">' + tier + '</span>' +
-          '<span class="struct-total">' + humanBytes(info.size_bytes) + '</span>' +
-          '<span class="struct-count">' + info.file_count + ' berkas · ' + info.scene_count + ' scene</span>' +
-          '<button class="btn-link" data-tier-files="' + tier.toLowerCase() + '">Berkas</button>' +
-          '<a class="btn-link" href="/api/datasets/' + id + '/download?tier=' + tier.toLowerCase() + '">Unduh</a>' +
-        '</div>' +
-        '<div class="struct-track"><div class="struct-bar" style="width:' + widthPct + '%">' + segments + '</div></div>' +
-        (chips ? '<div class="struct-chips">' + chips + '</div>' : '') +
-      '</div>';
-  }).join('');
+  function cardHTML(title, swatch, total, groups, src) {
+    return '<section class="sg-card">' +
+      '<header class="sg-head">' +
+        '<span class="struct-swatch' + (swatch ? '' : ' struct-swatch-mixed') + '"' + (swatch ? ' style="background:' + swatch + '"' : '') + '></span>' +
+        '<span class="sg-title">' + escapeHTML(title) + '</span>' +
+        '<span class="sg-total">' + humanBytes(total) + '</span>' +
+      '</header>' +
+      groups.map(([label, rows]) =>
+        (label ? '<div class="sg-level"><span>' + label + '</span><span>' + humanBytes(sum(rows)) + '</span></div>' : '') +
+        rows.map(([t, v]) => rowHTML(t, v, src, total, swatch || 'rgba(231,236,245,0.6)')).join('')
+      ).join('') +
+      (src ? qualityHTML(src) : '') +
+    '</section>';
+  }
 
-  return '<div class="struct-title">Storage per tier &amp; source</div>' + legend +
-    '<div class="struct-rows">' + rows + '</div>';
+  const cards = sourceKeys.map(src => {
+    const levels = bySource[src];
+    const groups = ['RAW', 'PROCESSED'].filter(l => levels[l]).map(l => [l, levels[l]]);
+    const total = groups.reduce((n, [, rows]) => n + sum(rows), 0);
+    return cardHTML(sourceLabel(src), sourceColor(src), total, groups, src);
+  });
+  if (crossSource.length) {
+    cards.push(cardHTML('Lintas-satelit', null, sum(crossSource), [[null, crossSource]], null));
+  }
+
+  return '<div class="struct-title">Struktur penyimpanan' +
+      '<span class="struct-grand">' + humanBytes(storage.total_size_bytes) + '</span>' +
+    '</div>' +
+    '<div class="sg-grid">' + cards.join('') + '</div>';
 }
 
-function renderQualityBySource(quality) {
-  if (!quality.sources || quality.sources.length === 0) return '';
-  const items = quality.sources.map(q => {
-    const bands = Object.entries(q.bands)
-      .map(([b, v]) => '<span class="qual-band">' + escapeHTML(b) + ' <b>' + v.toFixed(1) + '</b></span>')
-      .join('');
-    // RADIOMETRIC dan COVERAGE bukan skala yang sama -- labelnya ikut
-    // ditampilkan supaya tidak dibaca sebagai angka yang sebanding.
-    return '<div class="qual-row">' +
-        '<span class="qual-src">' + escapeHTML(sourceLabel(q.source.toLowerCase())) + '</span>' +
-        '<span class="badge ' + (q.quality_flag === 'GOOD' ? 'ok' : q.quality_flag === 'POOR' ? 'danger' : 'warn') + '">' +
-          (q.quality_score == null ? '-' : q.quality_score.toFixed(1)) +
-        '</span>' +
-        '<span class="qual-kind">' + (q.kind === 'RADIOMETRIC' ? 'radiometrik' : 'kelengkapan') + '</span>' +
-        '<span class="qual-bands">' + bands + '</span>' +
-      '</div>';
-  }).join('');
-  return '<div class="struct-title">Kualitas per source</div><div class="qual-rows">' + items + '</div>';
+// Tanggal YYYYMMDD yang tertanam di kunci scene atau nama berkas. Sejak
+// relayout tanggal tidak lagi jadi segmen path, jadi ini satu-satunya cara
+// mengelompokkan berkas per tanggal di sisi klien.
+function dateFromName(s) {
+  const m = /(?:^|[^0-9])(\d{8})(?:[^0-9]|$)/.exec(String(s || ''));
+  return m ? m[1] : null;
 }
 
-async function loadTierFiles(id, tier) {
+function formatDateKey(k) {
+  return k ? k.slice(0, 4) + '-' + k.slice(4, 6) + '-' + k.slice(6, 8) : 'di luar tanggal';
+}
+
+async function loadTierFiles(id, tier, source) {
   const box = document.getElementById('structfiles-' + id);
   if (!box) return;
-  if (box.dataset.tier === tier) { box.innerHTML = ''; box.dataset.tier = ''; return; }
-  box.dataset.tier = tier;
+  const key = tier + '/' + (source || '');
+  if (box.dataset.tier === key) { box.innerHTML = ''; box.dataset.tier = ''; return; }
+  box.dataset.tier = key;
   box.innerHTML = '<div class="empty-small">Memuat berkas…</div>';
   try {
-    const data = await api('/api/datasets/' + id + '/storage/files/' + tier);
-    if (data.scenes.length === 0) { box.innerHTML = '<div class="empty-small">Tier ini kosong</div>'; return; }
-    box.innerHTML = '<table class="scene-table"><thead><tr><th>Source</th><th>Scene</th><th>Berkas</th><th>Ukuran</th></tr></thead><tbody>' +
-      data.scenes.map(sc => sc.files.map((f, i) =>
+    // Source disaring di server: endpoint sudah menerima ?source=, jadi daun
+    // pohon tidak perlu menarik seluruh tier lalu membuang sebagian besarnya.
+    const url = '/api/datasets/' + id + '/storage/files/' + tier
+      + (source ? '?source=' + encodeURIComponent(source) : '');
+    const data = await api(url);
+    if (data.scenes.length === 0) {
+      box.innerHTML = '<div class="empty-small">Laci ini kosong</div>';
+      return;
+    }
+
+    // Kelompokkan per tanggal. Source dan tier sudah tetap dari daun yang
+    // diklik, jadi kolomnya diganti Tanggal + Scene.
+    const byDate = {};
+    data.scenes.forEach(sc => {
+      sc.files.forEach(f => {
+        const d = dateFromName(f.name) || dateFromName(sc.scene);
+        (byDate[d || ''] = byDate[d || ''] || []).push([sc, f]);
+      });
+    });
+
+    const dates = Object.keys(byDate).sort();
+    box.innerHTML = '<div class="sg-files-head"><span>Berkas ' + escapeHTML(tier.toUpperCase()) +
+      (source ? ' · ' + escapeHTML(sourceLabel(source)) : '') + '</span>' +
+      '<button class="btn-link" data-close-files>Tutup</button></div>' +
+      '<table class="scene-table"><thead><tr>' +
+      '<th>Tanggal</th><th>Scene</th><th>Berkas</th><th>Ukuran</th>' +
+      '</tr></thead><tbody>' +
+      dates.map(d => byDate[d].map(([sc, f], i) =>
         '<tr>' +
-          '<td>' + (i === 0 ? '<span class="struct-swatch" style="background:' + sourceColor(sc.source) + '"></span>' + escapeHTML(sourceLabel(sc.source || 'fusion')) : '') + '</td>' +
-          '<td class="mono small">' + (i === 0 ? escapeHTML(shortenSceneId(sc.scene)) : '') + '</td>' +
+          '<td class="mono small">' + (i === 0 ? escapeHTML(formatDateKey(d)) : '') + '</td>' +
+          '<td class="mono small">' + escapeHTML(shortenSceneId(sc.scene)) + '</td>' +
           '<td class="mono small">' + escapeHTML(f.name) + '</td>' +
           '<td>' + f.size_mb.toFixed(1) + ' MB</td>' +
         '</tr>').join('')).join('') +
       '</tbody></table>';
+    box.querySelector('[data-close-files]').addEventListener('click', () => { box.innerHTML = ''; box.dataset.tier = ''; });
+    box.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   } catch (e) {
     box.innerHTML = '<div class="empty-small">' + escapeHTML(e.message) + '</div>';
   }

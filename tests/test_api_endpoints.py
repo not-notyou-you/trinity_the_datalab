@@ -155,11 +155,16 @@ class TestProductsEndpoints:
             assert item["scene_id"] == scene_id
 
     def test_list_products_filter_by_tier(self, api_client, seeded):
-        """Filter by tier=GOLD returns only GOLD products."""
-        resp = api_client.get("/api/products?tier=GOLD")
+        """tier=COG returns COG rows plus pre-D14 GOLD rows; the legacy name
+        is accepted as an alias and yields the same set."""
+        resp = api_client.get("/api/products?tier=COG")
         assert resp.status_code == 200
-        for item in resp.json()["items"]:
-            assert item["product_tier"] == "GOLD"
+        items = resp.json()["items"]
+        for item in items:
+            assert item["product_tier"] in ("COG", "GOLD")
+        legacy = api_client.get("/api/products?tier=GOLD")
+        assert legacy.status_code == 200
+        assert {i["product_id"] for i in legacy.json()["items"]} == {i["product_id"] for i in items}
 
     def test_list_products_invalid_tier(self, api_client):
         """Invalid tier value returns 400."""
@@ -173,7 +178,7 @@ class TestProductsEndpoints:
         assert resp.status_code == 200
         body = resp.json()
         assert body["product_id"]   == prod_id
-        assert body["product_tier"] == "FUSION"
+        assert body["product_tier"] == "FUSED"
         assert body["source"]       == "FUSION"
         assert body["band_name"]    == "FUSION"
         assert "data_hash_sha256"   in body
@@ -428,8 +433,13 @@ class TestDatasetStorageEndpoints:
         # Semua tier selalu dilaporkan walau kosong, supaya konsumen tidak
         # perlu membedakan "tier tidak ada" dari "tier kosong". preview ikut
         # di sini walau bukan tier lineage: dia tetap memakan disk.
-        assert set(body["tiers"]) == {"raw", "bronze", "silver", "gold", "preview", "fusion"}
-        assert body["tiers"]["fusion"]["sources"] == {}
+        # Kosakata D14: rank 2 bercabang per-source, jadi tiernya tujuh
+        # (+ preview yang di luar rantai lineage).
+        assert set(body["tiers"]) == {
+            "raw", "aligned", "despeckled", "indices", "accumulated",
+            "cog", "preview", "fused",
+        }
+        assert body["tiers"]["fused"]["sources"] == {}
         assert body["tiers"]["preview"]["sources"] == {}
         assert body["total_size_bytes"] == 0
 

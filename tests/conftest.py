@@ -21,6 +21,24 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# Test tidak boleh melanjutkan job produksi saat lifespan API berjalan.
+os.environ["AUTO_RESUME_JOBS"] = "false"
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _isolate_output_dirs(tmp_path_factory):
+    """Log run dan folder dataset hasil test ditulis ke direktori sementara,
+    bukan ke logs/ dan data/datasets/ produksi. Sebelumnya test menyisakan
+    ratusan logs/*_PERSAT_*.txt dan folder {id}_dataset1 yang ID-nya
+    bertabrakan dengan dataset sungguhan."""
+    from etl import folder_manager as fm
+
+    base = tmp_path_factory.mktemp("pipeline_output")
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setenv("LOGS_DIR", str(base / "logs"))
+        mp.setattr(fm, "DATA_ROOT", base / "datasets")
+        yield
+
 
 def _resolve_test_db_url() -> str:
     """URL database uji.

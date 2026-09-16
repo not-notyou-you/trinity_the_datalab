@@ -19,20 +19,27 @@ from etl.database_client import (
 from etl import folder_manager as fm
 from etl.location_resolver import resolve_location, resolve_region_id
 
+from etl import tier_names as tn
+from etl.fusion_strategies import FULL_COVERAGE, HYBRID
+
 logger = logging.getLogger(__name__)
 
 # Tier yang bisa diminta user dan ikut aturan retensi. PREVIEW sengaja tidak
 # ada di sini: dia tier turunan (PNG hasil render dari GOLD, lihat
 # folder_manager.TIERS) yang tidak pernah diminta eksplisit dan tidak pernah
 # ikut dihapus compute_tiers_to_delete.
-TIER_ORDER = ["RAW", "BRONZE", "SILVER", "GOLD", "FUSION"]
+# Peringkat tier dipegang etl/tier_names.rank(): sejak rank 2 bercabang
+# per-source (DESPECKLED/INDICES/ACCUMULATED, D14), list datar tidak lagi bisa
+# mewakilinya. rank() menerima kedua kosakata, jadi job yang mulai sebelum
+# migrasi tetap terbandingkan dengan benar.
 
-# Tahap pipeline -> index tier tertinggi yang dibutuhkan tahap itu.
-# QUALITY_ANALYTICS membaca SILVER (bukan menghasilkan tier baru), jadi
-# index-nya sama dengan LEE_FILTER. PREVIEW membaca GOLD, jadi index-nya sama
-# dengan GOLD_EXPORT: dataset yang berhenti di SILVER melewatinya, dataset
-# yang sampai GOLD atau FUSION menjalankannya. Karena index PREVIEW (3) <=
-# index FUSION (4), FUSION tidak pernah jalan tanpa PREVIEW ikut jalan.
+# Tahap pipeline -> RANK tier tertinggi yang dibutuhkan tahap itu. Angkanya
+# tidak berubah: sejak dulu ini memang peringkat, bukan indeks ke sebuah list.
+# QUALITY_ANALYTICS membaca hasil rank 2 (bukan menghasilkan tier baru), jadi
+# peringkatnya sama dengan LEE_FILTER. PREVIEW membaca COG, jadi sama dengan
+# COG_EXPORT: dataset yang berhenti di rank 2 melewatinya, dataset yang sampai
+# COG atau FUSED menjalankannya. Karena PREVIEW (3) <= FUSED (4), FUSED tidak
+# pernah jalan tanpa PREVIEW ikut jalan.
 STAGE_TIER_INDEX = {
     "DOWNLOAD": 0,
     "CROP": 1,
@@ -106,25 +113,41 @@ def release_job_events(job_id: int) -> None:
 
 def _normalize_tiers(tiers: list[str]) -> list[str]:
     upper = {t.upper() for t in tiers}
-    invalid = upper - set(TIER_ORDER)
-    if invalid:
-        raise ValueError(f"Tier tidak valid: {invalid}. Valid: {TIER_ORDER}")
     if not upper:
         raise ValueError("tiers tidak boleh kosong")
-    return sorted(upper, key=TIER_ORDER.index)
+    invalid = set()
+    for t in upper:
+        try:
+            tn.rank(t)
+        except ValueError:
+            invalid.add(t)
+    if invalid:
+        raise ValueError(f"Tier tidak valid: {invalid}. Valid: {tn.ALL_TIERS}")
+    return sorted(upper, key=tn.sort_key)
 
 
 def compute_max_tier(required_tiers: list[str]) -> str:
-    return max(required_tiers, key=TIER_ORDER.index)
+    return max(required_tiers, key=tn.rank)
 
 
 def compute_skip_stages(required_tiers: list[str]) -> set[str]:
-    max_index = TIER_ORDER.index(compute_max_tier(required_tiers))
-    return {stage for stage, idx in STAGE_TIER_INDEX.items() if idx > max_index}
+    max_rank = tn.rank(compute_max_tier(required_tiers))
+    return {stage for stage, r in STAGE_TIER_INDEX.items() if r > max_rank}
 
 
 def compute_tiers_to_delete(produced_tiers: list[str], required_tiers: list[str]) -> set[str]:
-    return set(produced_tiers) - set(required_tiers)
+    """Tier yang dihasilkan tapi tidak diminta.
+
+    Dibandingkan lewat RANK, bukan NAMA: sebuah job yang mulai sebelum migrasi
+    D14 memegang nama lama di memori sementara required_tiers-nya sudah
+    dihitung ulang dengan nama baru. Set difference atas nama akan menganggap
+    SEMUA yang dihasilkan job itu tidak diminta, lalu menghapusnya.
+
+    Nilai baliknya memakai nama seperti yang ADA di produced_tiers, karena
+    itulah yang dipakai pemanggil untuk menemukan berkasnya.
+    """
+    keep = {tn.rank(t) for t in required_tiers}
+    return {t for t in produced_tiers if tn.rank(t) not in keep}
 
 
 class DatasetManager:
@@ -139,6 +162,8 @@ class DatasetManager:
         sources: dict | None = None,
         tiers: list[str] | None = None,
         fusion_strategy: str | None = None,
+        fusion_output_only: bool = False,
+        s1_match_tolerance_days: int | None = None,
         preview_options: list[str] | None = None,
         location: str | None = None,
         region_id: int | None = None,
@@ -190,6 +215,12 @@ class DatasetManager:
             # atau tidak sama sekali.
             configs = normalize_source_configs(sources)
             dataset_fields["fusion_strategy"] = fusion_strategy
+            dataset_fields["fusion_output_only"] = fusion_output_only
+            # Hanya diteruskan kalau user benar-benar menyatakannya: None di
+            # sini berarti "pakai default kolom", dan menuliskannya eksplisit
+            # akan menghilangkan server_default.
+            if s1_match_tolerance_days is not None:
+                dataset_fields["s1_match_tolerance_days"] = s1_match_tolerance_days
             dataset_fields["preview_options"] = preview_options
             dataset = self._db.create_dataset_with_sources(dataset_fields, sources)
             dataset_id = dataset.dataset_id
@@ -258,8 +289,64 @@ class DatasetManager:
             rows = sess.scalars(
                 stmt.order_by(Dataset.created_at.desc()).limit(limit).offset(offset)
             ).all()
-            items = [self._dataset_to_dict(d) for d in rows]
+            # Satu query agregat untuk SELURUH halaman, bukan satu per kartu:
+            # kartu dirender ulang tiap polling, jadi fan-out per dataset akan
+            # mengalikan beban database dengan jumlah kartu di layar.
+            per_source = self._per_source_stats([d.dataset_id for d in rows], sess)
+            items = []
+            for d in rows:
+                item = self._dataset_to_dict(d)
+                stats = per_source.get(d.dataset_id, {})
+                item["scenes_by_source"] = {
+                    k: v["scenes"] for k, v in stats.items()
+                }
+                item["bytes_by_source"] = {
+                    k: v["bytes"] for k, v in stats.items()
+                }
+                items.append(item)
         return {"total": total or 0, "limit": limit, "offset": offset, "items": items}
+
+    @staticmethod
+    def _per_source_stats(dataset_ids: list[int], sess) -> dict[int, dict[str, dict]]:
+        """{dataset_id: {source_api_key: {"scenes": n, "bytes": n}}}.
+
+        Dihitung dari `data_products`, bukan dari disk: storage_breakdown()
+        menyusuri folder, dan melakukannya untuk tiap kartu pada tiap polling
+        akan membaca ribuan entri direktori hanya untuk menampilkan dua angka.
+
+        Hanya baris `is_latest` yang dihitung — baris lama masih ada di tabel
+        untuk keperluan lineage, tapi berkasnya sudah digantikan, jadi
+        menjumlahkannya akan melaporkan disk yang tidak terpakai.
+
+        Scene dihitung DISTINCT: satu scene menghasilkan banyak produk (VV, VH,
+        beberapa tier), dan menghitung barisnya akan melaporkan angka berkali
+        lipat dari jumlah scene yang sebenarnya.
+        """
+        if not dataset_ids:
+            return {}
+
+        rows = sess.execute(
+            select(
+                DataProduct.dataset_id,
+                DataProduct.source,
+                func.count(func.distinct(DataProduct.scene_id)),
+                func.coalesce(func.sum(DataProduct.file_size_mb), 0),
+            )
+            .where(
+                DataProduct.dataset_id.in_(dataset_ids),
+                DataProduct.is_latest.is_(True),
+            )
+            .group_by(DataProduct.dataset_id, DataProduct.source)
+        ).all()
+
+        out: dict[int, dict[str, dict]] = {}
+        for ds_id, source, n_scenes, total_mb in rows:
+            key = SOURCE_NAME_TO_API_KEY.get(source, str(source).lower())
+            out.setdefault(ds_id, {})[key] = {
+                "scenes": int(n_scenes or 0),
+                "bytes": int(float(total_mb or 0) * 1024 * 1024),
+            }
+        return out
 
     def get_dataset(self, dataset_id: int) -> dict | None:
         with self._db.session() as sess:
@@ -313,6 +400,7 @@ class DatasetManager:
                     "paused": False,
                     "pause_reason": None,
                     "scenes": [],
+                    "layers": [],
                 }
             scene_rows = sess.scalars(
                 select(SceneJobState)
@@ -321,8 +409,14 @@ class DatasetManager:
             ).all()
             scenes = [self._scene_state_to_dict(r) for r in scene_rows]
             job_dict = self._job_to_dict(job)
+            layers = self._progress_layers(sess, dataset, job_dict, scenes)
         total = job_dict["total_scenes"] or 0
-        if total > 0:
+        if layers:
+            # Counter job mencampur hari aux dengan scene S1 sehingga bisa
+            # melampaui total_scenes; rata-rata lapisan mengikuti sumbu yang
+            # benar-benar dikerjakan.
+            progress_percent = int(sum(l["ratio"] for l in layers) / len(layers) * 100)
+        elif total > 0:
             progress_percent = int(
                 (job_dict["downloaded_count"] + job_dict["processed_count"] + job_dict["cleaned_count"])
                 / (total * 3) * 100
@@ -342,7 +436,120 @@ class DatasetManager:
             "paused": job_dict["status"] == "PAUSED",
             "pause_reason": job_dict["pause_reason"],
             "scenes": scenes,
+            "layers": layers,
         }
+
+    # Urutan tahap per scene S1, sama dengan orchestrator. Scene yang sudah
+    # melewati sebuah tahap dianggap menyelesaikannya.
+    _S1_STAGE_ORDER = (
+        "DOWNLOAD", "CROP", "LEE_FILTER", "QUALITY_ANALYTICS",
+        "GOLD_EXPORT", "PREVIEW", "FUSION", "CLEANUP",
+    )
+
+    def _progress_layers(self, sess, dataset, job_dict: dict, scenes: list[dict]) -> list[dict]:
+        """Lapisan radar progres di kartu dataset: unduh/proses per satelit + fusi.
+
+        Hanya lapisan yang benar-benar dikerjakan dataset ini yang dikembalikan:
+        satelit yang tidak dikonfigurasi tidak punya lapisan, "processing"
+        hanya ada kalau level PROCESSED diminta, dan "fusion" hanya ada kalau
+        strategi fusi dipilih dengan >= 2 satelit.
+
+        S1 dihitung dari scene_job_state (tahap per scene). MODIS/GPM tidak
+        punya baris scene_job_state -- mereka ditarik per tanggal -- jadi
+        progresnya dihitung dari data_products: scene berbeda yang sudah punya
+        produk apa pun (unduh) atau produk rank >= 2 (proses).
+        """
+        configs = {c.source_name: list(c.processing_levels or []) for c in dataset.source_configs}
+        if not configs:
+            return []
+
+        counts: dict[tuple[str, str], int] = {}
+        rows = sess.execute(
+            select(DataProduct.source, DataProduct.product_tier,
+                   func.count(func.distinct(DataProduct.scene_id)))
+            .where(DataProduct.dataset_id == dataset.dataset_id,
+                   DataProduct.is_latest.is_(True))
+            .group_by(DataProduct.source, DataProduct.product_tier)
+        ).all()
+        for source, tier, n in rows:
+            counts[(str(source).upper(), tn._upper(tier))] = int(n or 0)
+
+        def n_scenes(source: str, min_rank: int) -> int:
+            # Distinct per tier lalu diambil maksimum: satu scene punya banyak
+            # tier, jadi menjumlahkan antar-tier akan menghitungnya berkali-kali.
+            best = 0
+            for (src, tier), n in counts.items():
+                if src != source:
+                    continue
+                try:
+                    r = tn.rank(tier)
+                except ValueError:
+                    continue
+                if r >= min_rank:
+                    best = max(best, n)
+            return best
+
+        done = job_dict["status"] == "COMPLETED"
+        total = job_dict["total_scenes"] or len(scenes)
+        has_s1 = "SENTINEL1" in configs
+        range_days = (dataset.date_end - dataset.date_start).days + 1
+        strategy = str(dataset.fusion_strategy or "").strip().upper()
+        # Sumbu unduh aux mengikuti plan_fusion: HYBRID dan FULL_COVERAGE
+        # menarik MODIS/GPM tiap hari di rentang, bukan per scene S1. Membagi
+        # dengan jumlah scene membuat cincin aux penuh setelah hari pertama.
+        if has_s1 and strategy not in (HYBRID, FULL_COVERAGE):
+            expected_aux = total
+        else:
+            expected_aux = range_days
+        expected_fused = range_days if strategy == FULL_COVERAGE or not has_s1 else total
+
+        def ratio(n: int, expected: int) -> float:
+            if done:
+                return 1.0
+            if expected <= 0:
+                return 0.0
+            return round(min(n / expected, 1.0), 4)
+
+        order = self._S1_STAGE_ORDER
+
+        def s1_reached(stage: str) -> int:
+            idx = order.index(stage)
+            reached = 0
+            for sc in scenes:
+                cur = sc.get("current_stage")
+                if cur not in order:
+                    continue
+                ci = order.index(cur)
+                if ci > idx or (ci == idx and sc.get("stage_status") == "COMPLETED"):
+                    reached += 1
+            return reached
+
+        layers: list[dict] = []
+        for source_name in SOURCE_NAME_ORDER:
+            if source_name not in configs:
+                continue
+            key = SOURCE_NAME_TO_API_KEY.get(source_name, source_name.lower())
+            wants_processed = "PROCESSED" in configs[source_name]
+            if source_name == "SENTINEL1":
+                dl = s1_reached("DOWNLOAD")
+                pr = s1_reached("GOLD_EXPORT")
+                expected = total
+            else:
+                dl = n_scenes(source_name, 0)
+                pr = n_scenes(source_name, 2)
+                expected = max(expected_aux, dl)
+            layers.append({"key": key + "_download", "source": key,
+                           "phase": "download", "ratio": ratio(dl, expected)})
+            if wants_processed:
+                layers.append({"key": key + "_processing", "source": key,
+                               "phase": "processing", "ratio": ratio(pr, expected)})
+
+        if dataset.fusion_strategy and len(configs) >= 2:
+            fused = max((n for (_, tier), n in counts.items()
+                         if tier in ("FUSED", "FUSION")), default=0)
+            layers.append({"key": "fusion", "source": "fusion", "phase": "fusion",
+                           "ratio": ratio(fused, expected_fused)})
+        return layers
 
     def toggle_live(self, enabled: bool) -> dict:
         live = self.get_live_dataset()
@@ -456,6 +663,50 @@ class DatasetManager:
         logger.info("[DATASET] job_id=%d resumed count=%d", job_id, resume_count)
         return {"status": "QUEUED", "resume_count": resume_count}
 
+    def recover_interrupted_jobs(self) -> list[int]:
+        """Lanjutkan job yang terputus karena proses server mati/restart.
+
+        Thread job hidup di dalam proses API. Kalau proses berhenti, job tetap
+        berstatus QUEUED/PREPARING/DOWNLOADING/PROCESSING di database padahal
+        tidak ada yang mengerjakannya lagi (kasus try2/try3). Dipanggil sekali
+        saat startup: tiap job aktif terbaru per dataset STANDARD di-queue ulang.
+        run_dataset_job idempoten — scene yang selesai dilewati, file yang ada
+        di disk tidak diunduh ulang, dan download S1 melanjutkan .part.
+
+        Returns: job_id yang dilanjutkan."""
+        active = {"QUEUED", "PREPARING", "DOWNLOADING", "PROCESSING"}
+        to_resume: list[int] = []
+        with self._db.session() as sess:
+            jobs = sess.scalars(
+                select(DatasetJob)
+                .where(DatasetJob.status.in_(active))
+                .order_by(DatasetJob.created_at.desc())
+            ).all()
+            seen: set[int] = set()
+            for job in jobs:
+                if job.dataset_id in seen:
+                    continue
+                seen.add(job.dataset_id)
+                dataset = sess.get(Dataset, job.dataset_id)
+                if (
+                    dataset is None
+                    or dataset.deleted_at is not None
+                    or dataset.dataset_kind == "LIVE"
+                    or dataset.status == "DELETING"
+                ):
+                    continue
+                if _is_thread_alive(f"job-{job.job_id}"):
+                    continue
+                job.status = "QUEUED"
+                job.resumed_at = datetime.now(timezone.utc)
+                job.resume_count = (job.resume_count or 0) + 1
+                dataset.status = "QUEUED"
+                to_resume.append(job.job_id)
+        for job_id in to_resume:
+            logger.warning("[DATASET] job_id=%d terputus oleh restart, dilanjutkan", job_id)
+            self._spawn_job_runner(job_id)
+        return to_resume
+
     def retry_dataset_job(self, dataset_id: int) -> dict:
         with self._db.session() as sess:
             dataset = sess.get(Dataset, dataset_id)
@@ -510,9 +761,10 @@ class DatasetManager:
         deleted_files = 0
         if cascade_delete:
             from etl.deletion_manager import DeletionManager
-            # Sisakan GOLD + FUSION: keduanya deliverable, sisanya antara.
+            # Sisakan COG + FUSED (rank >= 3): keduanya deliverable, sisanya
+            # antara. Kedua kosakata disapu supaya baris pra-D14 ikut terhapus.
             tier_result = DeletionManager(self._db, dataset_id, dataset_name).delete_tiers(
-                ["RAW", "BRONZE", "SILVER"]
+                list(tn.tiers_up_to_rank(2))
             )
             deleted_files = tier_result["deleted_count"]
 
@@ -520,7 +772,7 @@ class DatasetManager:
             "[DATASET] dataset_id=%d job_id=%d dibatalkan cascade_delete=%s deleted_files=%d",
             dataset_id, job_id, cascade_delete, deleted_files,
         )
-        return {"status": "CANCELLED", "deleted_files": deleted_files, "retained_tier": "GOLD+FUSION"}
+        return {"status": "CANCELLED", "deleted_files": deleted_files, "retained_tier": f"{tn.COG}+{tn.FUSED}"}
 
     def delete_dataset(self, dataset_id: int, force: bool = False) -> dict:
         with self._db.session() as sess:
@@ -870,6 +1122,11 @@ class DatasetManager:
                 )
             ],
             "fusion_strategy": d.fusion_strategy,
+            # Ikut di `base` bersama fusion_strategy: keduanya menjelaskan
+            # bentuk output dataset, dan orchestrator membaca dict ini (bukan
+            # objek ORM-nya) untuk memutuskan penghematan disk.
+            "fusion_output_only": d.fusion_output_only,
+            "s1_match_tolerance_days": d.s1_match_tolerance_days,
             "preview_options": list(d.preview_options or []),
             "created_at": d.created_at,
             "updated_at": d.updated_at,

@@ -16,6 +16,7 @@ import hashlib
 from datetime import datetime, timezone
 
 import pytest
+from etl import tier_names as tn
 from sqlalchemy import text
 
 
@@ -66,8 +67,8 @@ class TestEndToEndFlow:
         assert success == 5, f"Expected 5 successful stages, got {success}"
 
     def test_pipeline_product_tiers(self, db_client, sample_region):
-        """After pipeline, each band must have RAW, BRONZE, SILVER products,
-        and GOLD must have the single fused H5 product (band_name=FUSION)."""
+        """After pipeline, each band must have RAW, ALIGNED, DESPECKLED products,
+        and FUSED must hold the single fused H5 product (band_name=FUSION)."""
         from etl.seed_data import seed
         from etl.metadata_manager import MetadataManager
 
@@ -75,7 +76,7 @@ class TestEndToEndFlow:
         meta = MetadataManager(db_client)
 
         for band in ["VV", "VH"]:
-            for tier in ["RAW", "BRONZE", "SILVER"]:
+            for tier in ["RAW", "ALIGNED", "DESPECKLED"]:
                 products = meta.get_products_by_scene(
                     ids["scene_id"], tier=tier, latest_only=True
                 )
@@ -84,12 +85,12 @@ class TestEndToEndFlow:
                     f"Missing {tier} product for band={band}"
                 )
 
-        # Stack fusion sekarang tinggal di tier FUSION sendiri; GOLD berisi
+        # Stack fusion tinggal di tier FUSED sendiri; COG berisi
         # produk analysis-ready per-source (migrasi 013).
         fusion_products = meta.get_products_by_scene(
-            ids["scene_id"], tier="FUSION", latest_only=True
+            ids["scene_id"], tier="FUSED", latest_only=True
         )
-        assert len(fusion_products) == 1, "FUSION should have exactly 1 fused product, not per-band"
+        assert len(fusion_products) == 1, "FUSED should have exactly 1 fused product, not per-band"
         assert fusion_products[0]["band_name"] == "FUSION"
 
 
@@ -121,12 +122,12 @@ class TestMetadataTracking:
 
         prod_id = meta.insert_data_product(
             scene_id=sample_scene, job_id=job_id,
-            product_tier="FUSION", source="FUSION", product_type="FUSION_H5",
+            product_tier="FUSED", source="FUSION", product_type="FUSION_H5",
             band_name="FUSION", file_path="/tmp/test_fusion.h5", file_name="test_fusion.h5",
             file_size_mb=40.0, data_hash_sha256=fake_hash("TRACK_FUSION"), file_format="HDF5",
         )
 
-        products = meta.get_products_by_scene(sample_scene, tier="FUSION")
+        products = meta.get_products_by_scene(sample_scene, tier="FUSED")
         fusion = next((p for p in products if p["band_name"] == "FUSION"), None)
         assert fusion is not None
         assert fusion["job_id"] == job_id
@@ -137,7 +138,7 @@ class TestMetadataTracking:
         meta.start_job(job_id)
         prod_id = meta.insert_data_product(
             scene_id=sample_scene, job_id=job_id,
-            product_tier="SILVER", source="SENTINEL1", product_type="LEE_FILTERED",
+            product_tier="DESPECKLED", source="SENTINEL1", product_type="LEE_FILTERED",
             band_name="VH", file_path="/tmp/vh.tif", file_name="vh.tif",
             file_size_mb=38.0, data_hash_sha256=fake_hash("QUALITY_VH"),
         )
@@ -159,14 +160,14 @@ class TestMetadataTracking:
         # First product
         pid1 = meta.insert_data_product(
             scene_id=sample_scene, job_id=job_id,
-            product_tier="FUSION", source="FUSION", product_type="FUSION_H5",
+            product_tier="FUSED", source="FUSION", product_type="FUSION_H5",
             band_name="FUSION", file_path="/tmp/f1.h5", file_name="f1.h5",
             file_size_mb=40.0, data_hash_sha256=fake_hash("LATEST_V1"), file_format="HDF5",
         )
         # Second product (same tier+band → should mark pid1 as not latest)
         pid2 = meta.insert_data_product(
             scene_id=sample_scene, job_id=job_id,
-            product_tier="FUSION", source="FUSION", product_type="FUSION_H5",
+            product_tier="FUSED", source="FUSION", product_type="FUSION_H5",
             band_name="FUSION", file_path="/tmp/f2.h5", file_name="f2.h5",
             file_size_mb=39.0, data_hash_sha256=fake_hash("LATEST_V2"), file_format="HDF5",
         )
@@ -191,7 +192,7 @@ class TestDataQuality:
         job_id  = meta.insert_processing_job(sample_scene, "QUALITY_ANALYTICS")
         prod_id = meta.insert_data_product(
             scene_id=sample_scene, job_id=job_id,
-            product_tier="SILVER", source="SENTINEL1", product_type="LEE_FILTERED", band_name="VV",
+            product_tier="DESPECKLED", source="SENTINEL1", product_type="LEE_FILTERED", band_name="VV",
             file_path="/tmp/score_test.tif", file_name="score_test.tif",
             file_size_mb=38.0, data_hash_sha256=fake_hash("SCORE_RANGE"),
         )
@@ -212,7 +213,7 @@ class TestDataQuality:
         job_id  = meta.insert_processing_job(sample_scene, "QUALITY_ANALYTICS")
         prod_id = meta.insert_data_product(
             scene_id=sample_scene, job_id=job_id,
-            product_tier="SILVER", source="SENTINEL1", product_type="LEE_FILTERED", band_name="VH",
+            product_tier="DESPECKLED", source="SENTINEL1", product_type="LEE_FILTERED", band_name="VH",
             file_path="/tmp/flag_test.tif", file_name="flag_test.tif",
             file_size_mb=38.0, data_hash_sha256=fake_hash("FLAG_TEST"),
         )
@@ -232,7 +233,7 @@ class TestDataQuality:
         job_id  = meta.insert_processing_job(sample_scene, "QUALITY_ANALYTICS")
         prod_id = meta.insert_data_product(
             scene_id=sample_scene, job_id=job_id,
-            product_tier="SILVER", source="SENTINEL1", product_type="LEE_FILTERED", band_name="VV",
+            product_tier="DESPECKLED", source="SENTINEL1", product_type="LEE_FILTERED", band_name="VV",
             file_path="/tmp/nodata_test.tif", file_name="nodata_test.tif",
             file_size_mb=38.0, data_hash_sha256=fake_hash("NODATA_TEST"),
         )
@@ -301,13 +302,13 @@ class TestLineageTracking:
         ):
             silver_id = meta.insert_data_product(
                 scene_id=sample_scene, job_id=lee_job,
-                product_tier="SILVER", source=source, product_type=product_type, band_name=band,
+                product_tier=tn.RANK2_BY_SOURCE[source], source=source, product_type=product_type, band_name=band,
                 file_path=f"/tmp/silver_{source}.tif", file_name=f"silver_{source}.tif",
                 file_size_mb=48.0, data_hash_sha256=fake_hash(f"GE_SILVER_{source}"),
             )
             gold_id = meta.insert_data_product(
                 scene_id=sample_scene, job_id=gold_job,
-                product_tier="GOLD", source=source, product_type="COG", band_name=band,
+                product_tier="COG", source=source, product_type="COG", band_name=band,
                 file_path=f"/tmp/gold_{source}.tif", file_name=f"gold_{source}.tif",
                 file_size_mb=32.0, data_hash_sha256=fake_hash(f"GE_GOLD_{source}"),
             )
@@ -336,19 +337,19 @@ class TestLineageTracking:
         )
         bronze_id = meta.insert_data_product(
             scene_id=sample_scene, job_id=crop_job,
-            product_tier="BRONZE", source="SENTINEL1", product_type="CROPPED_TIFF", band_name="VV",
+            product_tier="ALIGNED", source="SENTINEL1", product_type="CROPPED_TIFF", band_name="VV",
             file_path="/tmp/bronze.tif", file_name="bronze.tif",
             file_size_mb=48.0, data_hash_sha256=fake_hash("LIN_BRONZE"),
         )
         silver_id = meta.insert_data_product(
             scene_id=sample_scene, job_id=lee_job,
-            product_tier="SILVER", source="SENTINEL1", product_type="LEE_FILTERED", band_name="VV",
+            product_tier="DESPECKLED", source="SENTINEL1", product_type="LEE_FILTERED", band_name="VV",
             file_path="/tmp/silver.tif", file_name="silver.tif",
             file_size_mb=45.0, data_hash_sha256=fake_hash("LIN_SILVER"),
         )
         gold_id = meta.insert_data_product(
             scene_id=sample_scene, job_id=fusion_job,
-            product_tier="FUSION", source="FUSION",   product_type="FUSION_H5", band_name="FUSION",
+            product_tier="FUSED", source="FUSION",   product_type="FUSION_H5", band_name="FUSION",
             file_path="/tmp/gold.h5", file_name="gold.h5",
             file_size_mb=41.0, data_hash_sha256=fake_hash("LIN_GOLD"), file_format="HDF5",
         )
@@ -379,7 +380,7 @@ class TestLineageTracking:
         )
         bronze_id = meta.insert_data_product(
             scene_id=sample_scene, job_id=cr_job,
-            product_tier="BRONZE", source="SENTINEL1", product_type="CROPPED_TIFF", band_name="VH",
+            product_tier="ALIGNED", source="SENTINEL1", product_type="CROPPED_TIFF", band_name="VH",
             file_path="/tmp/brnz_desc.tif", file_name="brnz_desc.tif",
             file_size_mb=48.0, data_hash_sha256=fake_hash("DESC_BRONZE"),
         )

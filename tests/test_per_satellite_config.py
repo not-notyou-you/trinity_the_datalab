@@ -42,13 +42,16 @@ from rasterio.transform import from_origin
 from sqlalchemy import text
 
 from etl import folder_manager as fm
+from etl import fusion_strategies as fs
 from etl import module4_gold_export as m4
 from etl import module5_orchestrator as m5
 from etl import module7_modis_download as m7
 from etl import module8_gpm_download as m8
 from etl import module9_fusion as m9
 from etl import module10_generate_preview as m10
-from etl.database_client import Dataset, DatasetJob
+from etl.database_client import (
+    Dataset, DatasetJob, _validate_fusion_output_only,
+)
 from etl.module1_download import DownloadResult
 from etl.processing_plan import plan_from_configs
 
@@ -93,7 +96,9 @@ def job_factory(db_client, sample_region, tmp_path, monkeypatch):
     monkeypatch.setattr(fm, "DATA_ROOT", tmp_path / "datasets")
 
     def make(sources: dict, fusion_strategy=None, required_tiers=None,
-             generate_preview=False, preview_options=None):
+             generate_preview=False, preview_options=None,
+             date_start=S1_DATE, date_end=S1_DATE,
+             fusion_output_only=False, s1_match_tolerance_days=None):
         from etl.database_client import derive_required_tiers, normalize_source_configs
 
         configs = normalize_source_configs(sources)
@@ -107,21 +112,26 @@ def job_factory(db_client, sample_region, tmp_path, monkeypatch):
                 region_id=sample_region,
                 bbox=f"SRID=4326;{BBOX_WKT}",
                 bbox_wkt=BBOX_WKT,
-                date_start=S1_DATE,
-                date_end=S1_DATE,
+                date_start=date_start,
+                date_end=date_end,
                 required_tiers=tiers,
                 fusion_strategy=fusion_strategy,
                 dataset_kind="STANDARD",
                 status="QUEUED",
                 generate_preview=generate_preview,
                 preview_options=preview_options,
+                fusion_output_only=_validate_fusion_output_only(
+                    fusion_output_only, fusion_strategy
+                ),
+                **({"s1_match_tolerance_days": s1_match_tolerance_days}
+                   if s1_match_tolerance_days is not None else {}),
             )
             sess.add(ds)
             sess.flush()
             dataset_id, dataset_name = ds.dataset_id, ds.name
             job = DatasetJob(
                 dataset_id=dataset_id, job_type="CREATE", status="QUEUED",
-                date_range_start=S1_DATE, date_range_end=S1_DATE,
+                date_range_start=date_start, date_range_end=date_end,
             )
             sess.add(job)
             sess.flush()
@@ -142,9 +152,14 @@ def stub_rasters(monkeypatch):
     """
 
     def fake_discover(bbox_wkt, date_from, date_to, max_results=200):
-        return [{"product_identifier": PID, "size_mb": 1.0, "cloud_cover": 0}]
+        # `acquisition_datetime` ikut karena discover_scenes yang asli
+        # membawanya (module1_download). Orchestrator memakainya untuk
+        # menyusun himpunan tanggal S1 -- stub tanpa kunci itu akan menguji
+        # jalur fallback, bukan jalur yang sebenarnya dipakai produksi.
+        return [{"product_identifier": PID, "size_mb": 1.0, "cloud_cover": 0,
+                 "acquisition_datetime": ACQ}]
 
-    def fake_download(scene_meta, output_dir, keep_raw=True, progress_cb=None):
+    def fake_download(scene_meta, output_dir, keep_raw=True, progress_cb=None, reuse_root=None):
         out = Path(output_dir)
         (out / f"{PID}.SAFE.zip").parent.mkdir(parents=True, exist_ok=True)
         (out / f"{PID}.SAFE.zip").write_bytes(b"zip")
@@ -186,7 +201,7 @@ def stub_rasters(monkeypatch):
         )
 
     def fake_gold(dataset_id, dataset_name, source, scene_key, silver_files):
-        d = fm.ensure_scene_dir(dataset_id, dataset_name, "gold", source, scene_key)
+        d = fm.ensure_scene_dir(dataset_id, dataset_name, "cog", source, scene_key)
         return {
             band: _write_tif(d / Path(path).name, 3.0)
             for band, path in silver_files.items()
@@ -244,8 +259,18 @@ def stub_rasters(monkeypatch):
 # helpers
 # ---------------------------------------------------------------------------
 def fusion_files(dataset_id, dataset_name) -> list[Path]:
+    """Semua HDF5 fusi dataset ini, apa pun strateginya.
+
+    Rekursif karena output sekarang dipecah per subfolder strategi
+    (fusion/co-occurrence/, fusion/hybrid/, ...) supaya menjalankan ulang
+    dataset dengan strategi lain tidak menimpa hasil sebelumnya."""
     d = fm.get_fusion_dir(dataset_id, dataset_name, DATE_KEY)
-    return sorted(d.glob("*.h5")) if d.exists() else []
+    return sorted(d.glob("**/*.h5")) if d.exists() else []
+
+
+def fusion_dir(dataset_id, dataset_name, strategy) -> Path:
+    """Folder output untuk satu strategi."""
+    return fm.get_fusion_dir(dataset_id, dataset_name, DATE_KEY) / fs.SUBFOLDER[strategy]
 
 
 def h5_layers(path: Path) -> set[str]:
@@ -270,7 +295,10 @@ def h5_attrs(path: Path) -> dict:
         return {k: f.attrs[k] for k in f.attrs}
 
 
-def fusion_rows(db_client, region_id) -> list[dict]:
+def fusion_rows(db_client, dataset_id) -> list[dict]:
+    """Baris fusion_products dataset ini di S1_DATE. Disaring per dataset,
+    bukan per region: sejak migrasi 021 tiap dataset punya barisnya sendiri,
+    dan dataset uji lain atas region + tanggal yang sama ada di DB yang sama."""
     with db_client.session() as sess:
         return [
             dict(r._mapping)
@@ -278,9 +306,9 @@ def fusion_rows(db_client, region_id) -> list[dict]:
                 SELECT fusion_id, feature_date, processing_level, fusion_strategy,
                        feature_stack_path, temporal_offset_modis, temporal_offset_gpm
                 FROM   fusion_products
-                WHERE  region_id = :r AND feature_date = :d
+                WHERE  dataset_id = :ds AND feature_date = :d
                 ORDER BY processing_level
-            """), {"r": region_id, "d": S1_DATE})
+            """), {"ds": dataset_id, "d": S1_DATE})
         ]
 
 
@@ -349,7 +377,7 @@ class TestMixedLevelsSingleStack:
     def ran(self, db_client, job_factory, stub_rasters):
         dataset_id, name, job_id = job_factory(
             self.CONFIG, fusion_strategy="CO_OCCURRENCE",
-            required_tiers=["RAW", "BRONZE", "SILVER", "GOLD", "FUSION"],
+            required_tiers=["RAW", "ALIGNED", "DESPECKLED", "INDICES", "COG", "FUSED"],
         )
         m5.run_dataset_job(db_client, job_id)
         return dataset_id, name
@@ -397,7 +425,7 @@ class TestMixedLevelsSingleStack:
         itulah bukti bahwa S1 RAW diambil dari BRONZE, bukan dari GOLD."""
         dataset_id, name = ran
         meta_path = (
-            fm.get_fusion_dir(dataset_id, name, DATE_KEY)
+            fusion_dir(dataset_id, name, "CO_OCCURRENCE")
             / m9.fusion_metadata_name("PROCESSED")
         )
         meta = json.loads(meta_path.read_text(encoding="utf-8"))
@@ -405,7 +433,7 @@ class TestMixedLevelsSingleStack:
             "SENTINEL1": "RAW", "MODIS": "PROCESSED", "GPM": "RAW",
         }
         assert meta["source_tiers"] == {
-            "SENTINEL1": "BRONZE", "MODIS": "GOLD", "GPM": "BRONZE",
+            "SENTINEL1": "ALIGNED", "MODIS": "COG", "GPM": "ALIGNED",
         }
         assert meta["fusion_strategy"] == "CO_OCCURRENCE"
         # layers di sidecar = lapisan yang ditulis, bukan daftar semua yang
@@ -416,33 +444,37 @@ class TestMixedLevelsSingleStack:
     def test_layer_sources_point_at_the_right_tier_on_disk(self, ran):
         dataset_id, name = ran
         meta_path = (
-            fm.get_fusion_dir(dataset_id, name, DATE_KEY)
+            fusion_dir(dataset_id, name, "CO_OCCURRENCE")
             / m9.fusion_metadata_name("PROCESSED")
         )
         srcs = json.loads(meta_path.read_text(encoding="utf-8"))["layer_sources"]
-        assert "bronze" in srcs["sentinel1/VV"]["path"].replace("\\", "/")
-        assert "gold" in srcs["modis/NDVI"]["path"].replace("\\", "/")
-        assert "bronze" in srcs["gpm/rainfall_daily"]["path"].replace("\\", "/")
+        assert "sentinel-1/RAW" in srcs["sentinel1/VV"]["path"].replace("\\", "/")
+        assert "modis/PROCESSED" in srcs["modis/NDVI"]["path"].replace("\\", "/")
+        assert "gpm-imerg/RAW" in srcs["gpm/rainfall_daily"]["path"].replace("\\", "/")
 
     def test_s1_raw_artifact_exists_at_bronze(self, ran):
         dataset_id, name = ran
-        bronze = fm.get_scene_dir(dataset_id, name, "bronze", "sentinel1", PID)
+        bronze = fm.get_scene_dir(dataset_id, name, "aligned", "sentinel1", PID)
         assert bronze.is_dir()
         assert sorted(p.name for p in bronze.glob("*.tif")) == [
             f"{PID}_VH_crop.tif", f"{PID}_VV_crop.tif",
         ]
 
-    def test_modis_processed_reaches_silver_and_gold(self, ran):
+    def test_modis_processed_lands_in_the_processed_drawer(self, ran):
+        """Artefak antara (SILVER) tidak lagi bertahan di disk: dia hidup di
+        _work/ dan disapu di akhir job. Yang tersisa adalah laci finalnya."""
         dataset_id, name = ran
-        for tier in ("silver", "gold"):
-            d = fm.get_scene_dir(dataset_id, name, tier, "modis", DATE_KEY)
-            assert d.is_dir(), f"{tier}/modis/{DATE_KEY} tidak ada"
-            assert list(d.glob("*.tif"))
+        d = fm.get_scene_dir(dataset_id, name, "cog", "modis", DATE_KEY)
+        assert d.is_dir(), "modis/PROCESSED tidak ada"
+        assert list(d.glob("*.tif"))
+
+        scratch = fm.get_dataset_root(dataset_id, name) / fm.SCRATCH_DIRNAME
+        assert not scratch.exists(), "_work/ seharusnya sudah disapu"
 
     def test_gpm_raw_stops_at_bronze(self, ran):
         dataset_id, name = ran
-        assert fm.get_scene_dir(dataset_id, name, "bronze", "gpm", DATE_KEY).is_dir()
-        gold = fm.get_scene_dir(dataset_id, name, "gold", "gpm", DATE_KEY)
+        assert fm.get_scene_dir(dataset_id, name, "aligned", "gpm", DATE_KEY).is_dir()
+        gold = fm.get_scene_dir(dataset_id, name, "cog", "gpm", DATE_KEY)
         assert not gold.exists() or not list(gold.glob("*.tif"))
 
     def test_no_unconfigured_source_group(self, ran):
@@ -465,19 +497,19 @@ class TestMixedLevelsDatabaseTagging:
         dataset_id, name, job_id = job_factory(
             {"sentinel1": ["RAW"], "modis": ["PROCESSED"], "gpm": ["RAW"]},
             fusion_strategy="CO_OCCURRENCE",
-            required_tiers=["RAW", "BRONZE", "SILVER", "GOLD", "FUSION"],
+            required_tiers=["RAW", "ALIGNED", "DESPECKLED", "INDICES", "COG", "FUSED"],
         )
         m5.run_dataset_job(db_client, job_id)
         return dataset_id, name
 
     def test_s1_bronze_tagged_raw(self, db_client, ran):
         dataset_id, _ = ran
-        rows = products(db_client, dataset_id, tier="BRONZE", source="SENTINEL1")
+        rows = products(db_client, dataset_id, tier="ALIGNED", source="SENTINEL1")
         assert rows and all(r["processing_level"] == "RAW" for r in rows)
 
     def test_s1_raw_never_reaches_gold(self, db_client, ran):
         dataset_id, _ = ran
-        assert products(db_client, dataset_id, tier="GOLD", source="SENTINEL1") == []
+        assert products(db_client, dataset_id, tier="COG", source="SENTINEL1") == []
 
     def test_modis_products_tagged_processed(self, db_client, ran):
         dataset_id, _ = ran
@@ -490,11 +522,11 @@ class TestMixedLevelsDatabaseTagging:
         rows = products(db_client, dataset_id, source="GPM")
         assert rows and all(r["processing_level"] == "RAW" for r in rows)
         assert {r["band_name"] for r in rows} == {"RAIN_24H"}
-        assert {r["tier"] for r in rows} == {"BRONZE"}
+        assert {r["tier"] for r in rows} == {"ALIGNED"}
 
     def test_fusion_product_tagged_and_checksummed(self, db_client, ran):
         dataset_id, name = ran
-        rows = products(db_client, dataset_id, tier="FUSION")
+        rows = products(db_client, dataset_id, tier="FUSED")
         assert len(rows) == 1
         row = rows[0]
         assert row["processing_level"] == "PROCESSED"
@@ -527,7 +559,7 @@ class TestMixedLevelsDatabaseTagging:
         assert all(kind == "FUSION" for kind, _, _ in edges)
 
         bronze_ids = {
-            product_id_of(db_client, dataset_id, band, tier="BRONZE")
+            product_id_of(db_client, dataset_id, band, tier="ALIGNED")
             for band in ("VV", "VH")
         }
         assert {src for _, src, _ in edges} == bronze_ids
@@ -536,7 +568,7 @@ class TestMixedLevelsDatabaseTagging:
         self, db_client, ran, sample_region
     ):
         dataset_id, name = ran
-        rows = fusion_rows(db_client, sample_region)
+        rows = fusion_rows(db_client, dataset_id)
         assert len(rows) == 1
         assert rows[0]["processing_level"] == "PROCESSED"
         assert rows[0]["fusion_strategy"] == "CO_OCCURRENCE"
@@ -561,7 +593,7 @@ class TestBothLevelsProduceTwoStacks:
         dataset_id, name, job_id = job_factory(
             {"sentinel1": ["RAW", "PROCESSED"], "modis": ["PROCESSED"]},
             fusion_strategy="HYBRID",
-            required_tiers=["RAW", "BRONZE", "SILVER", "GOLD", "FUSION"],
+            required_tiers=["RAW", "ALIGNED", "DESPECKLED", "INDICES", "COG", "FUSED"],
         )
         m5.run_dataset_job(db_client, job_id)
         return dataset_id, name
@@ -571,15 +603,15 @@ class TestBothLevelsProduceTwoStacks:
         files = fusion_files(dataset_id, name)
         assert len(files) == 2
         assert sorted(f.name for f in files) == [
-            m9.fusion_h5_name(DATE_KEY, "PROCESSED"),
-            m9.fusion_h5_name(DATE_KEY, "RAW"),
+            m9.fusion_h5_name(DATE_KEY, "PROCESSED", "HYBRID"),
+            m9.fusion_h5_name(DATE_KEY, "RAW", "HYBRID"),
         ]
 
     def test_each_stack_declares_its_own_level(self, ran):
         dataset_id, name = ran
-        d = fm.get_fusion_dir(dataset_id, name, DATE_KEY)
+        d = fusion_dir(dataset_id, name, "HYBRID")
         for level in ("RAW", "PROCESSED"):
-            attrs = h5_attrs(d / m9.fusion_h5_name(DATE_KEY, level))
+            attrs = h5_attrs(d / m9.fusion_h5_name(DATE_KEY, level, "HYBRID"))
             assert attrs["processing_level"] == level
 
     def test_s1_level_differs_but_modis_is_shared(self, ran):
@@ -587,10 +619,10 @@ class TestBothLevelsProduceTwoStacks:
         level itu — sumber tidak dihilangkan dari stack RAW hanya karena dia
         tidak punya varian RAW."""
         dataset_id, name = ran
-        d = fm.get_fusion_dir(dataset_id, name, DATE_KEY)
+        d = fusion_dir(dataset_id, name, "HYBRID")
 
         def levels(level):
-            attrs = h5_attrs(d / m9.fusion_h5_name(DATE_KEY, level))
+            attrs = h5_attrs(d / m9.fusion_h5_name(DATE_KEY, level, "HYBRID"))
             return dict(zip(
                 [str(s) for s in attrs["sources"]],
                 [str(s) for s in attrs["source_levels"]],
@@ -602,9 +634,9 @@ class TestBothLevelsProduceTwoStacks:
     def test_both_stacks_have_the_same_layer_names(self, ran):
         """Perbandingan ablation cuma sah kalau bentuk kedua stack identik."""
         dataset_id, name = ran
-        d = fm.get_fusion_dir(dataset_id, name, DATE_KEY)
-        raw = h5_layers(d / m9.fusion_h5_name(DATE_KEY, "RAW"))
-        proc = h5_layers(d / m9.fusion_h5_name(DATE_KEY, "PROCESSED"))
+        d = fusion_dir(dataset_id, name, "HYBRID")
+        raw = h5_layers(d / m9.fusion_h5_name(DATE_KEY, "RAW", "HYBRID"))
+        proc = h5_layers(d / m9.fusion_h5_name(DATE_KEY, "PROCESSED", "HYBRID"))
         assert raw == proc
         assert raw == {
             "sentinel1/VV", "sentinel1/VH",
@@ -616,10 +648,10 @@ class TestBothLevelsProduceTwoStacks:
         BRONZE, stack PROCESSED membaca COG GOLD, dan stub menulis nilai yang
         berbeda untuk keduanya."""
         dataset_id, name = ran
-        d = fm.get_fusion_dir(dataset_id, name, DATE_KEY)
-        with h5py.File(d / m9.fusion_h5_name(DATE_KEY, "RAW"), "r") as f:
+        d = fusion_dir(dataset_id, name, "HYBRID")
+        with h5py.File(d / m9.fusion_h5_name(DATE_KEY, "RAW", "HYBRID"), "r") as f:
             raw_vv = f["sentinel1/VV"][:]
-        with h5py.File(d / m9.fusion_h5_name(DATE_KEY, "PROCESSED"), "r") as f:
+        with h5py.File(d / m9.fusion_h5_name(DATE_KEY, "PROCESSED", "HYBRID"), "r") as f:
             proc_vv = f["sentinel1/VV"][:]
         assert not np.allclose(raw_vv, proc_vv)
 
@@ -630,7 +662,7 @@ class TestBothLevelsProduceTwoStacks:
         baris kedua menimpa yang pertama. Migrasi 018 menambahkan
         processing_level ke kunci itu."""
         dataset_id, name = ran
-        rows = fusion_rows(db_client, sample_region)
+        rows = fusion_rows(db_client, dataset_id)
         assert [r["processing_level"] for r in rows] == ["PROCESSED", "RAW"]
         assert len({r["fusion_id"] for r in rows}) == 2
         assert {r["feature_stack_path"] for r in rows} == {
@@ -642,7 +674,7 @@ class TestBothLevelsProduceTwoStacks:
         """band_name membawa level-nya, jadi dedup is_latest tidak membuat
         stack RAW menandai dirinya usang begitu stack PROCESSED terdaftar."""
         dataset_id, _ = ran
-        rows = products(db_client, dataset_id, tier="FUSION")
+        rows = products(db_client, dataset_id, tier="FUSED")
         assert len(rows) == 2
         assert {r["band_name"] for r in rows} == {"FUSION_RAW", "FUSION_PROCESSED"}
         assert {r["processing_level"] for r in rows} == {"RAW", "PROCESSED"}
@@ -650,15 +682,15 @@ class TestBothLevelsProduceTwoStacks:
 
     def test_checksums_of_the_two_stacks_differ(self, db_client, ran):
         dataset_id, _ = ran
-        rows = products(db_client, dataset_id, tier="FUSION")
+        rows = products(db_client, dataset_id, tier="FUSED")
         hashes = {r["data_hash_sha256"] for r in rows}
         assert len(hashes) == 2, "dua stack berbeda harus punya checksum berbeda"
         assert all(len(h) == 64 for h in hashes)
 
     def test_s1_products_exist_at_both_levels(self, db_client, ran):
         dataset_id, _ = ran
-        bronze = products(db_client, dataset_id, tier="BRONZE", source="SENTINEL1")
-        gold = products(db_client, dataset_id, tier="GOLD", source="SENTINEL1")
+        bronze = products(db_client, dataset_id, tier="ALIGNED", source="SENTINEL1")
+        gold = products(db_client, dataset_id, tier="COG", source="SENTINEL1")
         assert {r["processing_level"] for r in bronze} == {"RAW"}
         assert {r["processing_level"] for r in gold} == {"PROCESSED"}
 
@@ -689,19 +721,19 @@ class TestBothLevelsProduceTwoStacks:
                     ), {"ids": list(ids)})
                 }
 
-            assert tiers(raw_parents) == {"BRONZE"}
-            assert tiers(proc_parents) == {"GOLD"}
+            assert tiers(raw_parents) == {"ALIGNED"}
+            assert tiers(proc_parents) == {"COG"}
 
     def test_separate_metadata_sidecar_per_level(self, ran):
         dataset_id, name = ran
-        d = fm.get_fusion_dir(dataset_id, name, DATE_KEY)
+        d = fusion_dir(dataset_id, name, "HYBRID")
         for level in ("RAW", "PROCESSED"):
             meta = json.loads(
                 (d / m9.fusion_metadata_name(level)).read_text(encoding="utf-8")
             )
             assert meta["processing_level"] == level
             assert meta["source_tiers"]["SENTINEL1"] == (
-                "BRONZE" if level == "RAW" else "GOLD"
+                "ALIGNED" if level == "RAW" else "COG"
             )
 
 
@@ -720,7 +752,7 @@ class TestSingleSourceDisablesFusion:
         )
         dataset_id, name, job_id = job_factory(
             {"modis": ["PROCESSED"]},
-            required_tiers=["RAW", "BRONZE", "SILVER", "GOLD"],
+            required_tiers=["RAW", "ALIGNED", "DESPECKLED", "COG"],
         )
         m5.run_dataset_job(db_client, job_id)
         return dataset_id, name
@@ -736,7 +768,7 @@ class TestSingleSourceDisablesFusion:
 
     def test_no_fusion_data_products(self, db_client, ran):
         dataset_id, _ = ran
-        assert products(db_client, dataset_id, tier="FUSION") == []
+        assert products(db_client, dataset_id, tier="FUSED") == []
 
     def test_plan_reports_fusion_ineligible(self):
         plan = plan_from_configs(1, {"modis": ["PROCESSED"]})
@@ -788,8 +820,8 @@ class TestOutputLevelRules:
     def test_tier_for_run_maps_level_to_tier(self):
         plan = plan_from_configs(1, {"sentinel1": ["RAW", "PROCESSED"]})
         s1 = plan.get("SENTINEL1")
-        assert s1.tier_for_run("RAW") == "BRONZE"
-        assert s1.tier_for_run("PROCESSED") == "GOLD"
+        assert s1.tier_for_run("RAW") == "ALIGNED"
+        assert s1.tier_for_run("PROCESSED") == "COG"
 
     @pytest.mark.parametrize("levels,expected", [
         ({"MODIS": "RAW"}, ["modis/FLOOD"]),
@@ -814,15 +846,15 @@ class TestOutputLevelRules:
 class TestPreviewReadsCorrectTier:
 
     def test_tier_mapping(self):
-        assert m10.tier_for_level("RAW") == "bronze"
-        assert m10.tier_for_level("PROCESSED") == "gold"
+        assert m10.tier_for_level("RAW") == "aligned"
+        assert m10.tier_for_level("PROCESSED") == "cog"
 
     @pytest.fixture
     def ran(self, db_client, job_factory, stub_rasters):
         dataset_id, name, job_id = job_factory(
             {"sentinel1": ["RAW", "PROCESSED"], "modis": ["PROCESSED"]},
             fusion_strategy="HYBRID",
-            required_tiers=["RAW", "BRONZE", "SILVER", "GOLD", "FUSION"],
+            required_tiers=["RAW", "ALIGNED", "DESPECKLED", "INDICES", "COG", "FUSED"],
             generate_preview=True,
             preview_options=["GRAYSCALE", "COLORED", "COMPOSITE"],
         )
@@ -835,7 +867,7 @@ class TestPreviewReadsCorrectTier:
 
     def test_each_level_records_the_tier_it_read(self, ran):
         dataset_id, name = ran
-        for level, tier in (("RAW", "BRONZE"), ("PROCESSED", "GOLD")):
+        for level, tier in (("RAW", "ALIGNED"), ("PROCESSED", "COG")):
             meta = json.loads((
                 fm.get_preview_level_dir(dataset_id, name, DATE_KEY, level)
                 / "preview_metadata.json"
@@ -858,9 +890,9 @@ class TestPreviewReadsCorrectTier:
         proc = fm.get_preview_kind_dir(
             dataset_id, name, DATE_KEY, "grayscale", "PROCESSED"
         )
-        assert (raw / "s1_vv.png").exists()
-        assert (proc / "s1_vv.png").exists()
-        assert (raw / "s1_vv.png").read_bytes() != (proc / "s1_vv.png").read_bytes()
+        assert (raw / f"{DATE_KEY}_s1_vv.png").exists()
+        assert (proc / f"{DATE_KEY}_s1_vv.png").exists()
+        assert (raw / f"{DATE_KEY}_s1_vv.png").read_bytes() != (proc / f"{DATE_KEY}_s1_vv.png").read_bytes()
 
 
 class TestPreviewOptions:
@@ -868,7 +900,7 @@ class TestPreviewOptions:
 
     def test_only_requested_kinds_are_written(self, tmp_path, monkeypatch):
         monkeypatch.setattr(fm, "DATA_ROOT", tmp_path / "datasets")
-        gold = fm.ensure_scene_dir(9, "Opt Test", "gold", "sentinel1", PID)
+        gold = fm.ensure_scene_dir(9, "Opt Test", "cog", "sentinel1", PID)
         _write_tif(gold / f"{PID}_VV_lee.tif", 1.0)
         _write_tif(gold / f"{PID}_VH_lee.tif", 2.0)
 
@@ -883,7 +915,7 @@ class TestPreviewOptions:
 
     def test_none_means_all_three(self, tmp_path, monkeypatch):
         monkeypatch.setattr(fm, "DATA_ROOT", tmp_path / "datasets")
-        gold = fm.ensure_scene_dir(10, "Opt Test", "gold", "sentinel1", PID)
+        gold = fm.ensure_scene_dir(10, "Opt Test", "cog", "sentinel1", PID)
         _write_tif(gold / f"{PID}_VV_lee.tif", 1.0)
         _write_tif(gold / f"{PID}_VH_lee.tif", 2.0)
 
@@ -894,7 +926,7 @@ class TestPreviewOptions:
 
     def test_unknown_option_is_ignored_not_fatal(self, tmp_path, monkeypatch):
         monkeypatch.setattr(fm, "DATA_ROOT", tmp_path / "datasets")
-        gold = fm.ensure_scene_dir(11, "Opt Test", "gold", "sentinel1", PID)
+        gold = fm.ensure_scene_dir(11, "Opt Test", "cog", "sentinel1", PID)
         _write_tif(gold / f"{PID}_VV_lee.tif", 1.0)
 
         result = m10.generate_previews(
@@ -997,16 +1029,17 @@ class TestCloneLastConfigRoundTrip:
         assert rows[second["dataset_id"]][0] == "CO_OCCURRENCE"
         assert rows[second["dataset_id"]][1] == ["GRAYSCALE", "COLORED"]
 
-    def test_clone_does_not_carry_name_or_dates(
+    def test_clone_does_not_carry_name_but_does_carry_dates(
         self, api_client, sample_region, no_job_runner
     ):
         """Keputusan produk (DOCS/DECISIONS.md D13): user harus mengisi ulang
-        nama dan tanggal supaya tidak tanpa sengaja menduplikasi dataset."""
+        nama supaya tidak tanpa sengaja menduplikasi dataset. Rentang tanggal
+        justru diikutkan sebagai preset yang bisa diedit sebelum submit."""
         self._create(api_client, sample_region, "dataset1")
         cfg = api_client.get("/api/datasets/last-config").json()
         assert "name" not in cfg
-        assert "date_start" not in cfg
-        assert "date_end" not in cfg
+        assert cfg["date_start"] == "2024-01-01"
+        assert cfg["date_end"] == "2024-01-31"
 
     def test_plans_built_from_both_datasets_are_equal(
         self, api_client, db_client, sample_region, no_job_runner
@@ -1027,3 +1060,303 @@ class TestCloneLastConfigRoundTrip:
         assert p1.summary() == p2.summary()
         assert p1.output_levels() == p2.output_levels()
         assert p1.required_tiers() == p2.required_tiers()
+
+
+class TestFusionStrategyChangesOutput:
+    """Bukti bahwa strategi fusi benar-benar bercabang.
+
+    Sebelum etl/fusion_strategies.py ada, ketiga strategi menghasilkan berkas
+    identik: `fusion_strategy` cuma ditulis sebagai atribut HDF5 dan tidak
+    pernah jadi percabangan, sementara seluruh pipeline berjangkar pada scene
+    S1. Kelas ini mengunci perbedaannya.
+
+    Rentang 5-8 Maret dengan satu scene S1 (5 Maret): CO_OCCURRENCE merakit
+    1 tanggal, FULL_COVERAGE merakit 4.
+    """
+
+    CONFIG = {"sentinel1": ["PROCESSED"], "modis": ["PROCESSED"]}
+    RANGE = dict(date_start=date(2024, 3, 5), date_end=date(2024, 3, 8))
+    DAYS = ("20240305", "20240306", "20240307", "20240308")
+
+    def _run(self, db_client, job_factory, strategy):
+        dataset_id, name, job_id = job_factory(
+            self.CONFIG, fusion_strategy=strategy,
+            required_tiers=["RAW", "ALIGNED", "DESPECKLED", "INDICES", "COG", "FUSED"],
+            **self.RANGE
+        )
+        m5.run_dataset_job(db_client, job_id)
+        return dataset_id, name
+
+    @staticmethod
+    def _h5(dataset_id, name) -> list[Path]:
+        return sorted(fm.get_dataset_root(dataset_id, name).glob("**/*.h5"))
+
+    def test_co_occurrence_fuses_only_the_s1_date(
+        self, db_client, job_factory, stub_rasters
+    ):
+        files = self._h5(*self._run(db_client, job_factory, "CO_OCCURRENCE"))
+        assert len(files) == 1
+        assert DATE_KEY in files[0].name
+
+    def test_full_coverage_fuses_every_day_in_range(
+        self, db_client, job_factory, stub_rasters
+    ):
+        """Hari tanpa scene S1 tetap jadi berkas — inti FULL_COVERAGE."""
+        files = self._h5(*self._run(db_client, job_factory, "FULL_COVERAGE"))
+        names = [f.name for f in files]
+        assert len(files) == 4, names
+        for day in self.DAYS:
+            assert any(day in n for n in names), f"{day} tidak difusikan"
+
+    def test_hybrid_fuses_like_cooccurrence(
+        self, db_client, job_factory, stub_rasters
+    ):
+        """HYBRID berbagi sumbu RAKIT dengan CO_OCCURRENCE — yang berbeda
+        hanya sumbu unduhnya, yang tidak terlihat dari jumlah berkas."""
+        files = self._h5(*self._run(db_client, job_factory, "HYBRID"))
+        assert len(files) == 1
+        assert DATE_KEY in files[0].name
+
+    def test_strategies_write_to_separate_subfolders(
+        self, db_client, job_factory, stub_rasters
+    ):
+        """Output dua strategi tidak saling menimpa, dan subfolder-nya
+        menyatakan strategi mana yang menghasilkannya."""
+        co = self._h5(*self._run(db_client, job_factory, "CO_OCCURRENCE"))
+        fc = self._h5(*self._run(db_client, job_factory, "FULL_COVERAGE"))
+        assert {p.parent.name for p in co} == {"co-occurrence"}
+        assert {p.parent.name for p in fc} == {"full-coverage"}
+
+    def test_s1_less_day_keeps_a_nan_sentinel1_group(
+        self, db_client, job_factory, stub_rasters
+    ):
+        """Group sentinel1/ tetap ada tapi berisi NaN pada hari tanpa S1.
+
+        8 Maret, bukan 7: dengan toleransi default 2 hari, 7 Maret masih
+        MEMINJAM scene 5 Maret. Hanya 8 Maret yang benar-benar di luar
+        jangkauan dan karena itu tidak punya S1 sama sekali.
+
+        Group-nya tidak dihilangkan: fusion_layers_for membedakan "sensor
+        tidak diminta" (tidak ada group) dari "diminta tapi hilang hari itu"
+        (group berisi NaN), dan S1 di sini jelas termasuk yang kedua.
+        """
+        dataset_id, name = self._run(db_client, job_factory, "FULL_COVERAGE")
+        s1_less = [p for p in self._h5(dataset_id, name) if "20240308" in p.name]
+        assert s1_less, "tanggal tanpa S1 tidak menghasilkan berkas"
+
+        with h5py.File(s1_less[0], "r") as f:
+            assert "sentinel1/VV" in f
+            assert np.isnan(f["sentinel1/VV"][:]).all()
+
+    def test_borrowed_s1_is_recorded_with_its_offset(
+        self, db_client, job_factory, stub_rasters
+    ):
+        """Hari dalam toleransi MEMINJAM scene S1, bukan diisi NaN.
+
+        Scene S1 ada di 5 Maret; toleransi default 2 hari. 6-7 Maret karena itu
+        memakai scene yang sama dengan offset 1 dan 2, sementara 8 Maret di
+        luar jangkauan dan tidak punya S1 sama sekali. `s1_offset_days`
+        membedakan ketiganya -- tanpa kolom itu, fusi same-day dan fusi
+        bertoleransi tidak bisa dipisahkan lagi setelah berkasnya ditulis.
+        """
+        dataset_id, name = self._run(db_client, job_factory, "FULL_COVERAGE")
+
+        with db_client.session() as sess:
+            rows = dict(sess.execute(text(
+                "SELECT feature_date, s1_offset_days FROM fusion_products "
+                "WHERE dataset_id = :ds AND feature_date BETWEEN :a AND :b"
+            ), {"ds": dataset_id, "a": date(2024, 3, 5), "b": date(2024, 3, 8)}).all())
+
+        assert rows[date(2024, 3, 5)] == 0      # same-day
+        assert rows[date(2024, 3, 6)] == 1      # dipinjam, 1 hari
+        assert rows[date(2024, 3, 7)] == 2      # dipinjam, batas toleransi
+        assert rows[date(2024, 3, 8)] is None   # di luar toleransi
+
+    def test_every_fused_day_registers_a_fusion_product_row(
+        self, db_client, job_factory, stub_rasters
+    ):
+        """Berkas HDF5 yang ada di disk tapi tidak tercatat di DB adalah
+        kegagalan diam: registrasi berjalan SETELAH berkasnya ditulis, jadi
+        exception di sana tidak akan terlihat dari keberadaan berkas saja.
+
+        Dicocokkan lewat feature_stack_path, bukan hanya jumlah baris: path
+        membuktikan baris itu milik berkas INI, bukan berkas dataset lain.
+        """
+        dataset_id, name = self._run(db_client, job_factory, "FULL_COVERAGE")
+        files = self._h5(dataset_id, name)
+
+        with db_client.session() as sess:
+            registered = {
+                row[0] for row in sess.execute(text(
+                    "SELECT feature_stack_path FROM fusion_products "
+                    "WHERE feature_stack_path = ANY(:paths)"
+                ), {"paths": [str(f) for f in files]}).all()
+            }
+
+        missing = {str(f) for f in files} - registered
+        assert not missing, f"HDF5 tanpa baris fusion_products: {sorted(missing)}"
+
+    # --- regresi run try1/try2/try3 (2026-09-16) ------------------------------
+    def test_full_coverage_has_no_fusion_failures_or_dangling_jobs(
+        self, db_client, job_factory, stub_rasters
+    ):
+        """Hari tanpa S1 dulu jatuh KeyError 'vv_product_id' SETELAH HDF5 dan
+        baris fusion_products ditulis. Dua tes di atas lolos karena hanya
+        memeriksa berkas + baris itu; kegagalannya cuma terlihat di
+        processing_logs, di job FUSION yang tertinggal RUNNING, dan di status
+        job yang tetap COMPLETED."""
+        dataset_id, _ = self._run(db_client, job_factory, "FULL_COVERAGE")
+
+        with db_client.session() as sess:
+            failed_logs = sess.execute(text(
+                "SELECT scene_id, message FROM processing_logs "
+                "WHERE dataset_id = :ds AND status = 'FAILED'"
+            ), {"ds": dataset_id}).all()
+            dangling = sess.execute(text("""
+                SELECT pj.job_id, ps.stage_name, pj.status::text
+                FROM   processing_jobs pj
+                JOIN   processing_stages ps ON ps.stage_id = pj.stage_id
+                WHERE  pj.parameters_json->>'dataset_id' = :ds
+                  AND  pj.status::text IN ('QUEUED', 'RUNNING')
+            """), {"ds": str(dataset_id)}).all()
+            status = sess.scalar(text(
+                "SELECT status FROM datasets WHERE dataset_id = :ds"
+            ), {"ds": dataset_id})
+
+        assert not failed_logs, failed_logs
+        assert not dangling, f"job tidak pernah ditutup: {dangling}"
+        assert status == "COMPLETED"
+
+    def test_full_coverage_every_stack_stays_latest(
+        self, db_client, job_factory, stub_rasters
+    ):
+        """Hari yang meminjam scene S1 dulu mendaftarkan data_products-nya ke
+        scene S1 itu, sehingga dedup is_latest membuat mereka saling menandai
+        usang -- hanya satu stack yang tersisa di listing API."""
+        dataset_id, name = self._run(db_client, job_factory, "FULL_COVERAGE")
+        files = self._h5(dataset_id, name)
+        latest = {
+            r["file_path"]
+            for r in products(db_client, dataset_id, tier="FUSED")
+            if r["is_latest"]
+        }
+        assert latest == {str(f) for f in files}
+
+    def test_full_coverage_days_share_one_grid(
+        self, db_client, job_factory, stub_rasters
+    ):
+        """Hari tanpa S1 dulu memakai grid rumus AOI, berbeda dari grid raster
+        S1 hari lain (try2: 578x473 vs 571x468), sehingga deret waktunya tidak
+        bisa ditumpuk."""
+        dataset_id, name = self._run(db_client, job_factory, "FULL_COVERAGE")
+        shapes = set()
+        for path in self._h5(dataset_id, name):
+            with h5py.File(path, "r") as f:
+                shapes.add(f["sentinel1/VV"].shape)
+        assert len(shapes) == 1, shapes
+
+    def test_two_datasets_on_same_aoi_and_date_keep_own_rows(
+        self, db_client, job_factory, stub_rasters
+    ):
+        """try1/try2/try3 atas AOI dan tanggal yang sama dulu berbagi satu
+        baris fusion_products (fusion_id=43), ditimpa dataset terakhir."""
+        first, _ = self._run(db_client, job_factory, "CO_OCCURRENCE")
+        second, _ = self._run(db_client, job_factory, "HYBRID")
+
+        rows_first = fusion_rows(db_client, first)
+        rows_second = fusion_rows(db_client, second)
+        assert len(rows_first) == 1 and len(rows_second) == 1
+        assert rows_first[0]["fusion_id"] != rows_second[0]["fusion_id"]
+        assert rows_first[0]["fusion_strategy"] == "CO_OCCURRENCE"
+        assert rows_second[0]["fusion_strategy"] == "HYBRID"
+
+    def test_stage_that_raises_does_not_leave_job_running(
+        self, db_client, job_factory, stub_rasters, monkeypatch
+    ):
+        """Tahap yang melempar setelah start_job (dataset 3: 16 job CROP
+        tertinggal RUNNING sejak 2026-09-12) harus ditutup FAILED."""
+        def boom(*args, **kwargs):
+            raise MemoryError("calibrate kehabisan memori")
+
+        monkeypatch.setattr(m5, "calibrate_run", boom)
+        dataset_id, _ = self._run(db_client, job_factory, "CO_OCCURRENCE")
+
+        with db_client.session() as sess:
+            running = sess.execute(text("""
+                SELECT pj.job_id, ps.stage_name
+                FROM   processing_jobs pj
+                JOIN   processing_stages ps ON ps.stage_id = pj.stage_id
+                JOIN   satellite_scenes ss ON ss.scene_id = pj.scene_id
+                WHERE  ss.product_identifier = :pid AND pj.status::text = 'RUNNING'
+            """), {"pid": PID}).all()
+            status = sess.scalar(text(
+                "SELECT status FROM datasets WHERE dataset_id = :ds"
+            ), {"ds": dataset_id})
+
+        assert not running, f"job tertinggal RUNNING: {running}"
+        assert status == "FAILED"
+
+    def test_extra_aux_days_do_not_inflate_scene_counters(
+        self, db_client, job_factory, stub_rasters
+    ):
+        """HYBRID mengunduh aux untuk tiap hari, tapi unit counter jalur S1
+        adalah scene: try1 berakhir completed_scenes=16 untuk total_scenes=1.
+        metadata.json juga dulu ditulis sebelum status akhir (DOWNLOADING)."""
+        dataset_id, name = self._run(db_client, job_factory, "HYBRID")
+        with db_client.session() as sess:
+            row = sess.execute(text(
+                "SELECT status, total_scenes, completed_scenes, failed_scenes "
+                "FROM datasets WHERE dataset_id = :ds"
+            ), {"ds": dataset_id}).one()
+        assert (row.total_scenes, row.completed_scenes, row.failed_scenes) == (1, 1, 0)
+
+        meta = fm.read_dataset_metadata(dataset_id, name)
+        assert meta["status"] == row.status == "COMPLETED"
+        assert meta["completed_scenes"] == 1
+
+
+class TestFusionOutputOnly:
+    """`fusion_output_only`: simpan HDF5 saja, buang artefak per-satelit."""
+
+    CONFIG = {"sentinel1": ["PROCESSED"], "modis": ["PROCESSED"]}
+
+    def _run(self, db_client, job_factory, **extra):
+        dataset_id, name, job_id = job_factory(
+            self.CONFIG, fusion_strategy="CO_OCCURRENCE",
+            required_tiers=["RAW", "ALIGNED", "DESPECKLED", "INDICES", "COG", "FUSED"],
+            **extra,
+        )
+        m5.run_dataset_job(db_client, job_id)
+        return dataset_id, name
+
+    def test_keeps_h5_and_drops_per_satellite_artifacts(
+        self, db_client, job_factory, stub_rasters
+    ):
+        dataset_id, name = self._run(
+            db_client, job_factory, fusion_output_only=True
+        )
+        root = fm.get_dataset_root(dataset_id, name)
+
+        assert list(root.glob("**/fusion/**/*.h5")), "stack fusi ikut terhapus"
+        for drawer in ("sentinel-1", "modis", "gpm-imerg", "_work"):
+            leftovers = [p for p in root.glob(f"{drawer}/**/*") if p.is_file()]
+            assert not leftovers, f"{drawer}/ masih menyisakan {leftovers[:3]}"
+
+    def test_default_keeps_everything(
+        self, db_client, job_factory, stub_rasters
+    ):
+        """Default FALSE harus berperilaku persis seperti sebelum fitur ini."""
+        dataset_id, name = self._run(db_client, job_factory)
+        root = fm.get_dataset_root(dataset_id, name)
+        assert list(root.glob("sentinel-1/PROCESSED/*.tif")), "artefak per-satelit hilang"
+
+    def test_rejected_without_a_fusion_strategy(self, db_client, job_factory):
+        """Tanpa fusi tidak ada stack yang ditulis, jadi menghapus artefak
+        per-satelit akan menyisakan dataset kosong. Ditolak, bukan diabaikan
+        diam-diam -- user yang mencentangnya jelas mengharapkan sesuatu."""
+        with pytest.raises(ValueError, match="fusion_output_only"):
+            job_factory(
+                {"sentinel1": ["PROCESSED"]},
+                fusion_strategy=None,
+                fusion_output_only=True,
+            )

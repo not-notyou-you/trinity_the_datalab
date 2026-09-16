@@ -4,6 +4,7 @@ from dotenv import load_dotenv
 load_dotenv()
 import logging
 import mimetypes
+import os
 import time
 
 mimetypes.add_type("image/webp", ".webp")
@@ -37,6 +38,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         logger.error("[API] DB health check FAILED: %s", health_info)
     else:
         logger.info("[API] DB connected. Pool: %s", health_info)
+        if os.getenv("AUTO_RESUME_JOBS", "true").lower() in ("1", "true", "yes"):
+            try:
+                from etl.dataset_manager import DatasetManager
+                resumed = DatasetManager(_db_client).recover_interrupted_jobs()
+                if resumed:
+                    logger.warning("[API] %d job terputus dilanjutkan: %s", len(resumed), resumed)
+            except Exception:
+                logger.exception("[API] gagal memulihkan job yang terputus")
 
     try:
         from etl.live_scheduler import LiveScheduler

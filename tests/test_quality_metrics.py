@@ -114,7 +114,7 @@ class TestQualityFlagLogic:
         job_id  = meta.insert_processing_job(sample_scene, "QUALITY_ANALYTICS")
         prod_id = meta.insert_data_product(
             scene_id=sample_scene, job_id=job_id,
-            product_tier="GOLD", source="SENTINEL1", product_type="COG",
+            product_tier="COG", source="SENTINEL1", product_type="COG",
             band_name="VV",
             file_path=f"/tmp/flag_score_{score}.tif",
             file_name=f"flag_{score}.tif",
@@ -191,7 +191,7 @@ class TestSHA256Integrity:
         job_id  = meta.insert_processing_job(sample_scene, "COG_EXPORT")
         prod_id = meta.insert_data_product(
             scene_id=sample_scene, job_id=job_id,
-            product_tier="GOLD", source="SENTINEL1", product_type="COG",
+            product_tier="COG", source="SENTINEL1", product_type="COG",
             band_name="VV", file_path=str(tif), file_name=tif.name,
             file_size_mb=0.001, data_hash_sha256=correct_hash,
         )
@@ -211,7 +211,7 @@ class TestSHA256Integrity:
         job_id  = meta.insert_processing_job(sample_scene, "COG_EXPORT")
         prod_id = meta.insert_data_product(
             scene_id=sample_scene, job_id=job_id,
-            product_tier="GOLD", source="SENTINEL1", product_type="COG",
+            product_tier="COG", source="SENTINEL1", product_type="COG",
             band_name="VH", file_path=str(tif), file_name=tif.name,
             file_size_mb=0.001, data_hash_sha256=original_hash,
         )
@@ -241,7 +241,7 @@ class TestAlertAutoTrigger:
         job_id  = meta.insert_processing_job(sample_scene, "QUALITY_ANALYTICS")
         prod_id = meta.insert_data_product(
             scene_id=sample_scene, job_id=job_id,
-            product_tier="GOLD", source="SENTINEL1", product_type="COG", band_name="VV",
+            product_tier="COG", source="SENTINEL1", product_type="COG", band_name="VV",
             file_path="/tmp/fail_alert.tif", file_name="fail_alert.tif",
             file_size_mb=38.0,
             data_hash_sha256=hashlib.sha256(b"FAIL_ALERT").hexdigest(),
@@ -258,3 +258,71 @@ class TestAlertAutoTrigger:
             ), {"sid": sample_scene})
 
         assert after > before, "Expected a QUALITY_WARNING alert to be auto-created on FAIL"
+
+
+# ---------------------------------------------------------------------------
+# UNIT BACKSCATTER: sigma0 linear vs dB
+# ---------------------------------------------------------------------------
+
+def _write_band(path, data, nodata=None):
+    import numpy as np
+    import rasterio
+    from rasterio.transform import from_origin
+
+    with rasterio.open(
+        path, "w", driver="GTiff", height=data.shape[0], width=data.shape[1],
+        count=1, dtype="float32", crs="EPSG:4326",
+        transform=from_origin(106.6, -6.1, 0.0001, 0.0001), nodata=nodata,
+    ) as dst:
+        dst.write(data.astype(np.float32), 1)
+    return str(path)
+
+
+class TestBackscatterUnits:
+    """module1b menulis sigma0 LINEAR. Run try3 (2026-09-16) melaporkan nilai
+    linear itu sebagai dB (mean 0.50, max 145.6) dan skor VV/VH identik."""
+
+    def test_linear_sigma0_is_reported_in_db(self, tmp_path):
+        import numpy as np
+        from etl.module6_analytics import compute_band_metrics
+
+        rng = np.random.default_rng(0)
+        db = rng.normal(-12.0, 2.0, (40, 50))
+        m = compute_band_metrics(_write_band(tmp_path / "vh.tif", 10 ** (db / 10)), "VH")
+        assert abs(m.backscatter_mean_db - db.mean()) < 0.05
+        assert abs(m.backscatter_std_db - db.std()) < 0.05
+        assert m.radiometric_consistency
+
+    def test_db_input_is_not_converted_twice(self, tmp_path):
+        import numpy as np
+        from etl.module6_analytics import compute_band_metrics
+
+        db = np.full((10, 10), -15.0)
+        db[0, 0] = -14.0
+        m = compute_band_metrics(_write_band(tmp_path / "db.tif", db), "VV")
+        assert -15.1 < m.backscatter_mean_db < -14.9
+
+    def test_zero_and_nan_linear_pixels_count_as_nodata(self, tmp_path):
+        import numpy as np
+        from etl.module6_analytics import compute_band_metrics
+
+        data = np.full((10, 10), 0.05)
+        data[0, :] = 0.0
+        data[1, :] = np.nan
+        m = compute_band_metrics(_write_band(tmp_path / "z.tif", data, nodata=-9999.0), "VV")
+        assert m.valid_pixels == 80
+        assert m.nodata_percent == 20.0
+        assert abs(m.backscatter_mean_db - 10 * np.log10(0.05)) < 1e-3
+
+    def test_distinct_bands_get_distinct_scores(self, tmp_path):
+        """Skor tidak boleh konstan: speckle harus benar-benar diukur."""
+        import numpy as np
+        from etl.module6_analytics import compute_band_metrics
+
+        rng = np.random.default_rng(1)
+        smooth = 10 ** (rng.normal(-12.0, 0.5, (40, 50)) / 10)
+        rough = 10 ** (rng.normal(-12.0, 4.0, (40, 50)) / 10)
+        a = compute_band_metrics(_write_band(tmp_path / "a.tif", smooth), "VH")
+        b = compute_band_metrics(_write_band(tmp_path / "b.tif", rough), "VH")
+        assert a.speckle_index < b.speckle_index
+        assert a.quality_score > b.quality_score
