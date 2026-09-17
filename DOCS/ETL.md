@@ -329,6 +329,10 @@ Runs only if `preview_options` is non-empty. Renders from the highest available 
 
 Non-fatal: preview failures don't fail the scene.
 
+Ordering: runs after the S1 chain and `ensure_aux_inputs_for_date`, before FUSION and before tier cleanup (the only window where every source raster for the date is still on disk). Pause/cancel is re-checked right before rendering. PNGs are recorded per level, so a failure at the second level keeps the first level's files in the job accounting.
+
+One set per date: preview folders are keyed by date, not by scene. A second Sentinel-1 scene on the same date overwrites the first scene's PNGs at the same level. This is intentional; module10 logs a WARNING and records the replaced scene in `replaced_s1_scene_key` in `preview_metadata.json`.
+
 ## Tier Cleanup
 
 After all stages complete, delete tiers NOT in `required_tiers` (derived from all source configs). Mark `data_products.is_valid=False` but preserve DB rows for audit.

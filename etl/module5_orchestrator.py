@@ -519,6 +519,16 @@ def _process_scene(
         if aux_paths and aux_tier not in produced_tiers:
             produced_tiers.append(aux_tier)
 
+    # Gerbang pause/cancel yang sama dengan tahap lain, ditaruh SESUDAH aux:
+    # ensure_aux_inputs_for_date bisa mengunduh bermenit-menit, dan tanpa cek
+    # ulang di sini Cancel yang ditekan selama unduhan itu tetap menjalankan
+    # seluruh render PNG sebelum job benar-benar berhenti.
+    if jc.cancel_event.is_set():
+        return scene_id, produced_tiers, produced_files
+    jc.pause_event.wait()
+    if jc.cancel_event.is_set():
+        return scene_id, produced_tiers, produced_files
+
     # --- PREVIEW ---------------------------------------------------------
     # Dijalankan sebelum FUSION dan sebelum _cleanup_scene_tiers: dataset yang
     # cuma meminta tier FUSION akan menghapus gold/ setelah scene selesai,
@@ -567,8 +577,12 @@ def _process_scene(
                         skipped_count=preview_result["counts"]["skipped"],
                         file_size_mb=preview_result["total_size_mb"],
                     )
+                # Dicatat per level, bukan sekali setelah loop selesai:
+                # dataset dua level yang gagal di level kedua sudah terlanjur
+                # menulis PNG level pertama ke disk, dan pencatatan di ujung
+                # loop membuat berkas itu hilang dari hitungan job.
                 preview_files.extend(preview_result["files"])
-            produced_files["PREVIEW"] = preview_files
+                produced_files["PREVIEW"] = preview_files
             jc.dsmgr.upsert_scene_job_state(
                 jc.job_id, pid, current_stage="PREVIEW", stage_status="COMPLETED"
             )

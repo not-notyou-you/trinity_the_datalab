@@ -28,6 +28,14 @@ ikut ke path output (`preview/{tanggal}/{LEVEL}/...`) supaya dataset yang
 meminta sebuah sumber di KEDUA level bisa menyimpan dua set PNG berdampingan
 tanpa saling menimpa.
 
+SATU TANGGAL, SATU SET PNG
+Folder preview dikunci per tanggal, bukan per scene -- sama dengan granularitas
+FUSION. Kalau AOI tertutup dua scene Sentinel-1 di hari yang sama (dua orbit,
+atau dua frame berurutan), render scene kedua MENIMPA milik scene pertama. Ini
+disengaja, tapi tidak boleh diam-diam: saat scene_key di sidecar lama berbeda
+dari scene yang sedang dirender, modul menulis WARNING dan mencatat scene yang
+tergantikan di `replaced_s1_scene_key` pada preview_metadata.json.
+
 Tiga jenis render, tiga tujuan berbeda:
 
     grayscale/  Stretch persentil 2–98 per-berkas, colormap netral (abu-abu).
@@ -902,6 +910,18 @@ def _colored_info(entries: list[dict]) -> dict:
     }
 
 
+def _previous_s1_scene_key(metadata_path: Path) -> str | None:
+    """s1_scene_key dari sidecar render sebelumnya, atau None kalau belum ada
+    atau tidak terbaca. Sidecar rusak bukan alasan menggagalkan render baru --
+    yang hilang cuma peringatan penimpaannya."""
+    try:
+        with open(metadata_path, encoding="utf-8") as f:
+            value = json.load(f).get("s1_scene_key")
+    except (OSError, ValueError, AttributeError):
+        return None
+    return value if isinstance(value, str) and value else None
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
@@ -954,6 +974,19 @@ def generate_previews(
     wanted = _normalize_options(options)
     date_key = fm.date_key(acquisition_date)
     preview_dir = fm.ensure_preview_dir(dataset_id, dataset_name, date_key)
+    level_dir = fm.get_preview_level_dir(dataset_id, dataset_name, date_key, level)
+
+    # Dibaca SEBELUM render, karena render menimpa sidecar yang sama. Lihat
+    # "SATU TANGGAL, SATU SET PNG" di docstring modul.
+    replaced_scene_key = _previous_s1_scene_key(level_dir / "preview_metadata.json")
+    if replaced_scene_key == s1_scene_key or not s1_scene_key:
+        replaced_scene_key = None
+    if replaced_scene_key:
+        logger.warning(
+            "[M10] PREVIEW %s level=%s: scene %s menimpa preview scene %s "
+            "(folder preview dikunci per tanggal)",
+            date_key, level, s1_scene_key, replaced_scene_key,
+        )
 
     # Folder tiap varian dibuat hanya kalau varian itu diminta: folder kosong
     # akan membuat API melaporkan varian yang sebenarnya tidak pernah dirender.
@@ -1187,6 +1220,9 @@ def generate_previews(
         "dataset_name": dataset_name,
         "acquisition_date": date_key,
         "s1_scene_key": s1_scene_key,
+        # Scene lain di tanggal yang sama yang preview-nya baru saja ditimpa;
+        # None kalau tidak ada penimpaan lintas scene.
+        "replaced_s1_scene_key": replaced_scene_key,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "generator": MODULE,
         "tier": "PREVIEW",
@@ -1221,7 +1257,6 @@ def generate_previews(
     # Sidecar per level, bukan satu per tanggal: dua level menulis ke folder
     # tanggal yang sama, dan satu berkas bersama akan ditimpa oleh level yang
     # dirender belakangan.
-    level_dir = fm.get_preview_level_dir(dataset_id, dataset_name, date_key, level)
     level_dir.mkdir(parents=True, exist_ok=True)
     written.append(_write_json(level_dir / "preview_metadata.json", metadata))
     # Salinan di folder tanggal supaya pembaca lama (dan listing API yang

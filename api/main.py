@@ -20,7 +20,7 @@ from etl.database_client import DatabaseClient
 # sama persis dengan api.deps.get_db, jadi dependency_overrides lewat jalur mana
 # pun mengenai callable yang sama.
 from api.deps import get_db, set_db
-from api.routes import datasets, health, lineage, live, pipeline, preview, products, quality, regions, scenes, storage
+from api.routes import datasets, health, lineage, live, pipeline, products, quality, regions, scenes, storage
 
 logger = logging.getLogger(__name__)
 _db_client: DatabaseClient | None = None
@@ -141,7 +141,9 @@ app.include_router(scenes.router, prefix="/api/scenes", tags=["Scenes"])
 app.include_router(products.router, prefix="/api/products", tags=["Products"])
 app.include_router(quality.router, prefix="/api/quality", tags=["Quality"])
 app.include_router(lineage.router, prefix="/api/metadata", tags=["Lineage"])
-app.include_router(preview.router, prefix="/api/preview", tags=["Preview"])
+# /api/preview/* (thumbnail on-the-fly dari COG) sudah dipensiunkan: galeri
+# membaca PNG tier PREVIEW lewat /api/datasets/{id}/preview, dan dua jalur
+# render dengan stretch/NoData berbeda berarti dua definisi "preview".
 app.include_router(storage.router, prefix="/api/storage", tags=["Storage"])
 app.include_router(pipeline.router, prefix="/api/pipeline", tags=["Pipeline"])
 app.include_router(datasets.router, prefix="/api/datasets", tags=["Datasets"])

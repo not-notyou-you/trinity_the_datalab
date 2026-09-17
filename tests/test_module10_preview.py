@@ -361,6 +361,73 @@ class TestResilience:
         assert inputs["s1_vv"] == path
 
 
+class TestSameDateScenes:
+    """Folder preview dikunci per tanggal: scene kedua di hari yang sama
+    menimpa, tapi penimpaannya harus terlihat."""
+
+    OTHER_SCENE = "S1A_IW_GRDH_1SDV_20260712T225012.SAFE"
+
+    def test_second_scene_same_date_is_flagged(self, data_root, caplog):
+        _s1_gold(data_root, "VV", _linear_sigma0(12))
+        first = m10.generate_previews(
+            DATASET_ID, DATASET_NAME, DATE_KEY, s1_scene_key=S1_SCENE
+        )
+        assert first["replaced_s1_scene_key"] is None
+
+        with caplog.at_level("WARNING", logger=m10.logger.name):
+            second = m10.generate_previews(
+                DATASET_ID, DATASET_NAME, DATE_KEY, s1_scene_key=self.OTHER_SCENE
+            )
+
+        assert second["replaced_s1_scene_key"] == S1_SCENE
+        sidecar = json.loads(
+            (fm.get_preview_level_dir(DATASET_ID, DATASET_NAME, DATE_KEY, "PROCESSED")
+             / "preview_metadata.json").read_text()
+        )
+        assert sidecar["s1_scene_key"] == self.OTHER_SCENE
+        assert sidecar["replaced_s1_scene_key"] == S1_SCENE
+        assert any(S1_SCENE in r.getMessage() and r.levelname == "WARNING"
+                   for r in caplog.records)
+
+    def test_rerender_same_scene_is_not_flagged(self, data_root, caplog):
+        _s1_gold(data_root, "VV", _linear_sigma0(13))
+        m10.generate_previews(DATASET_ID, DATASET_NAME, DATE_KEY, s1_scene_key=S1_SCENE)
+
+        with caplog.at_level("WARNING", logger=m10.logger.name):
+            again = m10.generate_previews(
+                DATASET_ID, DATASET_NAME, DATE_KEY, s1_scene_key=S1_SCENE
+            )
+
+        assert again["replaced_s1_scene_key"] is None
+        assert not [r for r in caplog.records if "menimpa" in r.getMessage()]
+
+    def test_other_level_is_not_a_replacement(self, data_root):
+        """RAW dan PROCESSED punya sidecar sendiri; render level lain dari
+        scene berbeda tidak menimpa apa pun."""
+        _s1_gold(data_root, "VV", _linear_sigma0(14))
+        m10.generate_previews(
+            DATASET_ID, DATASET_NAME, DATE_KEY, s1_scene_key=S1_SCENE,
+            processing_level="PROCESSED",
+        )
+        raw = m10.generate_previews(
+            DATASET_ID, DATASET_NAME, DATE_KEY, s1_scene_key=self.OTHER_SCENE,
+            processing_level="RAW",
+        )
+        assert raw["replaced_s1_scene_key"] is None
+
+    def test_corrupt_previous_sidecar_does_not_block_render(self, data_root):
+        _s1_gold(data_root, "VV", _linear_sigma0(15))
+        level_dir = fm.get_preview_level_dir(DATASET_ID, DATASET_NAME, DATE_KEY, "PROCESSED")
+        level_dir.mkdir(parents=True, exist_ok=True)
+        (level_dir / "preview_metadata.json").write_text("{bukan json")
+
+        result = m10.generate_previews(
+            DATASET_ID, DATASET_NAME, DATE_KEY, s1_scene_key=S1_SCENE
+        )
+        assert result["replaced_s1_scene_key"] is None
+        assert result["counts"]["grayscale"] == 1
+
+
 class TestDateKeys:
     def test_accepts_date_object_and_string(self, data_root):
         from datetime import date
