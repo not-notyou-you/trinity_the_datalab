@@ -295,3 +295,22 @@ Mengunci **bbox** ke grid dataset 26 tidak mengunci **grid fusion**-nya. Tiap da
 **Perbaikannya tidak butuh kode baru.** `_pin_dataset_grid` hanya menulis saat `fusion_grid IS NULL` ([module9_fusion.py:1441](../etl/module9_fusion.py#L1441)), jadi mengisi kolom itu lebih dulu dengan satu grid bersama untuk keempat strip — resolusi sama, origin berselisih kelipatan bulat piksel — akan membuat fusion memakainya apa adanya. Yang harus dibayar: stack yang sudah terlanjur dirakit di grid lama perlu dirakit ulang.
 
 **Pelajaran untuk pemecahan berikutnya (Sumatra, dan seterusnya)**: grid bersama dipaku ke SEMUA sub-dataset sebelum fusion pertama jalan, bukan disimpulkan dari bbox. Bbox menentukan di mana, grid menentukan di kisi mana — dan hanya yang kedua yang menentukan bisa-tidaknya digabung.
+
+
+## D20: Layer Referensi Membangun Ulang Diri Saat Grid Berubah
+
+**Penjaga idempoten yang hanya memeriksa keberadaan berkas adalah bug.** `_ensure_land` dan `_ensure_occurrence` dulu mengembalikan `"exists"` begitu `.tif`-nya ada. Ketika keempat strip Jawa dipakukan ke satu grid bersama (D19) setelah masks-nya terlanjur dibuat, keenam berkas itu tertinggal di grid lama dan tidak pernah dibangun ulang:
+
+| Dataset | Mask lama | Grid terpaku |
+|---|---|---|
+| 27 JAWA_A | 25805 x 19018 | 25907 x 19093 |
+| 28 JAWA_B | 25805 x 22214 | 25908 x 22302 |
+| 29 JAWA_C | 25908 x 28415 | 25907 x 28415 |
+
+Yang membuatnya berbahaya adalah diamnya. Berkasnya tetap terbuka normal, tidak ada error di mana pun, tapi `mask[r,c]` tidak lagi menunjuk piksel yang sama dengan `stack[r,c]`. Konsumen yang mengindeks keduanya berdampingan membaca lokasi yang salah tanpa pernah diberi tahu — dan pada JAWA_C selisihnya cuma satu kolom, yang tidak akan pernah terlihat dari inspeksi mata.
+
+**Perbaikannya**: penjaga sekarang membandingkan grid berkas yang ada dengan `fusion_grid` terpaku (`_grid_matches`, toleransi setengah piksel supaya galat pembulatan lewat JSON tidak memicu bangun ulang percuma) dan membangun ulang saat berbeda. Pemulihannya **terjadi sendiri** — tidak menunggu seseorang ingat memanggil `force=True`, karena yang menyebabkan kerusakan ini justru tidak adanya seorang pun yang tahu harus melakukannya.
+
+**Padanannya untuk stack sudah ada**: `audit_dataset_grids` ([module9_fusion.py:1339](../etl/module9_fusion.py#L1339)) memeriksa setiap stack terhadap grid terpaku tiap kali fusion menulis, dan memperingati tanpa menggagalkan job. Yang hilang memang hanya sisi mask-nya. Setelah D20, kedua turunan grid punya penjaganya masing-masing.
+
+**Sisa pekerjaan yang TIDAK diperbaiki sendiri**: tiga stack yang lahir sebelum pemakuan tetap di grid lama dan hanya bisa dipulihkan dengan fusi ulang — `27/fusion_20251204`, `27/fusion_20251206`, `28/fusion_20251204`. Audit melaporkannya; memperbaikinya keputusan operator, karena merakit ulang stack berjam-jam tidak boleh dipicu diam-diam oleh penjaga.

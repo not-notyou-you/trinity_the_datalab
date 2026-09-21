@@ -101,12 +101,57 @@ def ensure_reference_layers(
     return out
 
 
+def _grid_matches(path: Path, transform, shape) -> bool:
+    """Apakah raster di `path` sudah berada di grid yang diminta.
+
+    Ada karena "berkasnya ada" BUKAN jawaban yang cukup. Grid dataset bisa
+    dipaku ulang setelah layer referensi terlanjur dibuat (D19: keempat strip
+    Jawa dipakukan ke satu grid bersama setelah masks-nya jadi), dan penjaga
+    idempoten yang cuma melihat keberadaan berkas akan menyimpan layer lama itu
+    selamanya. Diamnya berbahaya: berkasnya tetap terbuka normal, tapi
+    mask[r,c] tidak lagi menunjuk piksel yang sama dengan stack[r,c], dan
+    konsumen yang mengindeks keduanya berdampingan membaca lokasi yang salah
+    tanpa ada yang error.
+    """
+    import rasterio
+
+    try:
+        with rasterio.open(path) as src:
+            if (src.height, src.width) != tuple(shape):
+                return False
+            # Setengah piksel: di bawah itu tidak ada konsumen yang bisa
+            # membedakan, di atas itu indeksnya sudah menunjuk piksel lain.
+            tol = abs(float(transform.a)) / 2
+            return (
+                abs(src.transform.c - transform.c) <= tol
+                and abs(src.transform.f - transform.f) <= tol
+                and abs(abs(src.transform.a) - abs(transform.a)) <= tol * 1e-3
+                and abs(abs(src.transform.e) - abs(transform.e)) <= tol * 1e-3
+            )
+    except Exception:  # noqa: BLE001 — berkas rusak/tak terbaca = tidak cocok
+        return False
+
+
+def _reuse_or_rebuild(target: Path, transform, shape, force: bool) -> str | None:
+    """`"exists"` kalau layer lama masih sah, None kalau harus dibangun ulang."""
+    if force or not target.exists():
+        return None
+    if _grid_matches(target, transform, shape):
+        return "exists"
+    logger.warning(
+        "[%s] %s ada tapi grid-nya sudah tidak cocok dengan fusion_grid "
+        "terpaku — dibangun ulang", MODULE, target.name,
+    )
+    return None
+
+
 def _ensure_land(masks_dir, bbox, transform, shape, url, force) -> str:
     from etl import land_mask as lm
 
     target = masks_dir / f"{lm.LAND_DISTANCE_STEM}.tif"
-    if target.exists() and not force:
-        return "exists"
+    reuse = _reuse_or_rebuild(target, transform, shape, force)
+    if reuse:
+        return reuse
     if not url:
         return "skipped: DATABASE_URL tidak diset"
     try:
@@ -140,8 +185,9 @@ def _ensure_occurrence(masks_dir, bbox, transform, shape, force) -> str:
     from etl import water_occurrence as wo
 
     target = masks_dir / f"{wo.WATER_OCCURRENCE_STEM}.tif"
-    if target.exists() and not force:
-        return "exists"
+    reuse = _reuse_or_rebuild(target, transform, shape, force)
+    if reuse:
+        return reuse
     try:
         arr, note = wo.build_occurrence(bbox, transform, shape)
         if note.get("tiles_missing"):
