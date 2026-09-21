@@ -14,7 +14,8 @@ band-band itu sudah final.
     grid referensi.
   - MODIS/GPM GOLD dicari di disk di bawah
     data/datasets/{id}_{slug}/{YYYYMMDD}/gold/{modis,gpm}/, dicocokkan ke
-    waktu akuisisi S1 dalam jendela 24 jam, direproject ke grid S1, dan
+    tanggal fitur (hari itu, atau sehari sebelumnya; tidak pernah sesudahnya
+    -- lihat _find_aux_daily_file), direproject ke grid S1, dan
     didaftarkan sebagai baris `nasa_scenes`.
 
 Hasilnya ditulis ke data/datasets/{id}_{slug}/{date}/fusion/ sebagai .h5 +
@@ -46,22 +47,25 @@ import logging
 from dataclasses import dataclass
 from datetime import date as date_type, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Sequence
 
 import h5py
 import numpy as np
 import rasterio
+
+from etl import WARP_THREADS
 from rasterio.crs import CRS
 from rasterio.enums import Resampling
 from rasterio.warp import reproject
 from shapely.geometry import box
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from etl import folder_manager as fm
 from etl import module4_gold_export as m4
 from etl.database_client import (
     DatabaseClient,
     DataProduct,
+    Dataset,
     FusionProduct,
     JobStatusEnum,
     NasaScene,
@@ -95,7 +99,6 @@ from etl import tier_names as tn
 
 logger = logging.getLogger(__name__)
 
-ALIGNMENT_WINDOW_HOURS = 24
 MODIS_NODATA_U8 = 255  # uint8 can't hold NaN; 255 marks a missing/nodata pixel
 HDF5_CHUNK_MAX = 256
 
@@ -120,6 +123,9 @@ class _AuxLayer:
     file_key: str
     resampling: Resampling
     categorical: bool = False
+    # Band di berkas sumber. Band 2 berkas MODIS adalah kualitas band 1
+    # (FLOOD: asal piksel; NDVI/NDWI: umur observasi), lihat module7.
+    band: int = 1
 
 
 # Lapisan aux per level. Level RAW hanya memuat artefak mentah sumbernya;
@@ -127,13 +133,23 @@ class _AuxLayer:
 # jadi tidak ada berkasnya untuk dimasukkan (DOCS/DESIGN.md, tabel RAW vs
 # PROCESSED per satelit).
 _FLOOD = _AuxLayer("FLOOD", "FLOOD", Resampling.nearest, categorical=True)
+# Asal tiap piksel FLOOD (1 = komposit 2 hari, 2 = pengisi 1 hari CS). Ikut di
+# kedua level: tanpa lapisan ini label dari dua produk dengan tingkat false
+# positive berbeda tidak bisa dipisahkan lagi setelah digabung.
+_FLOOD_SOURCE = _AuxLayer(
+    "FLOOD_SOURCE", "FLOOD", Resampling.nearest, categorical=True, band=2
+)
 
 MODIS_FUSION_LAYERS: dict[str, tuple[_AuxLayer, ...]] = {
-    RAW: (_FLOOD,),
+    RAW: (_FLOOD, _FLOOD_SOURCE),
     PROCESSED: (
         _FLOOD,
+        _FLOOD_SOURCE,
         _AuxLayer("NDVI", "NDVI", Resampling.bilinear),
+        # Umur observasi (hari) tiap piksel NDVI/NDWI komposit lookback.
+        _AuxLayer("NDVI_AGE_DAYS", "NDVI", Resampling.nearest, band=2),
         _AuxLayer("NDWI", "NDWI", Resampling.bilinear),
+        _AuxLayer("NDWI_AGE_DAYS", "NDWI", Resampling.nearest, band=2),
     ),
 }
 
@@ -249,6 +265,26 @@ def _find_s1_products(
         }
 
 
+def _s1_member_paths(
+    db: DatabaseClient, dataset_id: int, scene_ids: Sequence[int], tier: str
+) -> dict[str, list[str]]:
+    """{band: [path raster tiap frame]} untuk frame-frame penyusun mosaik.
+
+    Mosaiknya sendiri artefak antara di _work/ dan disapu di akhir job, jadi
+    yang dicatat sebagai sumber adalah raster persisten per frame -- itulah
+    yang bisa dibuka ulang oleh siapa pun yang menelusuri stack ini."""
+    out: dict[str, list[str]] = {band: [] for band in S1_FUSION_BANDS}
+    for member_id in scene_ids:
+        found = _find_s1_products(db, dataset_id, member_id, tier=tier)
+        if not found:
+            continue
+        for band in S1_FUSION_BANDS:
+            path = found.get(f"{band.lower()}_path")
+            if path:
+                out[band].append(path)
+    return out
+
+
 def _as_utc(dt: datetime) -> datetime:
     """Normalkan waktu akuisisi ke UTC sebelum diturunkan jadi tanggal.
 
@@ -268,63 +304,110 @@ def _as_utc(dt: datetime) -> datetime:
     return dt.astimezone(timezone.utc)
 
 
-def _find_nearest_daily_file(
+# Urutan tanggal aux yang dicoba untuk satu tanggal fitur D: hari itu sendiri,
+# lalu sehari sebelumnya. Tidak pernah D+1 -- lihat _find_aux_daily_file.
+AUX_DAY_OFFSETS: tuple[int, ...] = (0, -1)
+
+
+def _find_aux_daily_file(
     dataset_id: int,
     dataset_name: str,
     source: str,
     filename_fn,
-    center_dt: datetime,
-    tolerance_hours: int = ALIGNMENT_WINDOW_HOURS,
+    feature_date: date_type,
     tier: str = "cog",
 ) -> tuple[Path, date_type] | None:
-    """File MODIS/GPM distempel satu per hari pada tengah malam lokal,
-    masing-masing di folder {tier}/{source}/{YYYYMMDD}/ sendiri. Kembalikan
-    (path, tanggal) kandidat hari terdekat yang tengah malamnya masih dalam
-    `tolerance_hours` dari `center_dt`, atau None kalau tidak ada di disk.
+    """Berkas MODIS/GPM harian untuk tanggal fitur `feature_date`, sebagai
+    (path, tanggal berkas), atau None kalau tidak ada di disk.
 
-    `tier` ikut level sumber pada run ini: "cog" untuk PROCESSED, "aligned"
-    untuk RAW. Nama berkasnya sama persis di kedua tier (module7/module8
-    memakai `band_filename()` yang sama untuk semua target), jadi yang berbeda
-    hanya folder induknya.
+    Yang dicoba hanya D lalu D-1 (AUX_DAY_OFFSETS), tidak pernah D+1.
 
-    Toleransinya ALIGNMENT_WINDOW_HOURS penuh (24 jam), bukan setengahnya.
-    Setengah jendela berarti "tengah malam terdekat", dan itu memutus justru
-    kasus yang paling umum di AOI ini: pass descending Sentinel-1 di atas
-    Jabodetabek turun sekitar 22:50 UTC, yang jaraknya 22,8 jam dari tengah
-    malam HARI ITU tapi cuma 1,2 jam dari tengah malam hari BERIKUTNYA. Dengan
-    toleransi 12 jam, berkas MODIS/GPM hari itu — satu-satunya yang memang
-    diunduh pipeline (ensure_aux_inputs_for_date dipanggil dengan s1_date) —
-    di luar jendela, jadi setiap stack fusion terisi NaN untuk semua lapisan
-    aux. Kandidat tetap diurutkan berdasarkan selisih terkecil, jadi hari
-    berikutnya tetap menang KALAU berkasnya ada."""
-    center_dt = _as_utc(center_dt)
-    best: tuple[Path, date_type] | None = None
-    best_diff = None
-    for offset in (0, -1, 1):
-        candidate_date = (center_dt + timedelta(days=offset)).date()
-        candidate_midnight = datetime.combine(candidate_date, datetime.min.time(),
-                                              tzinfo=center_dt.tzinfo)
-        diff_hours = abs((candidate_midnight - center_dt).total_seconds()) / 3600.0
-        if diff_hours > tolerance_hours:
-            continue
+    Dulu dipilih "tengah malam terdekat dari waktu akuisisi S1" dalam jendela
+    24 jam. Untuk pass descending Jabodetabek (~22:25 UTC) itu hampir selalu
+    jatuh ke HARI BERIKUTNYA: 24_try8 menulis fusion_20250114 yang isinya GPM
+    dan MODIS 15 Jan. Granule IMERG harian mencakup 00:00-24:00 UTC, jadi
+    hujan "24h" di stack itu seluruhnya turun 1,6-25,6 jam SETELAH citra
+    diambil -- kebocoran informasi masa depan ke fitur prediktor, dan berkas
+    yang namanya tidak cocok dengan isinya. Hasilnya juga tidak deterministik:
+    D+1 hanya dipakai kalau kebetulan sudah diunduh (HYBRID/FULL_COVERAGE
+    mengunduh harian, CO_OCCURRENCE tidak), jadi tanggal S1 yang sama bisa
+    menghasilkan stack berbeda tergantung strategi dan rentang tanggal job.
+
+    Referensinya tanggal FITUR, bukan waktu akuisisi scene: pada hari yang
+    meminjam S1 dari tanggal lain (FULL_COVERAGE), MODIS/GPM tetap harus milik
+    hari itu sendiri. Mencarinya dari waktu akuisisi scene pinjaman membuat
+    lapisan aux hari D berisi data hari jangkarnya.
+
+    D-1 hanya cadangan kalau berkas D gagal/belum terbit; offset yang terpakai
+    dicatat di fusion_products.temporal_offset_* dan atribut lapisan HDF5.
+    Berkas di laci {source}/{RAW|PROCESSED}/ (tier "cog" untuk PROCESSED,
+    "aligned" untuk RAW) -- nama berkasnya sama di kedua laci."""
+    for offset in AUX_DAY_OFFSETS:
+        candidate = feature_date + timedelta(days=offset)
         tier_dir = fm.get_scene_dir(
             dataset_id, dataset_name, tier.lower(), source,
-            candidate_date.strftime("%Y%m%d"),
+            candidate.strftime("%Y%m%d"),
         )
-        path = tier_dir / filename_fn(candidate_date)
-        if path.exists() and (best_diff is None or diff_hours < best_diff):
-            best, best_diff = (path, candidate_date), diff_hours
-    return best
+        path = tier_dir / filename_fn(candidate)
+        if path.exists():
+            return path, candidate
+    return None
 
 
-def _read_band_or_nan(path: str | None, shape: tuple[int, int]) -> np.ndarray:
-    if not path or not Path(path).exists():
-        return np.full(shape, np.nan, dtype=np.float32)
-    with rasterio.open(path) as src:
-        data = src.read(1).astype(np.float32)
-        if src.nodata is not None:
-            data[data == src.nodata] = np.nan
-    return data
+# Satuan per lapisan, ditulis sebagai atribut `units`. S1 sengaja disebut
+# "linear": stack menyimpan sigma0 apa adanya (bukan dB), dan konsumen yang
+# mengira dB akan menormalisasi nilai 0,002..7000 dengan cara yang keliru.
+LAYER_UNITS: dict[str, str] = {
+    "sentinel1/VV": "sigma0 linear (bukan dB)",
+    "sentinel1/VH": "sigma0 linear (bukan dB)",
+    "modis/FLOOD": "kelas MCDWD: 0 tanpa air, 1 air permanen, 2 banjir berulang, 3 banjir, 255 data tidak cukup",
+    "modis/NDVI": "indeks tanpa satuan [-1, 1]",
+    "modis/NDWI": "indeks tanpa satuan [-1, 1]",
+    "modis/FLOOD_SOURCE": "asal piksel FLOOD: 1 komposit 2 hari, 2 komposit 1 hari CS (pengisi celah), 255 tanpa data",
+    "modis/NDVI_AGE_DAYS": "hari (umur observasi NDVI terhadap tanggal fitur)",
+    "modis/NDWI_AGE_DAYS": "hari (umur observasi NDWI terhadap tanggal fitur)",
+    "gpm/rainfall_daily": "mm",
+    "gpm/rainfall_24h": "mm",
+    "gpm/rainfall_72h": "mm",
+    "gpm/rainfall_7d": "mm",
+}
+
+# Tag GeoTIFF bawaan GDAL yang tidak membawa informasi asal-usul.
+_IGNORED_SOURCE_TAGS = {"AREA_OR_POINT"}
+
+
+def _source_tags(path: Path) -> dict[str, str]:
+    """Tag asal-usul berkas sumber (ditulis module7/module8), dengan kunci
+    huruf kecil supaya seragam dengan atribut HDF5 lainnya."""
+    try:
+        with rasterio.open(path) as src:
+            tags = src.tags()
+    except Exception:  # pragma: no cover - berkas sumber rusak sudah gagal lebih awal
+        return {}
+    return {
+        key.lower(): value for key, value in tags.items()
+        if key not in _IGNORED_SOURCE_TAGS
+    }
+
+
+def _hours_after_acquisition(window_end_utc: str | None, acquisition: datetime | None) -> float | None:
+    """Berapa jam ujung jendela hujan melewati waktu akuisisi S1.
+
+    Positif berarti sebagian hujan di lapisan itu turun SETELAH citra diambil.
+    Granule IMERG harian tidak bisa dipotong di tengah hari, jadi nilai ini
+    tidak bisa nol untuk semua scene -- tapi harus terlihat, supaya konsumen
+    bisa memilih window yang aman atau menyaring sampelnya."""
+    if not window_end_utc or acquisition is None:
+        return None
+    try:
+        end = datetime.fromisoformat(window_end_utc.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return round((end - _as_utc(acquisition)).total_seconds() / 3600.0, 2)
+
+
+class _MissingBand(RuntimeError):
+    """Berkas sumber ada, tapi tidak punya band yang diminta lapisan ini."""
 
 
 def _reproject_to_grid(
@@ -334,14 +417,18 @@ def _reproject_to_grid(
     ref_shape: tuple[int, int],
     resampling: Resampling,
     fill_value: float,
+    band: int = 1,
 ) -> np.ndarray:
-    """Reproject a single-band raster onto the S1 reference grid, filling
+    """Reproject band `band` of a raster onto the S1 reference grid, filling
     pixels outside the source extent with `fill_value`."""
     height, width = ref_shape
     dest = np.full((height, width), fill_value, dtype=np.float32)
     with rasterio.open(src_path) as src:
+        if band > src.count:
+            # Berkas dari versi sebelum band kualitas ditambahkan.
+            raise _MissingBand(f"{src_path.name} cuma punya {src.count} band, butuh band {band}")
         reproject(
-            source=rasterio.band(src, 1),
+            source=rasterio.band(src, band),
             destination=dest,
             src_transform=src.transform,
             src_crs=src.crs,
@@ -350,6 +437,7 @@ def _reproject_to_grid(
             dst_crs=ref_crs,
             dst_nodata=fill_value,
             resampling=resampling,
+            num_threads=WARP_THREADS,
         )
     return dest
 
@@ -389,54 +477,104 @@ def _get_or_create_nasa_scene(
         return scene.nasa_scene_id
 
 
-def _write_fusion_h5(
-    h5_path: Path,
-    layers: dict[str, np.ndarray],
-    ref_shape: tuple[int, int],
-    acquisition_datetime: datetime,
-    processing_datetime: datetime,
-    aoi_bbox: tuple[float, float, float, float],
-    processing_level: str,
-    source_levels: dict[str, str],
-    fusion_strategy: str | None = None,
-    crs: object | None = None,
-    transform: object | None = None,
-) -> None:
-    """Tulis stack fusion. `layers` memetakan path dataset HDF5
-    ("modis/NDVI") ke arraynya; h5py membuat group perantaranya sendiri.
+# Di bawah ini sebuah lapisan dianggap nyaris kosong dan dicatat sebagai
+# peringatan. 5% dipilih karena itu urutan besaran scene Sentinel-1 yang cuma
+# menyerempet AOI (22_try6: tiga dari lima tanggal berisi 3,6-3,7% piksel
+# valid) -- stack-nya tetap ditulis, tapi tidak boleh lolos tanpa jejak.
+LOW_COVERAGE_FRACTION = 0.05
 
-    `ref_shape` dioper terpisah, tidak lagi dibaca dari layers["sentinel1/VV"]:
-    isi `layers` sekarang bergantung pada sumber apa yang dikonfigurasi, jadi
-    tidak ada satu pun nama lapisan yang dijamin ada di setiap stack.
 
-    `crs`/`transform` adalah grid referensi scene S1 yang semua layer sudah
-    direproject ke sana. Keduanya wajib ikut ditulis: `aoi_bbox` adalah kotak
-    AOI yang diminta, bukan batas raster hasilnya, jadi tanpa affine transform
-    yang sebenarnya konsumen tidak bisa memetakan piksel ke koordinat bumi
-    selain dengan menebak.
+def _valid_fraction(array: "np.ndarray") -> float:
+    """Fraksi piksel yang membawa nilai, bukan nodata.
 
-    `processing_level` dan `source_levels` ditulis sebagai atribut root supaya
-    berkasnya bisa menjelaskan dirinya sendiri: dua stack tanggal yang sama
-    dari dataset RAW+PROCESSED punya lapisan yang bisa bernama sama, dan tanpa
-    atribut ini konsumen harus menebak dari nama berkas mana yang mana."""
-    height, width = ref_shape
-    chunks = (min(HDF5_CHUNK_MAX, height), min(HDF5_CHUNK_MAX, width))
+    Dihitung di sini, bukan dibaca ulang dari HDF5 nanti: arraynya sudah ada
+    di memori, dan membaca ulang 79 juta piksel cuma untuk menghitung ini
+    berarti membayar dua kali."""
+    if array.dtype == np.uint8:
+        return float((array != MODIS_NODATA_U8).mean())
+    return float(np.isfinite(array).mean())
 
-    h5_path.parent.mkdir(parents=True, exist_ok=True)
-    with h5py.File(h5_path, "w") as f:
-        for name, array in layers.items():
-            ds = f.create_dataset(
-                name, data=array, dtype=array.dtype, chunks=chunks, compression="gzip"
-            )
-            if array.dtype == np.uint8:
-                ds.attrs["nodata"] = MODIS_NODATA_U8
-            else:
-                ds.attrs["nodata"] = "NaN"
 
+class _FusionH5Layers:
+    """Penulis stack HDF5: satu lapisan ditulis begitu selesai dihitung.
+
+    Dulu seluruh lapisan dikumpulkan di satu dict lalu ditulis sekaligus. Itu
+    aman selama grid referensinya sekecil jejak satu scene, tapi sejak stack
+    dirakit di grid AOI penuh (lihat _aoi_reference_grid) satu lapisan bisa
+    ratusan MB dan delapan lapisan sekaligus berarti gigabyte di memori -- untuk
+    data yang sebagian besar NaN. Ditulis satu per satu, yang hidup di memori
+    cuma lapisan yang sedang dihitung; gzip membuat daerah NaN hampir tidak
+    memakan tempat di disk.
+
+    `add()` menyimpan nama tiap lapisan karena atribut root dan sidecar JSON
+    menyebut daftarnya, dan `finalize()` menulis atribut root lalu menutup
+    berkas. Pemanggil yang gagal di tengah jalan meninggalkan berkas setengah
+    jadi -- sama seperti sebelumnya, dan tetap ditimpa penuh di percobaan
+    berikutnya karena berkasnya dibuka dengan mode "w".
+    """
+
+    def __init__(self, h5_path: Path, ref_shape: tuple[int, int]) -> None:
+        self.path = h5_path
+        self.shape = ref_shape
+        height, width = ref_shape
+        self._chunks = (min(HDF5_CHUNK_MAX, height), min(HDF5_CHUNK_MAX, width))
+        h5_path.parent.mkdir(parents=True, exist_ok=True)
+        self._file = h5py.File(h5_path, "w")
+        self.names: list[str] = []
+
+    def add(self, name: str, array: np.ndarray, attrs: dict | None = None) -> None:
+        # shuffle: menata ulang byte float sebelum gzip, jadi byte eksponen
+        # yang hampir selalu sama berkumpul dan terkompresi jauh lebih rapat.
+        # Terukur pada lapisan NDVI dataset 23_try7 (4000x4000, 64 MB mentah):
+        # gzip saja 8,7 MB, gzip+shuffle 5,5 MB. Filter standar HDF5, jadi
+        # pembaca mana pun tetap bisa membukanya tanpa perlakuan khusus.
+        ds = self._file.create_dataset(
+            name, data=array, dtype=array.dtype, chunks=self._chunks,
+            compression="gzip", shuffle=True,
+        )
+        ds.attrs["nodata"] = MODIS_NODATA_U8 if array.dtype == np.uint8 else "NaN"
+        # Provenance per lapisan (tanggal sumber, offset, cakupan, satuan,
+        # jendela waktu). Tanpa ini HDF5-nya tidak bisa menjelaskan dirinya:
+        # di 24_try8 satu-satunya jejak tanggal sumber ada di sidecar JSON,
+        # dan sidecar itu tertimpa oleh tanggal berikutnya.
+        for key, value in (attrs or {}).items():
+            if value is None:
+                continue
+            ds.attrs[key] = value
+        self.names.append(name)
+
+    def finalize(
+        self,
+        *,
+        acquisition_datetime: datetime,
+        processing_datetime: datetime,
+        aoi_bbox: tuple[float, float, float, float],
+        processing_level: str,
+        source_levels: dict[str, str],
+        fusion_strategy: str | None = None,
+        crs: object | None = None,
+        transform: object | None = None,
+        extra_attrs: dict | None = None,
+    ) -> None:
+        """Tulis atribut root lalu tutup berkas.
+
+        `crs`/`transform` adalah grid referensi yang semua lapisan sudah
+        direproject ke sana. Keduanya wajib ikut ditulis: `aoi_bbox` adalah
+        kotak AOI yang diminta, bukan batas raster hasilnya, jadi tanpa affine
+        transform yang sebenarnya konsumen tidak bisa memetakan piksel ke
+        koordinat bumi selain dengan menebak.
+
+        `processing_level` dan `source_levels` ditulis sebagai atribut root
+        supaya berkasnya bisa menjelaskan dirinya sendiri: dua stack tanggal
+        yang sama dari dataset RAW+PROCESSED punya lapisan yang bisa bernama
+        sama, dan tanpa atribut ini konsumen harus menebak dari nama berkas
+        mana yang mana."""
+        height, width = self.shape
+        f = self._file
         f.attrs["acquisition_datetime"] = acquisition_datetime.isoformat()
         f.attrs["processing_datetime"] = processing_datetime.isoformat()
         f.attrs["aoi_bbox"] = list(aoi_bbox)
-        f.attrs["layers"] = list(layers)
+        f.attrs["layers"] = list(self.names)
         f.attrs["height"] = height
         f.attrs["width"] = width
         f.attrs["processing_level"] = processing_level
@@ -447,6 +585,9 @@ def _write_fusion_h5(
         f.attrs["source_levels"] = [source_levels[k] for k in source_levels]
         if fusion_strategy:
             f.attrs["fusion_strategy"] = fusion_strategy
+        for key, value in (extra_attrs or {}).items():
+            if value is not None:
+                f.attrs[key] = value
         if crs is not None:
             # WKT + string CRS: WKT supaya tidak bergantung ke lookup EPSG di
             # sisi pembaca, string pendek ("EPSG:4326") untuk keterbacaan.
@@ -456,14 +597,46 @@ def _write_fusion_h5(
             except AttributeError:
                 pass
         if transform is not None:
-            # Urutan GDAL-style 6 elemen (a, b, c, d, e, f) — sama dengan
+            # Urutan GDAL-style 6 elemen (a, b, c, d, e, f) -- sama dengan
             # rasterio.Affine, jadi bisa langsung Affine(*attrs["transform"]).
             f.attrs["transform"] = [float(v) for v in tuple(transform)[:6]]
+            # Batas raster yang SEBENARNYA, dihitung dari transform + ukuran.
+            # `aoi_bbox` adalah AOI yang diminta user. Sejak stack dirakit di
+            # grid AOI keduanya sama, tapi tetap ditulis terpisah supaya
+            # konsumen tidak perlu percaya bahwa keduanya selalu identik --
+            # berkas dari versi sebelumnya memang tidak begitu, dan di sana
+            # aoi_bbox menjanjikan AOI penuh untuk raster yang cuma menutup
+            # 17% AOI.
+            west, north = transform * (0, 0)
+            east, south = transform * (width, height)
+            f.attrs["grid_bbox"] = [
+                float(west), float(south), float(east), float(north)
+            ]
+            # Posisi raster ini di dalam kotak AOI, dalam piksel. Sejak semua
+            # tanggal dirakit di grid AOI yang sama, nilainya selalu (0, 0) --
+            # ditulis apa adanya supaya konsumen bisa MEMERIKSA itu, bukan
+            # mengandaikannya, dan supaya berkas lama yang tidak punya atribut
+            # ini bisa dibedakan dari berkas baru yang punya.
+            aoi_west, _, _, aoi_north = aoi_bbox
+            res_x, res_y = abs(float(transform.a)), abs(float(transform.e))
+            f.attrs["grid_offset_row_col"] = [
+                int(round((aoi_north - north) / res_y)),
+                int(round((west - aoi_west) / res_x)),
+            ]
+        f.close()
 
-    logger.info(
-        "[M9] Saving fusion H5 to FUSION tier: %s level=%s shape=(%d, %d) layers=%d %s",
-        h5_path, processing_level, height, width, len(layers), sorted(layers),
-    )
+        logger.info(
+            "[M9] Saving fusion H5 to FUSION tier: %s level=%s shape=(%d, %d) "
+            "layers=%d %s",
+            self.path, processing_level, height, width, len(self.names),
+            sorted(self.names),
+        )
+
+    def close(self) -> None:
+        try:
+            self._file.close()
+        except Exception:  # pragma: no cover - berkas sudah tertutup
+            pass
 
 
 def _write_fusion_metadata_json(
@@ -514,7 +687,18 @@ def _write_fusion_metadata_json(
         "fusion_strategy": fusion_strategy,
         "layers": list(layer_sources),
         "layer_sources": layer_sources,
-        "source_scenes": {"s1_scene_id": s1["scene_id"]},
+        # Ringkasan cakupan, supaya konsumen bisa menyaring tanggal yang
+        # datanya nyaris kosong tanpa membuka HDF5-nya dulu.
+        "layer_coverage": {
+            name: round(source.get("valid_fraction", 0.0), 4)
+            for name, source in layer_sources.items()
+        },
+        # `mosaic_of` hanya ada kalau tanggal ini dirakit dari beberapa frame
+        # Sentinel-1; satu frame tetap menulis s1_scene_id saja.
+        "source_scenes": {
+            "s1_scene_id": s1["scene_id"],
+            **({"s1_mosaic_scene_ids": s1["mosaic_of"]} if s1.get("mosaic_of") else {}),
+        },
         "days_since_s1": days_since_s1,
         "temporal_offsets": temporal_offsets,
         "file_name": h5_path.name,
@@ -980,9 +1164,19 @@ def fusion_h5_name(
     return f"fusion_{date_key}_{processing_level.lower()}.h5"
 
 
-def fusion_metadata_name(processing_level: str) -> str:
-    """Sidecar JSON pendamping `fusion_h5_name` untuk level yang sama."""
-    return f"fusion_metadata_{processing_level.lower()}.json"
+def fusion_metadata_name(
+    date_key: str, processing_level: str, fusion_strategy: str | None = None
+) -> str:
+    """Sidecar JSON pendamping `fusion_h5_name`: nama yang sama, akhiran
+    `_metadata.json`.
+
+    Tanggal WAJIB ada di nama. Sejak folder fusion tidak lagi dipecah per
+    tanggal, nama lama (`fusion_metadata_{level}.json`) dipakai bersama oleh
+    semua tanggal satu dataset, dan setiap stack menimpa sidecar stack
+    sebelumnya -- 24_try8 menyisakan satu sidecar (tanggal terakhir yang
+    difusikan) untuk tiga HDF5."""
+    stem = fusion_h5_name(date_key, processing_level, fusion_strategy).removesuffix(".h5")
+    return f"{stem}_metadata.json"
 
 
 def _aux_layers_for_run(
@@ -990,18 +1184,18 @@ def _aux_layers_for_run(
     dataset_name: str,
     source: str,
     level: str,
-    center_dt: datetime,
+    feature_date: date_type,
     filename_fn: Callable[[str, str], str],
 ) -> list[tuple[_AuxLayer, tuple[Path, date_type] | None]]:
     """Pasangkan tiap lapisan aux yang diminta level ini dengan berkasnya di
-    disk (None kalau tidak ada dalam jendela toleransi)."""
+    disk (None kalau tidak ada untuk D maupun D-1)."""
     tier = "cog" if level == PROCESSED else "aligned"
     out = []
     for layer in _AUX_LAYERS_BY_SOURCE[source][level]:
-        hit = _find_nearest_daily_file(
+        hit = _find_aux_daily_file(
             dataset_id, dataset_name, GROUP_BY_SOURCE[source],
             lambda d, k=layer.file_key: filename_fn(k, d.strftime("%Y%m%d")),
-            center_dt, tier=tier,
+            feature_date, tier=tier,
         )
         out.append((layer, hit))
     return out
@@ -1033,6 +1227,225 @@ def _aoi_reference_grid(
     height = max(1, int(np.ceil(round((max_lat - min_lat) / S1_RESOLUTION_DEG, 6))))
     transform = from_origin(min_lon, max_lat, S1_RESOLUTION_DEG, S1_RESOLUTION_DEG)
     return transform, CRS.from_epsg(4326), (height, width)
+
+
+def _dataset_fusion_grid(
+    db: DatabaseClient,
+    dataset_id: int,
+    tier: str,
+    aoi_bbox: tuple[float, float, float, float],
+) -> tuple[object, object, tuple[int, int]]:
+    """Grid tempat SEMUA stack dataset ini dirakit: kotak AOI penuh, pada
+    resolusi raster Sentinel-1 dataset itu.
+
+    Dua hal digabung di sini, dan dua-duanya disengaja:
+
+    1. EKSTENNYA selalu AOI penuh, bukan jejak scene hari itu. Dulu hari
+       ber-S1 memakai grid rasternya sendiri, jadi satu dataset sebulan bisa
+       menghasilkan lima bentuk berbeda (22_try6: 8789x1488, 6067x8752,
+       8790x1483, 6068x8752, 8790x1492) yang tidak satu pun pikselnya
+       berhimpit -- deret waktunya tidak bisa ditumpuk jadi satu array, yang
+       justru satu-satunya alasan tier FUSION ada. Sebagian bahkan cuma
+       menutup 17% AOI sementara atribut `aoi_bbox`-nya menjanjikan AOI penuh.
+
+    2. RESOLUSINYA ikut raster S1 dataset (lewat _dataset_s1_reference_grid),
+       bukan konstanta S1_RESOLUTION_DEG. module1b mereproyeksi scene dengan
+       calculate_default_transform, jadi resolusi aslinya mengikuti geometri
+       scene; memaksakan konstanta akan me-resample setiap piksel S1 tanpa
+       alasan. Konstanta cuma dipakai kalau dataset belum punya satu pun
+       raster S1 (hari tanpa-S1 di awal FULL_COVERAGE).
+
+    Harga ekstennya: hari yang scene-nya cuma menyerempet AOI sekarang menulis
+    raster seukuran AOI penuh yang sebagian besar NaN. Itu murah di disk --
+    gzip memampatkan blok NaN hampir habis -- dan lapisan ditulis satu per satu
+    (_FusionH5Layers) supaya memorinya tidak ikut membesar.
+    """
+    from rasterio.transform import from_origin
+
+    # Impor lokal: module8 mengimpor module9 untuk registrasi produk, jadi
+    # impor tingkat-modul di sini akan membuat siklus.
+    from etl.module8_gpm_download import S1_RESOLUTION_DEG
+
+    # 3. GRIDNYA DIPAKU. Sekali sebuah dataset memilih grid, pilihan itu
+    #    disimpan dan dibaca ulang -- tidak pernah diturunkan lagi. Dulu grid
+    #    dihitung ulang tiap jalan dari "raster S1 pertama yang filenya ada",
+    #    dan jawaban itu berubah begitu berkas hilang atau is_latest bergeser;
+    #    karena tiap scene punya ukuran piksel sendiri, berpindah acuan berarti
+    #    berpindah grid. Dataset 26 (JAWA, 14 bentuk raster S1) sampai punya
+    #    dua stack yang tidak berhimpit: 32040x103630 dan 31922x103248.
+    pinned = _load_pinned_grid(db, dataset_id)
+    if pinned is not None:
+        return pinned
+
+    reference = _dataset_s1_reference_grid(db, dataset_id, tier)
+    if reference is not None:
+        ref_transform, ref_crs, _ = reference
+        res_x, res_y = abs(float(ref_transform.a)), abs(float(ref_transform.e))
+        origin = "s1_raster"
+    else:
+        ref_crs = CRS.from_epsg(4326)
+        res_x = res_y = S1_RESOLUTION_DEG
+        origin = "aoi_constant"
+
+    min_lon, min_lat, max_lon, max_lat = aoi_bbox
+    width = max(1, int(np.ceil(round((max_lon - min_lon) / res_x, 6))))
+    height = max(1, int(np.ceil(round((max_lat - min_lat) / res_y, 6))))
+    transform = from_origin(min_lon, max_lat, res_x, res_y)
+
+    # Dipaku juga ketika asalnya konstanta AOI, bukan hanya ketika ada raster
+    # S1. Dataset FULL_COVERAGE yang harinya dimulai sebelum scene S1 pertama
+    # akan terkunci pada grid konstanta, dan S1 yang datang belakangan
+    # di-resample tipis ke grid itu. Itu disengaja: grid yang bercabang
+    # membuat deret waktunya tidak bisa ditumpuk sama sekali, sedangkan
+    # resampling tipis cuma menggeser nilai sepersekian piksel.
+    _pin_grid(db, dataset_id, transform, ref_crs, (height, width), origin)
+    return transform, ref_crs, (height, width)
+
+
+def _load_pinned_grid(
+    db: DatabaseClient, dataset_id: int
+) -> tuple[object, object, tuple[int, int]] | None:
+    """Grid yang sudah dipaku untuk dataset ini, atau None kalau belum.
+
+    db boleh None: pemanggil yang menguji rumus gridnya saja (tests/
+    test_fusion_grid.py) menyuntik acuan lewat _dataset_s1_reference_grid dan
+    tidak punya database. Tanpa database tidak ada yang bisa dipaku, jadi
+    perilakunya jatuh ke perhitungan seperti sebelum grid dipaku.
+    """
+    from rasterio.transform import Affine
+
+    if db is None:
+        return None
+    with db.session() as sess:
+        raw = sess.scalar(
+            select(Dataset.fusion_grid).where(Dataset.dataset_id == dataset_id)
+        )
+    if not raw:
+        return None
+    try:
+        t = [float(v) for v in raw["transform"]]
+        shape = (int(raw["height"]), int(raw["width"]))
+        crs = CRS.from_string(str(raw["crs"]))
+    except (KeyError, TypeError, ValueError):
+        # Baris rusak jangan sampai menghentikan fusion: perlakukan seperti
+        # belum dipaku, dan jalan ini akan memakunya ulang dengan bentuk benar.
+        logger.warning(
+            "[M9] fusion_grid dataset %s tidak terbaca, dipaku ulang", dataset_id
+        )
+        return None
+    return Affine(t[0], t[1], t[2], t[3], t[4], t[5]), crs, shape
+
+
+def audit_dataset_grids(
+    db: DatabaseClient, dataset_id: int, dataset_name: str
+) -> dict:
+    """Periksa semua stack fusion dataset ini terhadap grid yang dipaku.
+
+    Memaku grid mencegah PERCABANGAN BARU, tapi tidak membuat percabangan yang
+    sudah ada jadi kelihatan -- dan diam-diam itulah yang paling berbahaya.
+    Dataset 26 (JAWA) berjalan berbulan-bulan dengan dua stack yang tidak
+    berhimpit tanpa satu pun peringatan; yang menemukannya cuma kecurigaan
+    manual atas ukuran berkas yang ganjil.
+
+    Fungsi ini mengubahnya jadi terlihat: satu panggilan menjawab "apakah
+    seluruh stack dataset ini benar-benar bisa ditumpuk?". Dipanggil setiap
+    kali fusion menulis stack (murah: cuma baca atribut HDF5, bukan datanya),
+    dan bisa dijalankan sendiri untuk mengaudit dataset lama.
+
+    Mengembalikan {"pinned": ..., "matching": [...], "mismatched": [...]}.
+    """
+    pinned = _load_pinned_grid(db, dataset_id)
+    result: dict = {"pinned": None, "matching": [], "mismatched": []}
+    if pinned is None:
+        return result
+    _transform, _crs, shape = pinned
+    result["pinned"] = {"height": shape[0], "width": shape[1]}
+
+    root = fm.get_dataset_root(dataset_id, dataset_name)
+    if not root.exists():
+        return result
+
+    for path in sorted(root.rglob("*.h5")):
+        try:
+            with h5py.File(path, "r") as h:
+                got = (int(h.attrs["height"]), int(h.attrs["width"]))
+        except (OSError, KeyError):
+            # Berkas rusak atau bukan stack fusion: bukan urusan audit grid.
+            continue
+        entry = {"file": path.name, "height": got[0], "width": got[1]}
+        if got == shape:
+            result["matching"].append(entry)
+        else:
+            result["mismatched"].append(entry)
+    return result
+
+
+def _warn_on_grid_drift(
+    db: DatabaseClient, dataset_id: int, dataset_name: str
+) -> None:
+    """Teriakkan ke log kalau ada stack yang tidak berhimpit dengan grid dataset.
+
+    Sengaja hanya memperingatkan, tidak menggagalkan: stack yang sudah
+    terlanjur lahir di grid lain adalah fakta sejarah, dan menjatuhkan job
+    karenanya justru membuat dataset yang sedang berjalan tidak bisa
+    dilanjutkan sama sekali. Yang dibutuhkan operator adalah TAHU, lalu
+    memutuskan sendiri stack mana yang dirakit ulang.
+    """
+    try:
+        audit = audit_dataset_grids(db, dataset_id, dataset_name)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("[M9] audit grid dilewati: %s", exc)
+        return
+    bad = audit.get("mismatched") or []
+    if not bad:
+        return
+    pinned = audit["pinned"]
+    logger.warning(
+        "[M9] dataset %s punya %d stack di grid BERBEDA dari grid dataset "
+        "(%dx%d) -- deret waktunya tidak bisa ditumpuk sampai dirakit ulang: %s",
+        dataset_id, len(bad), pinned["height"], pinned["width"],
+        ", ".join(f"{b['file']} ({b['height']}x{b['width']})" for b in bad[:5]),
+    )
+
+
+def _pin_grid(
+    db: DatabaseClient,
+    dataset_id: int,
+    transform: object,
+    crs: object,
+    shape: tuple[int, int],
+    origin: str,
+) -> None:
+    """Simpan grid dataset supaya jalan berikutnya memakai yang sama persis.
+
+    Tanpa database (db None) tidak ada yang dipaku dan itu bukan galat: lihat
+    alasannya di _load_pinned_grid.
+    """
+    if db is None:
+        return
+
+    payload = {
+        "transform": [
+            float(transform.a), float(transform.b), float(transform.c),
+            float(transform.d), float(transform.e), float(transform.f),
+        ],
+        "height": int(shape[0]),
+        "width": int(shape[1]),
+        "crs": str(crs),
+        "origin": origin,
+        "pinned_at": datetime.now(timezone.utc).isoformat(),
+    }
+    with db.session() as sess:
+        sess.execute(
+            update(Dataset)
+            .where(Dataset.dataset_id == dataset_id, Dataset.fusion_grid.is_(None))
+            .values(fusion_grid=payload)
+        )
+        sess.commit()
+    logger.info(
+        "[M9] grid dataset %s dipaku: %dx%d dari %s",
+        dataset_id, shape[0], shape[1], origin,
+    )
 
 
 def _dataset_s1_reference_grid(
@@ -1081,6 +1494,8 @@ def _build_fusion_stack_for_level(
     region_id: int | None = None,
     require_s1: bool = True,
     s1_offset_days: int | None = 0,
+    s1_files: dict[str, str] | None = None,
+    s1_member_scene_ids: tuple[int, ...] = (),
 ) -> FusionRun:
     """Bangun SATU stack HDF5 untuk `run_level`. Dipanggil sekali atau dua
     kali per tanggal fusi oleh create_fusion_stack.
@@ -1107,16 +1522,41 @@ def _build_fusion_stack_for_level(
         _find_s1_products(db, dataset_id, scene_id, tier=s1_tier)
         if scene_id is not None else None
     )
+    if s1 is not None and s1_files:
+        # Raster hasil mosaik menggantikan raster frame tunggal, tapi baris
+        # DB-nya tidak: scene_id, region, dan waktu akuisisi tetap milik scene
+        # utama, dan product_id frame-frame penyumbang dicatat lewat
+        # s1_member_scene_ids di bagian lineage. Mosaik sendiri artefak antara
+        # di _work/ (etl/s1_mosaic.py), jadi dia memang tidak punya baris
+        # data_products untuk ditunjuk.
+        s1 = {
+            **s1,
+            "vv_path": s1_files.get("VV") or s1["vv_path"],
+            "vh_path": s1_files.get("VH") or s1["vh_path"],
+            # Hanya diisi kalau tanggal ini BENAR-BENAR dirakit dari lebih
+            # dari satu frame. Satu frame yang dilaporkan sebagai "mosaik dari
+            # satu scene" cuma membuat pembaca sidecar mengira ada penggabungan
+            # yang tidak pernah terjadi.
+            **(
+                {"mosaic_of": sorted(members)}
+                if len(members := {*s1_member_scene_ids, s1["scene_id"]}) > 1
+                else {}
+            ),
+        }
+        if s1.get("mosaic_of"):
+            s1["member_paths"] = _s1_member_paths(
+                db, dataset_id, s1["mosaic_of"], s1_tier
+            )
     if s1 is None or (not s1["vv_path"] and not s1["vh_path"]):
         if require_s1:
             raise RuntimeError(
                 f"No S1 {s1_tier} product found for scene_id={scene_id} "
                 f"s1_date={s1_date.isoformat()} (run level {run_level})"
             )
-        # Rekaman S1 kosong, bukan cabang kode terpisah: seluruh jalur di bawah
-        # sudah menangani path None lewat _read_band_or_nan, jadi membentuk
-        # rekaman null di sini jauh lebih sedikit permukaan error daripada
-        # menduplikasi alur perakitan untuk kasus tanpa-S1.
+        # Rekaman S1 kosong, bukan cabang kode terpisah: perakitan lapisan di
+        # bawah sudah menangani path None (diisi NaN seukuran grid referensi),
+        # jadi membentuk rekaman null di sini jauh lebih sedikit permukaan
+        # error daripada menduplikasi alur perakitan untuk kasus tanpa-S1.
         if region_id is None:
             raise RuntimeError(
                 "require_s1=False butuh region_id untuk membuat scene "
@@ -1145,24 +1585,46 @@ def _build_fusion_stack_for_level(
                 s1_date, datetime.min.time(), tzinfo=timezone.utc
             ),
         }
-        ref_transform, ref_crs, ref_shape = (
-            _dataset_s1_reference_grid(db, dataset_id, s1_tier)
-            or _aoi_reference_grid(aoi_bbox)
-        )
         # Tanpa scene S1 sama sekali, "jarak hari" tidak terdefinisi. NULL,
         # bukan 0: nol berarti same-day, dan itu klaim yang tidak benar di sini.
         s1_offset_days = None
-    else:
-        ref_path = s1["vv_path"] or s1["vh_path"]
-        with rasterio.open(ref_path) as ref:
-            ref_transform, ref_crs = ref.transform, ref.crs
-            ref_shape = (ref.height, ref.width)
+
+    # Grid referensi SELALU grid AOI, tidak lagi grid scene S1 hari itu.
+    #
+    # Alasannya justru yang sudah ditulis di _aoi_reference_grid: kalau hari
+    # yang satu mendarat di grid berbeda dari hari lainnya, deret waktunya
+    # tidak bisa ditumpuk jadi satu array -- dan itu inti tier FUSION. Dengan
+    # grid scene, satu dataset sebulan bisa menghasilkan lima bentuk berbeda
+    # (22_try6: 8789x1488, 6067x8752, 8790x1483, 6068x8752, 8790x1492),
+    # sebagian cuma menutup 17% AOI, sementara atribut aoi_bbox di tiap berkas
+    # menjanjikan AOI penuh untuk semuanya.
+    #
+    # Satu grid untuk seluruh dataset, hari ber-S1 maupun tidak: itulah yang
+    # membuat deret waktunya bisa ditumpuk (lihat _dataset_fusion_grid).
+    ref_transform, ref_crs, ref_shape = _dataset_fusion_grid(
+        db, dataset_id, s1_tier, aoi_bbox
+    )
 
     expected_layers = fusion_layers_for(source_levels)
     total_layers = len(expected_layers)
     done = 0
-    layers: dict[str, np.ndarray] = {}
+    # Berkas keluaran disiapkan SEBELUM lapisan dirakit: lapisan ditulis
+    # langsung ke sana satu per satu, jadi path-nya harus sudah diketahui.
+    date_key = s1_date.strftime("%Y%m%d")
+    # Output dipecah per strategi: membandingkan CO_OCCURRENCE vs FULL_COVERAGE
+    # vs HYBRID pada dataset yang sama adalah inti D1, dan itu cuma mungkin
+    # kalau hasilnya tidak saling menimpa.
+    subfolder = SUBFOLDER.get(str(fusion_strategy).strip().upper()) if fusion_strategy else None
+    out_dir = fm.ensure_fusion_dir(dataset_id, dataset_name, date_key, subfolder)
+    h5_path = out_dir / fusion_h5_name(date_key, run_level, fusion_strategy)
+    json_path = out_dir / fusion_metadata_name(date_key, run_level, fusion_strategy)
+    processing_dt = datetime.now(tz=timezone.utc)
+    layers = _FusionH5Layers(h5_path, ref_shape)
     layer_sources: dict[str, dict] = {}
+    # Fraksi piksel valid per lapisan. Dulu tidak pernah diukur: scene yang
+    # cuma menyerempet AOI menghasilkan stack yang 96% NaN dan tetap dilaporkan
+    # sukses tanpa satu pun angka yang menunjukkannya (22_try6).
+    coverage: dict[str, float] = {}
     found_dates: list[date_type] = []
     # Offset per sumber aux, untuk fusion_products.temporal_offset_*.
     offsets: dict[str, int | None] = {MODIS_PLAN_NAME: None, GPM_PLAN_NAME: None}
@@ -1176,17 +1638,51 @@ def _build_fusion_stack_for_level(
     # --- Sentinel-1 ---------------------------------------------------------
     for band, path_key in (("VV", "vv_path"), ("VH", "vh_path")):
         name = f"sentinel1/{band}"
-        layers[name] = _read_band_or_nan(s1[path_key], ref_shape)
+        # Direproject seperti MODIS/GPM, bukan dibaca apa adanya: raster S1
+        # hidup di grid jejak scene-nya sendiri, sementara stack ini dirakit di
+        # grid AOI. Nearest supaya nilai backscatter tidak dirata-rata dengan
+        # tetangganya cuma karena grid-nya bergeser sepersekian piksel.
+        values = (
+            _reproject_to_grid(
+                Path(s1[path_key]), ref_transform, ref_crs, ref_shape,
+                Resampling.nearest, float("nan"),
+            )
+            if s1[path_key]
+            else np.full(ref_shape, np.nan, dtype="float32")
+        )
+        coverage[name] = _valid_fraction(values)
+        source_paths = s1.get("member_paths", {}).get(band) or (
+            [s1[path_key]] if s1[path_key] else []
+        )
+        layers.add(name, values, attrs={
+            "units": LAYER_UNITS.get(name),
+            "source_date": s1_date.isoformat() if s1[path_key] else None,
+            "acquisition_datetime_utc": (
+                _as_utc(s1["acquisition_datetime"]).isoformat()
+                if s1[path_key] else None
+            ),
+            "s1_offset_days": s1_offset_days,
+            "source_paths": [str(p) for p in source_paths] or None,
+            "valid_fraction": round(coverage[name], 6),
+        })
         if s1[path_key] is None:
             logger.warning(
                 "[M9] S1 %s missing at %s for scene=%s, filled with NaN",
                 band, s1_tier, s1["scene_id"],
             )
         layer_sources[name] = {
-            "path": s1[path_key],
+            # Raster persisten tiap frame, bukan mosaik antara di _work/ yang
+            # disapu di akhir job (24_try8: path sidecar menunjuk berkas yang
+            # sudah tidak ada).
+            "path": (
+                str(source_paths[0]) if len(source_paths) == 1
+                else s1[path_key] if not source_paths else None
+            ),
+            "paths": [str(p) for p in source_paths],
             "date": s1_date.isoformat(),
             "tier": s1_tier,
             "processing_level": source_levels[S1_PLAN_NAME],
+            "valid_fraction": coverage[name],
         }
         _tick(name)
 
@@ -1206,24 +1702,54 @@ def _build_fusion_stack_for_level(
         level = source_levels[source]
         tier = source_tiers[source]
         for layer, hit in _aux_layers_for_run(
-            dataset_id, dataset_name, source, level, center_dt, filename_fn
+            dataset_id, dataset_name, source, level, s1_date, filename_fn
         ):
             name = f"{group}/{layer.name}"
+            values = None
             if hit:
-                values = _reproject_to_grid(
-                    hit[0], ref_transform, ref_crs, ref_shape,
-                    resampling=layer.resampling, fill_value=np.nan,
-                )
+                try:
+                    values = _reproject_to_grid(
+                        hit[0], ref_transform, ref_crs, ref_shape,
+                        resampling=layer.resampling, fill_value=np.nan,
+                        band=layer.band,
+                    )
+                except _MissingBand as exc:
+                    logger.warning("[M9] %s dilewati: %s", name, exc)
+            if values is not None:
                 if layer.categorical:
                     # Kelas banjir itu kategorikal: NaN tidak muat di uint8,
                     # jadi pakai sentinel 255 yang sama dengan module7.
                     values = np.where(
                         np.isnan(values), MODIS_NODATA_U8, values
                     ).astype("uint8")
-                layers[name] = values
+                coverage[name] = _valid_fraction(values)
+                tags = _source_tags(hit[0])
+                day_offset = (hit[1] - s1_date).days
+                hours_after = (
+                    _hours_after_acquisition(
+                        tags.get("window_end_utc"), s1["acquisition_datetime"]
+                    )
+                    if s1.get("vv_path") or s1.get("vh_path") else None
+                )
+                layers.add(name, values, attrs={
+                    **tags,
+                    "units": LAYER_UNITS.get(name),
+                    "source_date": hit[1].isoformat(),
+                    "day_offset": day_offset,
+                    "source_path": str(hit[0]),
+                    "valid_fraction": round(coverage[name], 6),
+                    "hours_after_s1_acquisition": hours_after,
+                })
                 layer_sources[name] = {
                     "path": str(hit[0]), "date": hit[1].isoformat(),
+                    "day_offset": day_offset,
                     "tier": tier, "processing_level": level,
+                    "valid_fraction": coverage[name],
+                    **({"source_tags": tags} if tags else {}),
+                    **(
+                        {"hours_after_s1_acquisition": hours_after}
+                        if hours_after is not None else {}
+                    ),
                 }
                 found_dates.append(hit[1])
                 offset = (hit[1] - s1_date).days
@@ -1231,35 +1757,55 @@ def _build_fusion_stack_for_level(
                     offsets[source] = offset
             else:
                 logger.warning(
-                    "[M9] no %s %s %s product within %dh of %s",
-                    source, layer.name, tier, ALIGNMENT_WINDOW_HOURS, center_dt,
+                    "[M9] no %s %s %s product for %s or the day before",
+                    source, layer.name, tier, s1_date.isoformat(),
                 )
-                layers[name] = (
+                layers.add(name, (
                     np.full(ref_shape, MODIS_NODATA_U8, dtype="uint8")
                     if layer.categorical
                     else np.full(ref_shape, np.nan, dtype="float32")
-                )
+                ), attrs={"units": LAYER_UNITS.get(name), "valid_fraction": 0.0})
+                coverage[name] = 0.0
                 layer_sources[name] = {
                     "path": None, "date": None,
                     "tier": tier, "processing_level": level,
+                    "valid_fraction": 0.0,
                 }
             _tick(name)
 
-    date_key = s1_date.strftime("%Y%m%d")
-    # Output dipecah per strategi: membandingkan CO_OCCURRENCE vs FULL_COVERAGE
-    # vs HYBRID pada dataset yang sama adalah inti D1, dan itu cuma mungkin
-    # kalau hasilnya tidak saling menimpa.
-    subfolder = SUBFOLDER.get(str(fusion_strategy).strip().upper()) if fusion_strategy else None
-    out_dir = fm.ensure_fusion_dir(dataset_id, dataset_name, date_key, subfolder)
-    h5_path = out_dir / fusion_h5_name(date_key, run_level, fusion_strategy)
-    json_path = out_dir / fusion_metadata_name(run_level)
-    processing_dt = datetime.now(tz=timezone.utc)
+    # Satu baris ringkas per stack, bukan per lapisan: yang perlu terlihat di
+    # log adalah "tanggal ini nyaris kosong", dan angkanya lengkap tetap
+    # tersimpan di sidecar JSON untuk yang mau menelusuri.
+    thin = {
+        name: round(fraction, 4)
+        for name, fraction in sorted(coverage.items())
+        if fraction < LOW_COVERAGE_FRACTION
+    }
+    if thin:
+        logger.warning(
+            "[M9] %s level=%s: %d dari %d lapisan di bawah %.0f%% piksel valid %s",
+            s1_date.isoformat(), run_level, len(thin), len(coverage),
+            LOW_COVERAGE_FRACTION * 100, thin,
+        )
 
-    _write_fusion_h5(
-        h5_path, layers, ref_shape,
+    layers.finalize(
         acquisition_datetime=center_dt, processing_datetime=processing_dt,
         aoi_bbox=aoi_bbox, processing_level=run_level, source_levels=source_levels,
         fusion_strategy=fusion_strategy, crs=ref_crs, transform=ref_transform,
+        extra_attrs={
+            # Tanggal fitur = tanggal di nama berkas. acquisition_datetime di
+            # atas bisa berzona waktu lain (mis. +07:00 jatuh di hari
+            # berikutnya), jadi keduanya ditulis terpisah.
+            "feature_date": s1_date.isoformat(),
+            "acquisition_datetime_utc": (
+                _as_utc(center_dt).isoformat()
+                if s1.get("vv_path") or s1.get("vh_path") else None
+            ),
+            "s1_offset_days": s1_offset_days,
+            "temporal_offset_modis": offsets[MODIS_PLAN_NAME],
+            "temporal_offset_gpm": offsets[GPM_PLAN_NAME],
+            "aux_day_rule": "tanggal fitur, atau sehari sebelumnya; tidak pernah sesudahnya",
+        },
     )
 
     # nasa_scenes hanya didaftarkan untuk lapisan penanda tiap sumber (FLOOD
@@ -1390,13 +1936,37 @@ def _build_fusion_stack_for_level(
             data_hash_sha256=checksum,
             file_format="HDF5", rows=height, cols=width,
             processing_level=run_level,
+            # Identitas stack fusion adalah BERKASNYA, bukan scene primary-nya.
+            # Nama berkas cuma memuat tanggal, sementara produknya didaftarkan
+            # atas nama anggota pertama tanggal itu — dan anggota pertama bisa
+            # berganti antar jalan kalau job terputus lalu dilanjutkan dengan
+            # himpunan scene yang berbeda. Tanpa ini, jalan kedua menimpa
+            # berkasnya tapi baris jalan pertama tetap hidup mengklaim ukuran
+            # yang sudah tidak ada (dataset 26, fusion_20251201).
+            supersede_same_path=True,
         )
-        for product_key in ("vv_product_id", "vh_product_id"):
-            if s1.get(product_key):
-                lineage.record_transformation(
-                    s1[product_key], fusion_product_id, "FUSION", fusion_job_id,
-                    {"aoi_bbox": list(aoi_bbox), "processing_level": run_level},
-                )
+        # Induk lineage: produk S1 scene utama, DITAMBAH produk frame lain
+        # yang ikut ke dalam mosaik. Tanpa yang kedua, stack yang separuh
+        # datanya datang dari frame tetangga akan mengaku lahir dari satu
+        # frame saja.
+        parent_ids = [
+            s1[key] for key in ("vv_product_id", "vh_product_id") if s1.get(key)
+        ]
+        for member_scene_id in s1_member_scene_ids:
+            if member_scene_id == s1["scene_id"]:
+                continue
+            member = _find_s1_products(db, dataset_id, member_scene_id, tier=s1_tier)
+            if not member:
+                continue
+            parent_ids.extend(
+                member[key] for key in ("vv_product_id", "vh_product_id")
+                if member.get(key)
+            )
+        for parent_id in dict.fromkeys(parent_ids):
+            lineage.record_transformation(
+                parent_id, fusion_product_id, "FUSION", fusion_job_id,
+                {"aoi_bbox": list(aoi_bbox), "processing_level": run_level},
+            )
     except Exception as exc:
         # Job yang sudah RUNNING wajib ditutup di jalur gagal juga; kalau tidak
         # ia tertinggal RUNNING selamanya dan terlihat seperti fusi yang masih
@@ -1413,6 +1983,11 @@ def _build_fusion_stack_for_level(
         fusion_id, dataset_id, s1_date.isoformat(), run_level, source_levels,
         h5_path, checksum[:12],
     )
+
+    # Audit setelah stack ditulis: memaku grid mencegah percabangan BARU, tapi
+    # stack lama yang sudah lahir di grid lain tetap diam saja sampai ada yang
+    # memeriksanya. Cuma membaca atribut HDF5, bukan datanya.
+    _warn_on_grid_drift(db, dataset_id, dataset_name)
 
     return FusionRun(
         fusion_id=fusion_id,
@@ -1439,11 +2014,13 @@ def create_fusion_stack(
     region_id: int | None = None,
     require_s1: bool = True,
     s1_offset_days: int | None = 0,
+    s1_files_by_level: dict[str, dict[str, str]] | None = None,
+    s1_member_scene_ids: tuple[int, ...] | Sequence[int] | None = None,
 ) -> list[FusionRun]:
     """
     Bangun stack fitur HDF5 untuk scene Sentinel-1 `scene_id` (akuisisi
-    `s1_date`), mencocokkan produk MODIS/GPM dalam 24 jam dari waktu akuisisi
-    S1. Ini deliverable tier FUSION.
+    `s1_date`), mencocokkan produk MODIS/GPM milik tanggal `s1_date` (atau
+    sehari sebelumnya, tidak pernah sesudahnya). Ini deliverable tier FUSION.
 
     Isi tiap stack ditentukan `dataset_source_config`, bukan konstanta: sumber
     yang tidak dikonfigurasi tidak menghasilkan group HDF5 sama sekali, dan
@@ -1478,6 +2055,15 @@ def create_fusion_stack(
         require_s1: True (default) mempertahankan perilaku lama — tanggal
               tanpa produk S1 melempar. FULL_COVERAGE memakai False supaya
               tiap hari tetap jadi berkas walau S1-nya tidak ada.
+        s1_files_by_level: {level: {band: path}} yang menggantikan raster S1
+              milik `scene_id` pada level itu. Dipakai orchestrator untuk
+              mengoper MOSAIK beberapa frame satu tanggal (etl/s1_mosaic.py):
+              AOI yang lebih panjang dari satu frame Sentinel-1 tertutup dua
+              scene yang saling melengkapi, dan tanpa ini stack tanggal itu
+              cuma memuat salah satunya.
+        s1_member_scene_ids: scene lain yang ikut menyumbang ke mosaik.
+              Produk S1-nya ikut dicatat sebagai induk lineage, supaya stack
+              hasil mosaik tidak mengaku lahir dari satu frame saja.
 
     Raises:
         RuntimeError: SENTINEL1 tidak dikonfigurasi; atau produk S1 di tier
@@ -1512,6 +2098,8 @@ def create_fusion_stack(
                 region_id=region_id,
                 require_s1=require_s1,
                 s1_offset_days=s1_offset_days,
+                s1_files=(s1_files_by_level or {}).get(run_level),
+                s1_member_scene_ids=tuple(s1_member_scene_ids or ()),
             )
             for run_level in plan.output_levels()
         ]

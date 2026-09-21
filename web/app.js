@@ -52,12 +52,12 @@ const SOURCELESS_TIERS = ['fusion', 'preview'];
 const ACTIVE_STATUSES = new Set(['QUEUED','PREPARING','DOWNLOADING','PROCESSING','PAUSED','CLEANUP','DELETING']);
 
 const state = {
-  datasets: [], progress: {}, logs: {}, pollTimer: null, livePollTimer: null,
+  datasets: [], progress: {}, logs: {}, firstLogAt: {}, pollTimer: null, livePollTimer: null,
   openScenes: new Set(), openStructure: new Set(), structureHTML: {}, cardElements: {},
   // Galeri preview per dataset: payload /api/datasets/{id}/preview, plus
   // tanggal dan jenis yang sedang dipilih (bertahan saat panel digambar ulang
   // oleh polling).
-  previews: {}, previewScene: {}, previewKind: {}, previewLevel: {},
+  previews: {}, previewScene: {}, previewKind: {}, previewLevel: {}, previewClosed: {},
   // Lokasi: daftar dari /api/regions, filter pencarian, dan pilihan yang dipakai
   // "Buat Dataset". selectedRegionId adalah satu-satunya sumber kebenaran lokasi.
   regions: [], selectedRegionId: null, locationQuery: '',
@@ -1287,6 +1287,13 @@ async function refreshProgress() {
       try { state.logs[ds.dataset_id] = (await api('/api/datasets/' + ds.dataset_id + '/logs?limit=5')).logs; }
       catch (e) {}
     }
+    // Log pertama cukup diambil sekali untuk hitung durasi.
+    if (!state.firstLogAt[ds.dataset_id]) {
+      try {
+        const first = (await api('/api/datasets/' + ds.dataset_id + '/logs?limit=1&order=asc')).logs[0];
+        if (first) state.firstLogAt[ds.dataset_id] = first.timestamp;
+      } catch (e) {}
+    }
   }
   renderDatasets();
 }
@@ -1406,6 +1413,7 @@ function cardShellHTML(ds) {
       '<div><span class="stat-num">' + ds.completed_scenes + '</span><span class="stat-label">selesai</span></div>' +
       '<div><span class="stat-num">' + ds.failed_scenes + '</span><span class="stat-label">gagal</span></div>' +
       '<div><span class="stat-num">' + humanBytes(ds.total_size_bytes) + '</span><span class="stat-label">ukuran</span></div>' +
+      '<div><span class="stat-num">' + logDurationText(ds.dataset_id) + '</span><span class="stat-label">durasi</span></div>' +
     '</div>' +
     renderLogPanel(ds.dataset_id) +
     '<div class="card-actions">' +
@@ -1456,6 +1464,19 @@ function updateDatasetCard(el, ds) {
   }
   if (state.openScenes.has(ds.dataset_id)) renderSceneTable(el.querySelector('.card-scenes'), ds.dataset_id);
   if (state.openStructure.has(ds.dataset_id)) renderStructurePanel(el.querySelector('.card-structure'), ds.dataset_id);
+}
+
+// Durasi = selisih timestamp log pertama dataset dan log terbaru; ikut
+// berubah tiap kali log baru masuk.
+function logDurationText(id) {
+  const logs = state.logs[id];
+  if (!logs || logs.length === 0) return '-';
+  let times = logs.map(l => new Date(l.timestamp).getTime());
+  if (state.firstLogAt[id]) times.push(new Date(state.firstLogAt[id]).getTime());
+  times = times.filter(t => !isNaN(t));
+  if (times.length === 0) return '-';
+  const mins = Math.floor((Math.max(...times) - Math.min(...times)) / 60000);
+  return Math.floor(mins / 60) + 'j ' + (mins % 60) + 'm';
 }
 
 function renderLogPanel(id) {
@@ -1764,6 +1785,7 @@ async function renderStructurePanel(box, id) {
   const html =
     renderStorageBreakdown(id, storage, quality) +
     '<div class="struct-files" id="structfiles-' + id + '"></div>' +
+    '<div class="mask-section" id="masks-' + id + '"></div>' +
     '<div class="preview-section" id="preview-' + id + '"></div>';
   // Ganti langsung isinya kalau ada perubahan saja -- kalau datanya sama
   // persis dengan sebelumnya, DOM tidak disentuh sama sekali.
@@ -1777,6 +1799,87 @@ async function renderStructurePanel(box, id) {
   // dibaca sementara daftar preview masih jalan, dan dataset yang tier
   // preview-nya kosong tidak menahan apa pun.
   renderPreviewGallery(id);
+  renderMaskLayers(id);
+}
+
+// ---------------------------------------------------------------------------
+// Layer referensi (masks/): darat-laut dan air permanen.
+//
+// Beda mendasar dari galeri preview di bawah, dan itu yang menentukan
+// bentuk UI-nya: preview itu PER TANGGAL, layer referensi PER DATASET. Garis
+// pantai tidak berubah antar tanggal, jadi tidak ada pemilih tanggal di sini
+// dan tidak boleh ada -- satu berkas berlaku untuk seluruh stack.
+//
+// Angka statistiknya datang dari manifest JSON yang ditulis modul pembuatnya,
+// bukan dihitung ulang di sini, supaya yang dibaca peneliti di layar persis
+// yang tertanam di berkas yang dikirim ke deep learning engineer.
+// ---------------------------------------------------------------------------
+
+async function renderMaskLayers(id) {
+  const box = document.getElementById('masks-' + id);
+  if (!box) return;
+
+  let data;
+  try {
+    data = await api('/api/datasets/' + id + '/masks');
+  } catch (e) {
+    box.innerHTML = '';
+    return;
+  }
+  if (!data.layers || data.layers.length === 0) {
+    // Sengaja kosong tanpa pesan: dataset yang belum sampai fusion memang
+    // belum punya layer ini, dan itu keadaan normal -- bukan sesuatu yang
+    // perlu diumumkan sebagai kekurangan di tiap kartu dataset.
+    box.innerHTML = '';
+    return;
+  }
+
+  const cards = data.layers.map(l => {
+    const st = l.statistics || {};
+    let facts = [];
+    if (st.pct_sea !== undefined) {
+      facts.push(['laut', st.pct_sea.toFixed(2) + '%']);
+      facts.push(['darat', st.pct_land.toFixed(2) + '%']);
+      if (st.clamp_m) facts.push(['batas jarak', '±' + (st.clamp_m / 1000) + ' km']);
+    }
+    if (st.pct_occurrence_ge_90 !== undefined) {
+      facts.push(['air permanen (≥90%)', st.pct_occurrence_ge_90.toFixed(2) + '%']);
+      facts.push(['musiman (≥50%)', st.pct_occurrence_ge_50.toFixed(2) + '%']);
+      if (st.source_resolution_m) facts.push(['sumber', st.source_resolution_m + ' m']);
+    }
+
+    const img = l.image_url
+      ? '<img src="' + escapeHTML(l.image_url) + '" alt="' + escapeHTML(l.label) + '" loading="lazy">'
+      : '<div class="mask-noimg">tanpa preview</div>';
+
+    return '<figure class="mask-card">' +
+      img +
+      '<figcaption>' +
+        '<span class="mask-title">' + escapeHTML(l.label) + '</span>' +
+        '<span class="mask-interp">' + escapeHTML(l.interpretation || '') + '</span>' +
+        '<div class="mask-facts">' +
+          facts.map(f =>
+            '<span class="mask-fact"><b>' + escapeHTML(f[1]) + '</b>' +
+            escapeHTML(f[0]) + '</span>').join('') +
+        '</div>' +
+        '<span class="mask-file">' + escapeHTML(l.data_file) + ' · ' +
+          humanBytes(l.size_bytes) + '</span>' +
+      '</figcaption>' +
+    '</figure>';
+  }).join('');
+
+  const html =
+    '<div class="mask-head">' +
+      '<h4>Layer Referensi</h4>' +
+      '<span class="mask-sub">' + escapeHTML(data.applies_to) + ' · ' +
+        humanBytes(data.total_size_bytes) + '</span>' +
+    '</div>' +
+    '<p class="mask-note">Informasi tambahan, bukan penyaring — data mentah ' +
+      'dan fusion tidak diubah sama sekali. Sungai dan danau sengaja ' +
+      'dipertahankan karena luapannya justru sinyal banjir yang dicari.</p>' +
+    '<div class="mask-grid">' + cards + '</div>';
+
+  if (box._html !== html) { box._html = html; box.innerHTML = html; }
 }
 
 function bindStructurePanel(box, id) {
@@ -1834,7 +1937,7 @@ async function renderPreviewGallery(id) {
 const PREVIEW_KIND_LABELS = {
   grayscale: 'Grayscale',
   colored: 'Berwarna',
-  composite: 'Komposit RGB',
+  composite: 'Komposit & Overlay',
 };
 
 // Tiga alasan berbeda kenapa galeri bisa kosong, dan ketiganya butuh kalimat
@@ -1886,28 +1989,34 @@ function drawPreviewGallery(id) {
   const kindsOf = (levelBlock || scene).kinds || {};
   const block = kindsOf[kind] || { images: [], info: {} };
 
-  const dateTabs = data.scenes.length > 1
+  // Tiap filter punya baris + label sendiri (Tanggal / Level / Jenis), bukan
+  // satu baris pil bercampur: tiga set tombol yang mirip tanpa label membuat
+  // user menebak mana yang mengubah apa.
+  const filterRow = (label, inner) =>
+    '<div class="preview-filter"><span class="preview-filter-label">' + label + '</span>' + inner + '</div>';
+
+  const dateRow = filterRow('Tanggal', data.scenes.length > 1
     ? '<div class="preview-dates">' + data.scenes.map(s =>
         '<button class="preview-date' + (s.scene === scene.scene ? ' active' : '') + '"' +
           ' data-preview-scene="' + escapeHTML(s.scene) + '">' + formatDateKey(s.scene) + '</button>'
       ).join('') + '</div>'
-    : '<span class="preview-single-date">' + formatDateKey(scene.scene) + '</span>';
+    : '<span class="preview-single-date">' + formatDateKey(scene.scene) + '</span>');
 
-  const levelTabs = levels.length > 1
-    ? '<div class="preview-levels" role="tablist">' + levels.map(l =>
+  const levelRow = levels.length > 1
+    ? filterRow('Level', '<div class="preview-levels" role="tablist">' + levels.map(l =>
         '<button class="preview-kind' + (l === level ? ' active' : '') + '" role="tab"' +
           ' aria-selected="' + (l === level) + '" data-preview-level="' + l + '">' + l +
-        '</button>').join('') + '</div>'
+        '</button>').join('') + '</div>')
     : '';
 
-  const kindTabs = '<div class="preview-kinds" role="tablist">' +
+  const kindRow = filterRow('Jenis', '<div class="preview-kinds" role="tablist">' +
     data.kinds.map(k =>
       '<button class="preview-kind' + (k === kind ? ' active' : '') + '" role="tab"' +
         ' aria-selected="' + (k === kind) + '" data-preview-kind="' + k + '">' +
         (PREVIEW_KIND_LABELS[k] || k) +
         '<span class="preview-kind-count">' + ((kindsOf[k] || {}).count || 0) + '</span>' +
       '</button>').join('') +
-    '</div>';
+    '</div>');
 
   const blurb = block.info.purpose
     ? '<p class="preview-blurb">' + escapeHTML(block.info.purpose) + '</p>'
@@ -1924,31 +2033,52 @@ function drawPreviewGallery(id) {
     (a, b) => SOURCE_ORDER_KEYS.indexOf(a) - SOURCE_ORDER_KEYS.indexOf(b)
   );
 
+  // Daftar datar sesuai urutan tampil -- dipakai lightbox untuk navigasi
+  // sebelumnya/berikutnya lintas grup satelit.
+  const flat = [];
+  groupKeys.forEach(src => groups[src].forEach(img => flat.push({ img, src })));
+
+  const closedGroups = state.previewClosed[id] || (state.previewClosed[id] = new Set());
+
   const cards = block.images.length === 0
     ? '<div class="empty-small">Tidak ada gambar ' + escapeHTML(kind) + ' untuk tanggal ini</div>'
     : groupKeys.map(src =>
-        '<div class="preview-group">' +
-          '<div class="preview-group-head">' +
+        // <details> native: satelit dengan belasan gambar bisa dilipat tanpa
+        // mengubah state di luar set `closedGroups` kecil ini.
+        '<details class="preview-group" data-preview-group="' + escapeHTML(src) + '"' +
+            (closedGroups.has(src) ? '' : ' open') + '>' +
+          '<summary class="preview-group-head">' +
             '<span class="struct-swatch" style="background:' + sourceColor(src) + '"></span>' +
-            escapeHTML(sourceLabel(src)) +
-            (level ? ' <span class="preview-group-level">' + escapeHTML(level) + '</span>' : '') +
-          '</div>' +
-          previewCardsHTML(groups[src]) +
-        '</div>').join('');
+            '<span class="preview-group-name">' + escapeHTML(sourceLabel(src)) + '</span>' +
+            (level ? '<span class="preview-group-level">' + escapeHTML(level) + '</span>' : '') +
+            '<span class="preview-group-count">' + groups[src].length + ' gambar</span>' +
+          '</summary>' +
+          previewCardsHTML(groups[src], src) +
+        '</details>').join('');
 
-  function previewCardsHTML(images) {
+  function previewRange(img) {
+    return Array.isArray(img.value_range)
+      ? img.value_range[0] + ' – ' + img.value_range[1] + (img.units ? ' ' + img.units : '')
+      : '';
+  }
+
+  function previewCardsHTML(images, src) {
     return '<div class="preview-grid">' + images.map(img => {
-        const range = Array.isArray(img.value_range)
-          ? img.value_range[0] + ' – ' + img.value_range[1] + (img.units ? ' ' + img.units : '')
-          : '';
+        const range = previewRange(img);
+        const idx = flat.findIndex(f => f.img === img);
         return '<figure class="preview-card">' +
-            '<div class="preview-thumb">' +
+            // Tombol, bukan <div>: bisa difokus dengan keyboard dan membuka
+            // lightbox. Gambar ditampilkan utuh (contain) -- dulu dipotong
+            // persegi sehingga citra yang besar/lebar terpotong.
+            '<button type="button" class="preview-thumb" data-preview-open="' + idx + '"' +
+                ' title="Klik untuk memperbesar">' +
               // loading=lazy + decoding=async: satu dataset bisa punya belasan
               // tanggal x 8 PNG, dan panel ini sering dibuka sekadar untuk
               // melihat angka storage-nya.
               '<img src="' + escapeHTML(img.url) + '" alt="' + escapeHTML(img.label || img.key) + '"' +
                 ' loading="lazy" decoding="async">' +
-            '</div>' +
+              '<span class="preview-zoom" aria-hidden="true">⤢</span>' +
+            '</button>' +
             '<figcaption>' +
               '<span class="preview-label">' + escapeHTML(img.label || img.key) + '</span>' +
               '<span class="preview-tags">' +
@@ -1976,7 +2106,7 @@ function drawPreviewGallery(id) {
       '<span class="preview-title-icon">' + ICONS.image + '</span>Preview' +
       '<span class="preview-size">' + humanBytes(data.total_size_bytes) + '</span>' +
     '</div>' +
-    '<div class="preview-bar">' + dateTabs + levelTabs + kindTabs + '</div>' +
+    '<div class="preview-bar">' + dateRow + levelRow + kindRow + '</div>' +
     blurb + cards + missing;
   // Menulis ulang <img loading="lazy"> yang sama membuat gambar kosong sesaat
   // lalu muncul lagi; kalau isinya tidak berubah, biarkan DOM apa adanya.
@@ -2002,6 +2132,96 @@ function drawPreviewGallery(id) {
       drawPreviewGallery(id);
     });
   });
+  box.querySelectorAll('details[data-preview-group]').forEach(d => {
+    d.addEventListener('toggle', () => {
+      const key = d.dataset.previewGroup;
+      if (d.open) closedGroups.delete(key); else closedGroups.add(key);
+      // Ingat pilihan lipat di HTML tersimpan, supaya redraw polling yang
+      // isinya sama tidak membuka ulang grup yang sudah dilipat user.
+      box._html = null;
+    });
+  });
+  box.querySelectorAll('[data-preview-open]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      openPreviewLightbox(flat.map(f => ({
+        url: f.img.url,
+        title: f.img.label || f.img.key,
+        source: sourceLabel(f.src),
+        colormap: f.img.colormap || '',
+        range: previewRange(f.img),
+        note: f.img.interpretation || '',
+      })), Number(btn.dataset.previewOpen));
+    });
+  });
+}
+
+// Lightbox: satu elemen bersama untuk semua dataset, dibuat saat pertama
+// dipakai. Gambar preview bisa jauh lebih besar daripada thumbnail-nya, jadi
+// user perlu cara melihatnya utuh tanpa membuka tab baru.
+let previewLightbox = null;
+
+function openPreviewLightbox(items, index) {
+  if (!items.length) return;
+  let cur = Math.max(0, Math.min(index, items.length - 1));
+
+  if (!previewLightbox) {
+    const el = document.createElement('div');
+    el.className = 'lightbox hidden';
+    el.setAttribute('role', 'dialog');
+    el.setAttribute('aria-modal', 'true');
+    el.innerHTML =
+      '<div class="lightbox-backdrop" data-lb="close"></div>' +
+      '<div class="lightbox-panel">' +
+        '<button type="button" class="lightbox-btn lightbox-close" data-lb="close" aria-label="Tutup">✕</button>' +
+        '<button type="button" class="lightbox-btn lightbox-nav lightbox-prev" data-lb="prev" aria-label="Sebelumnya">‹</button>' +
+        '<div class="lightbox-stage"><img alt=""></div>' +
+        '<button type="button" class="lightbox-btn lightbox-nav lightbox-next" data-lb="next" aria-label="Berikutnya">›</button>' +
+        '<div class="lightbox-caption"></div>' +
+      '</div>';
+    document.body.appendChild(el);
+    previewLightbox = el;
+  }
+  const lb = previewLightbox;
+  const img = lb.querySelector('.lightbox-stage img');
+  const cap = lb.querySelector('.lightbox-caption');
+
+  function show() {
+    const it = items[cur];
+    img.src = it.url;
+    img.alt = it.title;
+    cap.innerHTML =
+      '<span class="lightbox-title">' + escapeHTML(it.title) + '</span>' +
+      '<span class="lightbox-meta">' + escapeHTML(it.source) +
+        (it.colormap ? ' · ' + escapeHTML(it.colormap) : '') +
+        (it.range ? ' · ' + escapeHTML(it.range) : '') +
+        ' · ' + (cur + 1) + '/' + items.length + '</span>' +
+      (it.note ? '<span class="lightbox-note">' + escapeHTML(it.note) + '</span>' : '');
+    lb.classList.toggle('single', items.length < 2);
+  }
+  function step(d) { cur = (cur + d + items.length) % items.length; show(); }
+  function close() {
+    lb.classList.add('hidden');
+    document.body.classList.remove('lightbox-open');
+    document.removeEventListener('keydown', onKey);
+    lb.onclick = null;
+    img.removeAttribute('src');
+  }
+  function onKey(e) {
+    if (e.key === 'Escape') close();
+    else if (e.key === 'ArrowLeft') step(-1);
+    else if (e.key === 'ArrowRight') step(1);
+  }
+  lb.onclick = e => {
+    const t = e.target.closest('[data-lb]');
+    if (!t) return;
+    if (t.dataset.lb === 'close') close();
+    else step(t.dataset.lb === 'next' ? 1 : -1);
+  };
+
+  document.addEventListener('keydown', onKey);
+  document.body.classList.add('lightbox-open');
+  lb.classList.remove('hidden');
+  show();
 }
 
 function formatDateKey(key) {

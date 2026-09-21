@@ -599,7 +599,8 @@ class ProcessingJob(Base):
     started_at = Column(DateTime(timezone=True))
     completed_at = Column(DateTime(timezone=True))
     worker_hostname = Column(String(100))
-    cpu_usage_percent = Column(Numeric(5, 2))
+    # Total seluruh core (psutil): 24 core bisa mencapai 2400%, bukan 100%.
+    cpu_usage_percent = Column(Numeric(7, 2))
     memory_usage_mb = Column(Numeric(10, 2))
     input_size_mb = Column(Numeric(12, 3))
     output_size_mb = Column(Numeric(12, 3))
@@ -614,7 +615,8 @@ class ProcessingJob(Base):
     stage = relationship("ProcessingStage", back_populates="jobs")
     products = relationship("DataProduct", back_populates="job")
     lineages = relationship("DataLineage", back_populates="job",
-                             foreign_keys="DataLineage.job_id")
+                             foreign_keys="DataLineage.job_id",
+                             passive_deletes=True)
 
     def __repr__(self) -> str:
         return f"<ProcessingJob id={self.job_id} scene={self.scene_id} stage={self.stage_id} status={self.status}>"
@@ -685,10 +687,16 @@ class DataProduct(Base):
     dataset = relationship("Dataset", back_populates="products")
     quality_metrics = relationship("QualityMetric", back_populates="product", cascade="all, delete-orphan")
     versions = relationship("DatasetVersion", back_populates="product")
+    # passive_deletes: kolom FK lineage NOT NULL dan FK-nya sudah ON DELETE
+    # CASCADE. Tanpa ini ORM mencoba meng-NULL-kan parent/child_product_id
+    # saat produk dihapus (mis. scene placeholder NASA_AUX di
+    # DeletionManager) dan penghapusan dataset gagal NotNullViolation.
     lineages_as_parent = relationship("DataLineage", back_populates="parent_product",
-                                       foreign_keys="DataLineage.parent_product_id")
+                                       foreign_keys="DataLineage.parent_product_id",
+                                       passive_deletes=True)
     lineages_as_child = relationship("DataLineage", back_populates="child_product",
-                                      foreign_keys="DataLineage.child_product_id")
+                                      foreign_keys="DataLineage.child_product_id",
+                                      passive_deletes=True)
 
     def __repr__(self) -> str:
         return f"<DataProduct id={self.product_id} tier={self.product_tier} band={self.band_name}>"
@@ -924,6 +932,13 @@ class Dataset(Base):
         SmallInteger, nullable=False, server_default=text("2")
     )
     quality_settings = Column(JSONB, nullable=False, default={})
+    # Grid fusion yang dipaku: {transform, width, height, crs,
+    # source_product_id, pinned_at}. Ditulis sekali pada fusion pertama, dibaca
+    # ulang seterusnya. Tanpa ini grid diturunkan ulang tiap jalan dari "raster
+    # S1 pertama yang filenya ada", dan berpindah begitu ketersediaan berkas
+    # berubah -- dataset 26 sampai punya dua grid yang tidak berhimpit.
+    # Lihat database/migrations/024_datasets_fusion_grid.sql.
+    fusion_grid = Column(JSONB)
     dataset_kind = Column(String(10), nullable=False, default="STANDARD")
     status = Column(String(20), nullable=False, default="DRAFT")
     total_scenes = Column(Integer, nullable=False, default=0)

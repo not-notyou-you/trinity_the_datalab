@@ -28,6 +28,34 @@ from etl.database_client import (
 
 logger = logging.getLogger(__name__)
 
+
+def _fit_numeric(
+    value: float, precision: int, scale: int, field: str, job_id: int
+) -> float:
+    """Batasi `value` agar muat di NUMERIC(precision, scale).
+
+    Metrik yang kebesaran pernah menggagalkan SELURUH tahap, bukan cuma
+    metriknya: UPDATE yang menulis cpu_usage_percent juga menulis status
+    SUCCESS, jadi "numeric field overflow" membuat scene yang sudah selesai
+    diproses tercatat gagal (run 2026-09-20: 9 tahap di JAWA, 5 di
+    jan_mar_2025_hybrid, setelah GDAL memakai 24 core dan puncak CPU mencapai
+    1944% di kolom NUMERIC(5,2)).
+
+    Migrasi 022 melebarkan kolomnya, tapi pembatasan ini tetap ada sebagai
+    jaring pengaman: database yang belum dimigrasi, atau mesin dengan lebih
+    banyak core lagi, tidak boleh lagi kehilangan status job hanya karena
+    angka statistik. Nilai yang dipotong dicatat sebagai peringatan supaya
+    tidak hilang diam-diam.
+    """
+    limit = float(10 ** (precision - scale)) - float(10 ** -scale)
+    if value > limit:
+        logger.warning(
+            "[JOB] job_id=%d %s=%s melebihi kapasitas kolom, disimpan sebagai %s",
+            job_id, field, value, limit,
+        )
+        return limit
+    return value
+
 # Job yang sudah di-start_job tapi belum di-complete_job, per THREAD. Tingkat
 # modul, bukan atribut instance: module9 membuat MetadataManager-nya sendiri,
 # dan job yang dimulai lewat instance mana pun tetap harus bisa ditutup oleh
@@ -122,9 +150,13 @@ class MetadataManager:
             job.error_code = error_code
             job.error_message = error_message
             if cpu_usage_percent is not None:
-                job.cpu_usage_percent = cpu_usage_percent
+                job.cpu_usage_percent = _fit_numeric(
+                    cpu_usage_percent, 7, 2, "cpu_usage_percent", job_id
+                )
             if memory_usage_mb is not None:
-                job.memory_usage_mb = memory_usage_mb
+                job.memory_usage_mb = _fit_numeric(
+                    memory_usage_mb, 10, 2, "memory_usage_mb", job_id
+                )
         _open_job_ids().discard(job_id)
         logger.info("[JOB] job_id=%d -> %s", job_id, status.value)
 
@@ -233,6 +265,7 @@ class MetadataManager:
         storage_location: str = "LOCAL",
         dataset_id: int | None = None,
         processing_level: str | None = None,
+        supersede_same_path: bool = False,
     ) -> int:
         """Daftarkan satu file keluaran ke `data_products`.
 
@@ -242,6 +275,25 @@ class MetadataManager:
         datang dari SourcePlan.level_for_tier() (etl/processing_plan.py).
         None berarti "tidak dinyatakan" dan dibiarkan diisi default kolom
         ('PROCESSED'), yaitu perilaku pipeline sebelum migrasi 017.
+
+        `supersede_same_path` menambah satu syarat usang lagi: baris lain di
+        dataset ini yang menunjuk FILE YANG SAMA ikut ditandai tidak-terbaru,
+        siapa pun scene-nya. Dipakai artefak yang identitasnya adalah berkas
+        keluarannya, bukan scene asalnya — stack FUSION.
+
+        Kenapa perlu: nama berkas fusion cuma memuat tanggal
+        (`fusion_{tanggal}_{strategi}_{level}.h5`), sementara produknya
+        didaftarkan atas nama scene "primary" tanggal itu — dan primary bisa
+        BERGANTI antar jalan, karena ia sekadar anggota pertama setelah
+        diurutkan per pid, dan himpunan anggota yang sudah selesai berbeda
+        tiap kali job terputus lalu dilanjutkan. Tanpa syarat ini, jalan kedua
+        menimpa berkasnya tapi meninggalkan baris jalan pertama tetap
+        is_latest=True, mengklaim ukuran yang sudah tidak ada di disk.
+        Terukur di dataset 26 (JAWA): dua baris menunjuk
+        fusion_20251201_cooccurrence_processed.h5, satu mengaku
+        32040x103630 padahal berkasnya 31922x103248. Dataset 25 kena juga
+        (fusion_20250204_hybrid_processed.h5), cuma tidak kelihatan karena
+        bentuknya kebetulan sama.
         """
         if processing_level is not None:
             processing_level = ProcessingLevelEnum(str(processing_level).upper()).value
@@ -259,6 +311,15 @@ class MetadataManager:
                     DataProduct.is_latest == True,
                 )
             ).update({"is_latest": False})
+
+            if supersede_same_path:
+                sess.query(DataProduct).filter(
+                    and_(
+                        DataProduct.dataset_id == dataset_id,
+                        DataProduct.file_path == file_path,
+                        DataProduct.is_latest == True,
+                    )
+                ).update({"is_latest": False})
 
             product = DataProduct(
                 scene_id=scene_id,

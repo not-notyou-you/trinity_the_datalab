@@ -327,6 +327,44 @@ def _read_preview_json(path: Path) -> dict | None:
         return None
 
 
+def _read_dated_preview_json(directory: Path, scene: str, stem: str) -> dict:
+    """Sidecar *_info.json satu tanggal.
+
+    Nama berprefiks tanggal lebih dulu. Dataset yang dirender SEBELUM sidecar
+    diberi prefiks hanya punya satu berkas bersama untuk seluruh tanggal;
+    berkas itu tetap dipakai karena keterangannya (colormap, rentang, cara
+    stretch) berlaku untuk semua tanggal — yang spesifik tanggal cuma daftar
+    `images`, dan itu disaring pemanggil lewat _belongs_to_scene.
+    """
+    dated = _read_preview_json(directory / fm.dated_filename(scene, stem))
+    if dated is not None:
+        return dated
+    return _read_preview_json(directory / stem) or {}
+
+
+def _read_dated_preview_metadata(directory: Path, scene: str) -> dict:
+    """preview_metadata.json satu tanggal.
+
+    Beda dari sidecar *_info.json: isinya SELURUHNYA tentang satu tanggal
+    (scene S1-nya, lapisan yang dilewati, waktu render). Sidecar bersama
+    peninggalan render lama menggambarkan tanggal yang kebetulan selesai
+    terakhir, jadi hanya dipakai kalau `acquisition_date`-nya memang tanggal
+    yang diminta — kalau tidak, galeri akan menyajikan keterangan tanggal lain.
+    """
+    dated = _read_preview_json(
+        directory / fm.dated_filename(scene, "preview_metadata.json")
+    )
+    if dated is not None:
+        return dated
+    shared = _read_preview_json(directory / "preview_metadata.json") or {}
+    return shared if shared.get("acquisition_date") == scene else {}
+
+
+def _belongs_to_scene(filename: str, scene: str) -> bool:
+    """PNG milik tanggal ini? Satu folder kind memuat PNG semua tanggal."""
+    return fm.date_from_filename(filename) == scene
+
+
 def preferred_preview_level(levels: list[str]) -> str:
     """Level yang ditampilkan galeri kalau pemanggil tidak memilih.
 
@@ -348,21 +386,26 @@ def _preview_level_payload(
         kind_dir = fm.get_preview_kind_dir(dataset_id, name, scene, kind, level)
         if not kind_dir.is_dir():
             continue
-        info = _read_preview_json(kind_dir / f"{kind}_info.json") or {}
+        info = _read_dated_preview_json(kind_dir, scene, f"{kind}_info.json")
         images = []
         for entry in info.get("images", []):
             filename = entry.get("file")
             if not filename or not (kind_dir / filename).exists():
                 continue
+            # Sidecar lama bisa memuat entri tanggal lain; entri yang bukan
+            # milik tanggal ini tidak boleh ikut ditampilkan di sini.
+            if not _belongs_to_scene(filename, scene):
+                continue
             images.append({**entry, "url": f"{base_url}/{kind}/{filename}"})
-        # Cadangan kalau sidecar tidak terbaca: listing PNG apa adanya, supaya
-        # galeri tetap terisi walau tanpa keterangan.
+        # Cadangan kalau sidecar tidak terbaca: listing PNG tanggal ini apa
+        # adanya, supaya galeri tetap terisi walau tanpa keterangan.
         if not images:
             images = [
                 {"key": f.stem, "file": f.name, "label": f.stem,
                  "url": f"{base_url}/{kind}/{f.name}",
                  "size_bytes": f.stat().st_size}
                 for f in sorted(kind_dir.glob("*.png"))
+                if _belongs_to_scene(f.name, scene)
             ]
         kinds[kind] = {
             "count": len(images),
@@ -370,10 +413,9 @@ def _preview_level_payload(
             "images": images,
         }
 
-    metadata = _read_preview_json(
-        fm.get_preview_level_dir(dataset_id, name, scene, level)
-        / "preview_metadata.json"
-    ) or {}
+    metadata = _read_dated_preview_metadata(
+        fm.get_preview_level_dir(dataset_id, name, scene, level), scene
+    )
     return {
         "processing_level": level,
         "derived_from": metadata.get("derived_from"),
@@ -395,7 +437,7 @@ def _preview_scene_payload(dataset_id: int, name: str, scene: str) -> dict:
     dan tidak perlu tahu soal level.
     """
     scene_dir = fm.get_preview_dir(dataset_id, name, scene)
-    metadata = _read_preview_json(scene_dir / "preview_metadata.json") or {}
+    metadata = _read_dated_preview_metadata(scene_dir, scene)
 
     levels = fm.list_preview_levels(dataset_id, name, scene)
     by_level = {
@@ -404,7 +446,7 @@ def _preview_scene_payload(dataset_id: int, name: str, scene: str) -> dict:
     }
     default_level = preferred_preview_level(levels)
 
-    files = fm.get_preview_scene_files(dataset_id, name, scene)
+    files = fm.get_preview_date_files(dataset_id, name, scene)
     return {
         "scene": scene,
         "acquisition_date": metadata.get("acquisition_date", scene),
@@ -740,4 +782,124 @@ async def list_dataset_tier_files(
 
     return DatasetTierFilesResponse(
         dataset_id=dataset_id, tier=tier_l, source=source_l, scenes=result
+    )
+
+
+# --- Layer referensi (masks/) ------------------------------------------------
+# Beda dari preview: preview itu per tanggal, layer referensi itu per DATASET.
+# Garis pantai tidak berubah antar tanggal, jadi satu berkas melayani semua
+# stack -- karena itu endpointnya duduk di tingkat dataset, bukan di bawah
+# /preview/{scene}/.
+
+MASK_LAYERS: tuple[tuple[str, str, str, str], ...] = (
+    (
+        "land_distance",
+        "Jarak ke Garis Pantai",
+        "manifest.json",
+        "Jarak bertanda dalam meter: positif di darat, negatif di laut, nol "
+        "tepat di garis pantai. Sungai dan danau TIDAK dibuang — luapannya "
+        "justru sinyal yang dicari. Konsumen menentukan sendiri buffernya.",
+    ),
+    (
+        "water_occurrence",
+        "Frekuensi Air Permanen",
+        "manifest_water_occurrence.json",
+        "Persentase 1984-2021 seberapa sering piksel tampak berair (JRC "
+        "Global Surface Water). Bukan mask: ini pembanding 'selebar apa air "
+        "ini biasanya', supaya luapan bisa dibedakan dari aliran normal.",
+    ),
+)
+
+
+def _masks_dir(dataset_id: int, name: str) -> Path:
+    from etl.land_mask import get_masks_dir
+
+    return get_masks_dir(fm.get_dataset_root(dataset_id, name))
+
+
+@router.get(
+    "/{dataset_id}/masks",
+    summary="Layer referensi dataset (darat/laut dan air permanen)",
+)
+async def list_dataset_masks(
+    dataset_id: int,
+    db: DatabaseClient = Depends(get_db),
+) -> dict:
+    """
+    Layer referensi yang ada di disk untuk dataset ini, lengkap dengan
+    statistik dan asal-usulnya dari manifest JSON.
+
+    Selalu 200 walau masks/ kosong: dataset yang dibuat sebelum layer ini ada,
+    dan dataset yang belum sampai tahap fusion, memang belum punya -- itu
+    kondisi normal yang perlu dibedakan UI dari error.
+    """
+    info = _mgr(db).get_dataset(dataset_id)
+    if info is None:
+        raise HTTPException(404, f"Dataset {dataset_id} tidak ditemukan")
+
+    name = info["name"]
+    masks_dir = _masks_dir(dataset_id, name)
+    base_url = f"/api/datasets/{dataset_id}/masks"
+
+    layers = []
+    for key, label, manifest_name, interpretation in MASK_LAYERS:
+        tif = masks_dir / f"{key}.tif"
+        png = masks_dir / f"{key}.png"
+        if not tif.exists():
+            continue
+        manifest = _read_preview_json(masks_dir / manifest_name) or {}
+        layers.append({
+            "key": key,
+            "label": label,
+            "interpretation": interpretation,
+            "image_url": f"{base_url}/{key}.png" if png.exists() else None,
+            "data_file": tif.name,
+            "size_bytes": tif.stat().st_size,
+            "statistics": manifest.get("statistics", {}),
+            "source": manifest.get("source", {}),
+            "semantics": manifest.get("semantics"),
+            "caveats": manifest.get("caveats", []),
+        })
+
+    return {
+        "dataset_id": dataset_id,
+        "layer_count": len(layers),
+        "total_size_bytes": sum(l["size_bytes"] for l in layers),
+        "applies_to": "semua tanggal dataset ini (grid sama dengan stack fusion)",
+        "layers": layers,
+    }
+
+
+@router.get(
+    "/{dataset_id}/masks/{filename}",
+    response_class=FileResponse,
+    summary="Satu berkas PNG layer referensi",
+)
+async def get_mask_image(
+    dataset_id: int,
+    filename: str,
+    db: DatabaseClient = Depends(get_db),
+) -> FileResponse:
+    """Kirim satu PNG dari masks/.
+
+    `filename` datang dari URL, jadi divalidasi sama ketatnya dengan preview:
+    harus satu nama .png tanpa komponen path, dan hasil resolve-nya harus
+    benar-benar berada di dalam masks/ dataset ini.
+    """
+    info = _mgr(db).get_dataset(dataset_id)
+    if info is None:
+        raise HTTPException(404, f"Dataset {dataset_id} tidak ditemukan")
+
+    if not filename.endswith(".png") or Path(filename).name != filename:
+        raise HTTPException(400, "Nama berkas mask harus satu nama .png tanpa path")
+
+    masks_dir = _masks_dir(dataset_id, info["name"]).resolve()
+    path = (masks_dir / filename).resolve()
+    if not path.is_relative_to(masks_dir) or not path.is_file():
+        raise HTTPException(404, f"Layer referensi tidak ditemukan: {filename}")
+
+    return FileResponse(
+        path,
+        media_type="image/png",
+        headers={"Cache-Control": "public, max-age=86400"},
     )
