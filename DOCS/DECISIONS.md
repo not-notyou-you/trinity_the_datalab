@@ -250,8 +250,26 @@ Laut turun dari 60,4% ke 44,6%. Batas lat tiap strip = extent darat+5 km di dala
 
 **Satu bbox per dataset adalah batas skema**: `datasets.bbox_wkt` kolom tunggal NOT NULL ([etl/database_client.py:908](../etl/database_client.py#L908)). Karena itu pemecahan berarti empat dataset, bukan empat baris bbox di satu dataset. ML engineer menerima empat stack bersebelahan yang piksel-sejajar, bukan satu.
 
-**Yang TIDAK dijanjikan angka ini**: penghematan **area olahan**, bukan GB unduhan. S1 diunduh per SAFE utuh, jadi sub-bbox hanya mengurangi unduhan kalau benar-benar menggugurkan scene — dan itu belum bisa diverifikasi, lihat D17.
+**Yang TIDAK dijanjikan angka ini**: penghematan **area olahan**, bukan GB unduhan. Setelah diukur (D17), unduhannya justru NAIK.
 
 ## D17: Footprint Scene S1 Tidak Pernah Tercatat
 
 **Temuan, belum diperbaiki.** Untuk jendela 1–6 Desember 2025, 18 dari 19 baris `satellite_scenes` menyimpan bbox dataset sebagai `bbox`-nya, bukan footprint SAFE yang sebenarnya; hanya satu baris yang punya footprint nyata (387 km²). Akibatnya setiap pertanyaan "scene mana yang gugur kalau bbox dipersempit" tidak bisa dijawab dari database, dan penghematan biaya unduh D16 tidak terhitung. Perbaikannya: isi `satellite_scenes.bbox` dari footprint di metadata produk saat discovery, lalu hitung ulang.
+
+
+## D18: Pemecahan Menghemat Olahan tapi Menaikkan Unduhan
+
+**Terukur 2026-09-21**, setelah 26a–26d (dataset 27–30) dibuat dan discovery-nya jalan:
+
+| | Scene S1 di-fetch | Scene unik |
+|---|---|---|
+| Dataset 26 (satu bbox) | 14 | 14 |
+| 26a+26b+26c+26d | 24 | 15 |
+
+Sembilan scene diunduh **dua kali** karena footprint-nya memotong batas strip. Jadi D16 menukar **−28,6% area olahan** dengan **+71% operasi unduh**. Ini menjawab pertanyaan yang D17 sebut belum terjawab: footprint tidak perlu tersimpan di `satellite_scenes` untuk mengukurnya — cukup hitung scene yang ditemukan tiap strip.
+
+Konsekuensinya arah penghematan jadi berlawanan tergantung sumber daya mana yang langka. Kalau kuota/waktu unduh yang mahal, memecah merugikan. Kalau CPU fusi dan disk stack yang mahal, memecah menguntungkan. Batas strip yang digeser supaya jatuh di celah antar-jalur orbit S1 akan mengurangi duplikasi, tetapi belum dicoba.
+
+**Dua kendala operasional yang muncul saat run pertama:**
+- Menjalankan empat job serentak memicu **HTTP 429** dari Copernicus; job 23 (JAWA_B) FAILED. Strip harus dijalankan berurutan, bukan paralel.
+- Sisa disk 50 GB dari 953 GB. 24 unduhan (~41 GB) plus empat stack fusi (~22 GB) tidak muat. Perlu pembebasan ruang lebih dulu.
