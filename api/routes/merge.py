@@ -36,10 +36,14 @@ MERGED_DIRNAME = "merged"
 
 
 def _all_datasets(db: DatabaseClient) -> list[dict]:
+    # Kuncinya "items", bukan "datasets" -- lihat DatasetManager.list_datasets,
+    # yang mengembalikan {total, limit, offset, items}. Membaca kunci yang salah
+    # di sini tidak melempar apa pun: ia cuma mengembalikan daftar kosong, dan
+    # panel penggabungan diam seolah memang tidak ada yang bisa digabung.
     listing = DatasetManager(db).list_datasets(limit=500)
     return [
         {"dataset_id": d["dataset_id"], "name": d["name"]}
-        for d in listing.get("datasets", [])
+        for d in listing.get("items", [])
     ]
 
 

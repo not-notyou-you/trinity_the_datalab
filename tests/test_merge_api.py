@@ -139,3 +139,51 @@ def test_candidates_menandai_yang_sudah_digabung(client):
     cand = client.get("/api/merge/candidates").json()["candidates"][0]
     assert cand["already_merged"] is True
     assert cand["output_size_bytes"] > 0
+
+
+class TestAllDatasetsShape:
+    """`_all_datasets` membaca hasil DatasetManager.list_datasets.
+
+    Tes lain di berkas ini men-stub `_all_datasets`, jadi tidak satu pun
+    menyentuh isinya -- dan di situlah bug pertamanya bersembunyi: ia membaca
+    kunci `"datasets"` sementara list_datasets mengembalikan `"items"`.
+    Kesalahannya tidak melempar apa pun, cuma mengembalikan daftar kosong,
+    sehingga panel penggabungan diam seolah memang tidak ada yang bisa
+    digabung. Tes ini memakai pembungkus sungguhan, bukan stub.
+    """
+
+    def test_membaca_kunci_items(self, monkeypatch):
+        from api.routes import merge as merge_route
+
+        class FakeManager:
+            def __init__(self, db):
+                pass
+
+            def list_datasets(self, limit=500):
+                return {
+                    "total": 2, "limit": limit, "offset": 0,
+                    "items": [
+                        {"dataset_id": 27, "name": "JAWA_A", "status": "COMPLETED"},
+                        {"dataset_id": 28, "name": "JAWA_B", "status": "COMPLETED"},
+                    ],
+                }
+
+        monkeypatch.setattr(merge_route, "DatasetManager", FakeManager)
+        got = merge_route._all_datasets(object())
+        assert got == [
+            {"dataset_id": 27, "name": "JAWA_A"},
+            {"dataset_id": 28, "name": "JAWA_B"},
+        ]
+
+    def test_daftar_kosong_bukan_error(self, monkeypatch):
+        from api.routes import merge as merge_route
+
+        class EmptyManager:
+            def __init__(self, db):
+                pass
+
+            def list_datasets(self, limit=500):
+                return {"total": 0, "limit": limit, "offset": 0, "items": []}
+
+        monkeypatch.setattr(merge_route, "DatasetManager", EmptyManager)
+        assert merge_route._all_datasets(object()) == []
