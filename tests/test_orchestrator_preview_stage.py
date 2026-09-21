@@ -1,21 +1,24 @@
 # tests/test_orchestrator_preview_stage.py
 """
-Tests untuk blok PREVIEW di etl/module5_orchestrator._process_scene.
+Tests tahap penyelesaian per-tanggal di etl/module5_orchestrator.
 
-Unit test murni: rantai S1, input aux, dan module10 di-stub, _JobContext
-diganti namespace berisi atribut yang memang dibaca blok itu. Yang diuji
-hanya dua kontrak orkestrasi:
+PREVIEW dan FUSION tidak jalan di dalam pipeline scene: keduanya menulis
+berkas yang namanya cuma memuat tanggal, sementara satu tanggal bisa punya
+beberapa scene Sentinel-1. Yang diuji di sini:
 
-    1. Cancel/pause dicek ulang SESUDAH input aux, sebelum render dimulai.
-    2. PNG yang sudah ditulis tetap tercatat di produced_files walau level
-       berikutnya gagal.
+    1. Cancel/pause dicek ulang sebelum render dimulai.
+    2. PNG yang sudah ditulis tetap tercatat walau level berikutnya gagal.
+    3. Satu tanggal difinalisasi SEKALI, di atas mosaik seluruh frame-nya.
+
+Unit test murni: module10, module9, dan mosaik di-stub; _JobContext diganti
+namespace berisi atribut yang memang dibaca jalur itu.
 """
 
 from __future__ import annotations
 
 import threading
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -23,8 +26,10 @@ import pytest
 from etl import folder_manager as fm
 from etl import module5_orchestrator as m5
 
-PID = "S1A_IW_GRDH_TEST_20240305"
+PID_A = "S1A_IW_GRDH_TEST_20240305T111502"
+PID_B = "S1A_IW_GRDH_TEST_20240305T111532"
 ACQ = datetime(2024, 3, 5, 22, 50, tzinfo=timezone.utc)
+DAY = date(2024, 3, 5)
 
 
 class _Stage:
@@ -37,90 +42,96 @@ class _FakePlog:
     def stage(self, *args, **kwargs):
         yield _Stage()
 
+    def log_event(self, *args, **kwargs):
+        pass
+
 
 class _RecordingDsmgr:
     def __init__(self):
-        self.states: list[tuple[str, str]] = []
+        self.states: list[tuple[str, str, str]] = []
 
     def upsert_scene_job_state(self, job_id, pid, **fields):
-        self.states.append((fields.get("current_stage"), fields.get("stage_status")))
+        self.states.append(
+            (pid, fields.get("current_stage"), fields.get("stage_status"))
+        )
+
+    def increment_job_counters(self, *args, **kwargs):
+        pass
 
 
-def _make_jc(levels=("PROCESSED",)):
+def _make_jc(levels=("PROCESSED",), skip=("FUSION",)):
     pause = threading.Event()
     pause.set()
     return SimpleNamespace(
         job_id=1, dataset_id=7, dataset_name="Preview Stage Test",
         db=None, region_id=1, bbox_tuple=(106.4, -6.7, 107.2, -5.9),
-        plog=_FakePlog(), dsmgr=_RecordingDsmgr(),
-        plan=SimpleNamespace(output_levels=lambda: list(levels), source_count=1),
-        # FUSION dilewati supaya _process_scene berhenti tepat setelah PREVIEW.
-        skip_stages={"FUSION"}, fusion_strategy=None, preview_options=None,
+        plog=_FakePlog(), dsmgr=_RecordingDsmgr(), meta=SimpleNamespace(
+            fail_open_jobs=lambda exc: None
+        ),
+        plan=SimpleNamespace(
+            output_levels=lambda: list(levels), source_count=1,
+            fusion_eligible=lambda strategy: False,
+            source_levels_for_run=lambda level: {},
+        ),
+        skip_stages=set(skip), fusion_strategy=None, preview_options=None,
         pause_event=pause, cancel_event=threading.Event(),
+        expected_pids_by_date={},
+    )
+
+
+def _member(pid: str, levels=("PROCESSED",), scene_id: int = 11) -> m5._SceneResult:
+    return m5._SceneResult(
+        pid=pid, scene_id=scene_id, acquisition_date=DAY,
+        produced_tiers=["COG"], produced_files={"COG": [f"{pid}_vv.tif"]},
+        s1_files_by_level={
+            level: {"VV": f"{pid}_{level}_vv.tif", "VH": f"{pid}_{level}_vh.tif"}
+            for level in levels
+        },
     )
 
 
 @pytest.fixture
 def stubbed(monkeypatch, tmp_path):
-    """Stub rantai S1 dan module10; kembalikan dict yang mencatat panggilan."""
+    """Stub module10 dan mosaik; kembalikan dict yang mencatat panggilan."""
     monkeypatch.setattr(fm, "DATA_ROOT", tmp_path / "datasets")
-    calls = {"render": [], "aux_hook": None}
-
-    monkeypatch.setattr(
-        m5, "_run_s1_chain",
-        lambda jc, meta, dl: (11, ["COG"], {"COG": ["vv.tif", "vh.tif"]},
-                              {"VV": "vv.tif", "VH": "vh.tif"}),
-    )
-
-    def fake_aux(*args, **kwargs):
-        if calls["aux_hook"]:
-            calls["aux_hook"]()
-        return {}
-
-    monkeypatch.setattr(m5, "ensure_aux_inputs_for_date", fake_aux)
+    calls: dict = {"render": [], "mosaic": []}
 
     def fake_render(dataset_id, dataset_name, acq_date, *, processing_level, **kw):
-        calls["render"].append(processing_level)
+        calls["render"].append((processing_level, kw.get("s1_files")))
         behaviour = calls.get(processing_level)
         if isinstance(behaviour, Exception):
             raise behaviour
-        files = [f"/preview/{processing_level}/s1_vv.png"]
         return {
-            "files": files, "total_size_mb": 0.1,
+            "files": [f"/preview/{processing_level}/s1_vv.png"], "total_size_mb": 0.1,
             "counts": {"grayscale": 1, "colored": 0, "composite": 0, "skipped": 0},
         }
 
+    def fake_mosaic(frames, out_dir, *, date_key, level):
+        calls["mosaic"].append((date_key, level, len(frames)))
+        if len(frames) == 1:
+            return dict(frames[0])
+        return {"VV": f"/mosaic/{date_key}_{level}_VV.tif",
+                "VH": f"/mosaic/{date_key}_{level}_VH.tif"}
+
     monkeypatch.setattr(m5, "generate_previews", fake_render)
+    monkeypatch.setattr(m5, "mosaic_frames", fake_mosaic)
     return calls
 
 
-def _run(jc):
-    return m5._process_scene(
-        jc, {"product_identifier": PID}, SimpleNamespace(acquisition_datetime=ACQ)
-    )
-
-
 class TestCancelPauseGate:
-    def test_cancel_during_aux_skips_render(self, stubbed):
+    def test_cancel_before_finalize_skips_render(self, stubbed):
         jc = _make_jc()
-        # Cancel ditekan selagi MODIS/GPM masih diunduh.
-        stubbed["aux_hook"] = jc.cancel_event.set
+        jc.cancel_event.set()
 
-        _, _, produced_files = _run(jc)
+        m5._finalize_date(jc, [_member(PID_A)])
 
         assert stubbed["render"] == []
-        assert "PREVIEW" not in produced_files
-        assert ("PREVIEW", "RUNNING") not in jc.dsmgr.states
+        assert jc.dsmgr.states == []
 
-    def test_pause_during_aux_holds_render_until_resume(self, stubbed):
+    def test_pause_holds_render_until_resume(self, stubbed):
         jc = _make_jc()
+        jc.pause_event.clear()
         rendered_while_paused: list[bool] = []
-
-        def pause_then_resume_later():
-            jc.pause_event.clear()
-            threading.Timer(0.2, jc.pause_event.set).start()
-
-        stubbed["aux_hook"] = pause_then_resume_later
 
         original = m5.generate_previews
 
@@ -129,8 +140,9 @@ class TestCancelPauseGate:
             return original(*args, **kwargs)
 
         m5.generate_previews = spy
+        threading.Timer(0.2, jc.pause_event.set).start()
         try:
-            _run(jc)
+            m5._finalize_date(jc, [_member(PID_A)])
         finally:
             m5.generate_previews = original
 
@@ -138,20 +150,15 @@ class TestCancelPauseGate:
 
     def test_cancel_while_paused_skips_render(self, stubbed):
         jc = _make_jc()
+        jc.pause_event.clear()
 
-        def pause_then_cancel():
-            jc.pause_event.clear()
+        def cancel_and_release():
+            # Urutan dataset_manager saat Cancel: set cancel, lalu lepas pause.
+            jc.cancel_event.set()
+            jc.pause_event.set()
 
-            def cancel_and_release():
-                # Urutan dataset_manager saat Cancel: set cancel, lalu lepas pause.
-                jc.cancel_event.set()
-                jc.pause_event.set()
-
-            threading.Timer(0.2, cancel_and_release).start()
-
-        stubbed["aux_hook"] = pause_then_cancel
-
-        _run(jc)
+        threading.Timer(0.2, cancel_and_release).start()
+        m5._finalize_date(jc, [_member(PID_A)])
 
         assert stubbed["render"] == []
 
@@ -160,21 +167,77 @@ class TestProducedFilesRecording:
     def test_first_level_files_survive_second_level_failure(self, stubbed):
         jc = _make_jc(levels=("RAW", "PROCESSED"))
         stubbed["PROCESSED"] = RuntimeError("render PROCESSED rusak")
+        member = _member(PID_A, levels=("RAW", "PROCESSED"))
 
-        _, _, produced_files = _run(jc)
+        m5._finalize_date(jc, [member])
 
-        assert stubbed["render"] == ["RAW", "PROCESSED"]
-        assert produced_files["PREVIEW"] == ["/preview/RAW/s1_vv.png"]
+        assert [lvl for lvl, _ in stubbed["render"]] == ["RAW", "PROCESSED"]
+        assert member.produced_files["PREVIEW"] == ["/preview/RAW/s1_vv.png"]
         # Gagal preview tidak menandai scene FAILED maupun COMPLETED.
-        assert ("PREVIEW", "COMPLETED") not in jc.dsmgr.states
-        assert all(status != "FAILED" for _, status in jc.dsmgr.states)
+        assert (PID_A, "PREVIEW", "COMPLETED") not in jc.dsmgr.states
+        assert all(status != "FAILED" for _, _, status in jc.dsmgr.states)
 
     def test_all_levels_recorded_on_success(self, stubbed):
         jc = _make_jc(levels=("RAW", "PROCESSED"))
+        member = _member(PID_A, levels=("RAW", "PROCESSED"))
 
-        _, _, produced_files = _run(jc)
+        m5._finalize_date(jc, [member])
 
-        assert produced_files["PREVIEW"] == [
+        assert member.produced_files["PREVIEW"] == [
             "/preview/RAW/s1_vv.png", "/preview/PROCESSED/s1_vv.png",
         ]
-        assert ("PREVIEW", "COMPLETED") in jc.dsmgr.states
+        assert (PID_A, "PREVIEW", "COMPLETED") in jc.dsmgr.states
+
+
+class TestOneFinalizationPerDate:
+    """Inti perbaikan 22_try6: dua frame satu tanggal tidak boleh saling
+    menimpa keluaran tanggal itu."""
+
+    def test_two_frames_render_once_from_the_mosaic(self, stubbed):
+        jc = _make_jc()
+        members = [_member(PID_B, scene_id=12), _member(PID_A, scene_id=11)]
+
+        m5._finalize_date(jc, members)
+
+        assert len(stubbed["render"]) == 1, "preview dirender lebih dari sekali"
+        level, s1_files = stubbed["render"][0]
+        assert stubbed["mosaic"] == [("20240305", "PROCESSED", 2)]
+        assert s1_files == {"VV": "/mosaic/20240305_PROCESSED_VV.tif",
+                            "VH": "/mosaic/20240305_PROCESSED_VH.tif"}
+
+    def test_single_frame_uses_its_own_raster(self, stubbed):
+        jc = _make_jc()
+        member = _member(PID_A)
+
+        m5._finalize_date(jc, [member])
+
+        _, s1_files = stubbed["render"][0]
+        assert s1_files == member.s1_files_by_level["PROCESSED"]
+
+    def test_output_attached_to_lowest_pid_regardless_of_order(self, stubbed):
+        """Scene utama dipilih dari pid, bukan dari urutan selesai -- kalau
+        tidak, hasilnya kembali bergantung pada balapan thread."""
+        first = [_member(PID_B, scene_id=12), _member(PID_A, scene_id=11)]
+        second = [_member(PID_A, scene_id=11), _member(PID_B, scene_id=12)]
+
+        for members in (first, second):
+            jc = _make_jc()
+            m5._finalize_date(jc, members)
+            owner = [m.pid for m in members if "PREVIEW" in m.produced_files]
+            assert owner == [PID_A], owner
+
+    def test_every_frame_gets_its_own_stage_state(self, stubbed):
+        """Dua scene, satu render: keduanya tetap harus terlihat maju ke
+        PREVIEW di UI, bukan cuma scene utama."""
+        jc = _make_jc()
+
+        m5._finalize_date(jc, [_member(PID_A), _member(PID_B, scene_id=12)])
+
+        for pid in (PID_A, PID_B):
+            assert (pid, "PREVIEW", "RUNNING") in jc.dsmgr.states
+            assert (pid, "PREVIEW", "COMPLETED") in jc.dsmgr.states
+
+    def test_empty_member_list_is_a_noop(self, stubbed):
+        jc = _make_jc()
+        m5._finalize_date(jc, [])
+        assert stubbed["render"] == []

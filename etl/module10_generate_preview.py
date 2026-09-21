@@ -61,7 +61,7 @@ itu MODIS 500 m di AOI kecil jadi PNG belasan piksel, dan GPM punya extent
 berbeda sehingga tidak bisa ditumpuk. Nearest dipakai supaya piksel sensor
 kasar tetap tampil sebagai blok — seperti di Worldview/GEE — bukan gradien
 hasil interpolasi. Tanpa S1, raster kecil diperbesar kelipatan bulat (nearest)
-mendekati MAX_WIDTH.
+mendekati MAX_SIDE.
 
 Keduanya ditulis RGBA/LA — piksel NoData jadi transparan, bukan hitam. Hitam
 adalah nilai yang sah untuk backscatter rendah (air tenang), jadi memetakan
@@ -104,17 +104,29 @@ logger = logging.getLogger(__name__)
 
 MODULE = "MODULE10_PREVIEW"
 
-# Lebar maksimum PNG. 1024 px cukup untuk dilihat penuh di layar dan di-zoom
-# sedikit, tapi tetap ~200–600 KB per berkas — raster S1 penuh (belasan ribu
-# piksel) akan jadi puluhan MB per PNG dan membuat tier ini lebih besar dari
-# GOLD yang dirender-nya.
-MAX_WIDTH = 1024
+# Sisi TERPANJANG maksimum PNG. 1024 px cukup untuk dilihat penuh di layar dan
+# di-zoom sedikit, tapi tetap ~200–600 KB per berkas — raster S1 penuh
+# (belasan ribu piksel) akan jadi puluhan MB per PNG dan membuat tier ini lebih
+# besar dari GOLD yang dirender-nya.
+#
+# Sisi terpanjang, bukan lebar: scene Sentinel-1 yang cuma menyerempet AOI
+# menghasilkan crop berbentuk jalur sempit (mis. 1488 x 8789 piksel). Membatasi
+# lebarnya saja membuat PNG-nya jadi 1024 x 6048 — enam kali lebih tinggi dari
+# batas yang dikira berlaku, beberapa MB per berkas, dan di galeri tampil
+# sebagai pita panjang di samping preview tanggal lain yang normal.
+MAX_SIDE = 1024
+
+# Nama lama; masih diekspor supaya pemanggil luar tidak patah.
+MAX_WIDTH = MAX_SIDE
 
 # Stretch persentil default untuk folder grayscale/. 2–98 memangkas ekor
 # outlier (speckle terang, piksel rusak) yang kalau ikut akan menekan seluruh
 # citra jadi abu-abu rata.
 PCT_LOW = 2.0
 PCT_HIGH = 98.0
+
+# Opasitas lapisan kontinu (hujan, NDVI, NDWI) saat ditumpuk di atas citra S1.
+OVERLAY_OPACITY = 0.55
 
 # Level kompresi PNG. 6 adalah titik henti yang wajar: 9 cuma menghemat ~3%
 # untuk citra kontinu seperti ini tapi 3–4x lebih lambat.
@@ -508,32 +520,37 @@ class _PreviewGrid:
     height: int
 
 
-def _preview_shape(width: int, height: int, max_width: int) -> tuple[int, int]:
+def _preview_shape(width: int, height: int, max_side: int) -> tuple[int, int]:
     """(out_w, out_h) PNG untuk raster `width` x `height`.
 
-    Lebih lebar dari `max_width` -> diperkecil ke `max_width`. Lebih kecil ->
-    diperbesar dengan faktor BULAT terbesar yang masih <= `max_width`, supaya
-    tiap piksel sumber jadi blok persegi utuh (MODIS 21 px -> 1008 px), bukan
-    PNG belasan piksel yang di UI tampil sebagai titik atau di-blur browser."""
-    if width > max_width:
-        scale = max_width / width
+    Sisi terpanjang melebihi `max_side` -> seluruh gambar diperkecil sampai
+    sisi itu pas (rasio aspek dipertahankan). Kedua sisi masih di bawah ->
+    diperbesar dengan faktor BULAT terbesar yang tidak melewati `max_side`,
+    supaya tiap piksel sumber jadi blok persegi utuh (MODIS 21 px -> 1008 px),
+    bukan PNG belasan piksel yang di UI tampil sebagai titik atau di-blur
+    browser.
+
+    Yang dibatasi sisi terpanjang, bukan lebar: lihat MAX_SIDE."""
+    longest = max(width, height)
+    if longest > max_side:
+        scale = max_side / longest
         return max(1, int(round(width * scale))), max(1, int(round(height * scale)))
-    factor = max(1, max_width // width)
+    factor = max(1, max_side // longest)
     return width * factor, height * factor
 
 
-def _preview_grid(path: Path, max_width: int = MAX_WIDTH) -> _PreviewGrid:
+def _preview_grid(path: Path, max_side: int = MAX_SIDE) -> _PreviewGrid:
     """Grid PNG untuk raster `path` — dipakai sebagai grid bersama semua
     lapisan satu tanggal kalau `path` adalah Sentinel-1."""
     with rasterio.open(path) as src:
-        out_w, out_h = _preview_shape(src.width, src.height, max_width)
+        out_w, out_h = _preview_shape(src.width, src.height, max_side)
         transform = src.transform * Affine.scale(src.width / out_w, src.height / out_h)
         return _PreviewGrid(transform, src.crs, out_w, out_h)
 
 
 def _read_downsampled(
     path: Path,
-    max_width: int = MAX_WIDTH,
+    max_side: int = MAX_SIDE,
     log_db: bool = False,
     grid: _PreviewGrid | None = None,
     categorical: bool = False,
@@ -576,7 +593,7 @@ def _read_downsampled(
                 resampling=resampling,
             )
         else:
-            out_w, out_h = _preview_shape(src.width, src.height, max_width)
+            out_w, out_h = _preview_shape(src.width, src.height, max_side)
             upsample = out_w >= src.width
             resampling = (
                 Resampling.nearest if categorical or upsample else Resampling.average
@@ -761,6 +778,42 @@ def _render_s1_rgb(vv: _Layer, vh: _Layer, out_path: Path) -> Path | None:
     return _save_png(img, out_path)
 
 
+def overlay_filename(spec_key: str) -> str:
+    return f"{spec_key}_on_s1.png"
+
+
+def _render_overlay_on_s1(
+    base: _Layer, layer: _Layer, spec: PreviewSpec, out_path: Path
+) -> Path | None:
+    """Lapisan MODIS/GPM (berwarna, transparan di NoData) ditumpuk di atas
+    citra Sentinel-1 grayscale sebagai peta dasar. Kedua array sudah berada di
+    grid yang sama (lihat "GRID BERSAMA"), jadi tinggal alpha-compositing."""
+    from PIL import Image
+
+    if base.data.shape != layer.data.shape:
+        logger.warning(
+            "[M10] overlay %s dilewati: dimensi dasar %s != lapisan %s",
+            spec.key, base.data.shape, layer.data.shape,
+        )
+        return None
+
+    lo, hi = _stretch_range(base, None)
+    gray = (_normalize(base, lo, hi) * 255).astype(np.float32)
+    # Piksel NoData S1 (di luar swath) dijadikan putih, bukan hitam: hitam
+    # adalah nilai sah untuk air tenang.
+    gray = np.where(base.mask, 255.0, gray)
+
+    fg = _colored_rgba(layer, spec).astype(np.float32)
+    alpha = fg[..., 3:4] / 255.0
+    if not spec.categorical:
+        # Lapisan kontinu opak di seluruh AOI (mis. hujan 7 hari > 0.1 mm di
+        # mana-mana) akan menutup peta dasar sepenuhnya.
+        alpha = alpha * OVERLAY_OPACITY
+    rgb = fg[..., :3] * alpha + gray[..., None] * (1.0 - alpha)
+    img = Image.fromarray(np.clip(rgb, 0, 255).astype(np.uint8), mode="RGB")
+    return _save_png(img, out_path)
+
+
 # ---------------------------------------------------------------------------
 # Metadata sidecar
 # ---------------------------------------------------------------------------
@@ -855,7 +908,10 @@ def _composite_info(entries: list[dict]) -> dict:
         "description": (
             "Komposit false-color RGB dari beberapa band sekaligus. Warna di "
             "sini menyatakan hubungan antar-band, bukan nilai satu besaran, "
-            "jadi tidak ada colorbar yang bisa dipasang padanya."
+            "jadi tidak ada colorbar yang bisa dipasang padanya. Berkas "
+            "*_on_s1.png adalah pengecualian: lapisan MODIS/GPM berwarna "
+            "(lihat 'legend'/colored/) ditumpuk di atas citra Sentinel-1 "
+            "grayscale sebagai peta dasar."
         ),
         "not_for": "Analisis kuantitatif — pakai gold/*.tif atau fusion/*.h5.",
         "images": entries,
@@ -910,13 +966,24 @@ def _colored_info(entries: list[dict]) -> dict:
     }
 
 
-def _previous_s1_scene_key(metadata_path: Path) -> str | None:
-    """s1_scene_key dari sidecar render sebelumnya, atau None kalau belum ada
-    atau tidak terbaca. Sidecar rusak bukan alasan menggagalkan render baru --
-    yang hilang cuma peringatan penimpaannya."""
+def _previous_s1_scene_key(metadata_path: Path, date_key: str) -> str | None:
+    """s1_scene_key dari sidecar render sebelumnya, HANYA kalau sidecar itu
+    menggambarkan tanggal yang sama.
+
+    Syarat tanggal itu bukan kehati-hatian berlebih: satu folder preview
+    dipakai bersama seluruh tanggal dataset (lihat `fm.get_preview_dir` —
+    `scene_key` tidak ikut ke path), jadi sidecar yang ada di sana hampir
+    selalu milik tanggal LAIN. Tanpa syarat ini setiap scene berikutnya akan
+    dituduh menimpa scene sebelumnya.
+
+    None kalau sidecar belum ada, tanggalnya beda, atau isinya tidak terbaca —
+    sidecar rusak bukan alasan menggagalkan render baru."""
     try:
         with open(metadata_path, encoding="utf-8") as f:
-            value = json.load(f).get("s1_scene_key")
+            payload = json.load(f)
+        if payload.get("acquisition_date") != date_key:
+            return None
+        value = payload.get("s1_scene_key")
     except (OSError, ValueError, AttributeError):
         return None
     return value if isinstance(value, str) and value else None
@@ -932,11 +999,12 @@ def generate_previews(
     acquisition_date: date_type | datetime | str,
     s1_scene_key: str | None = None,
     s1_gold_files: dict[str, str] | None = None,
-    max_width: int = MAX_WIDTH,
+    max_side: int = MAX_SIDE,
     overwrite: bool = True,
     processing_level: str = fm.DEFAULT_PREVIEW_LEVEL,
     s1_files: dict[str, str] | None = None,
     options: tuple[str, ...] | list[str] | None = None,
+    max_width: int | None = None,
 ) -> dict:
     """
     Render seluruh preview untuk satu tanggal akuisisi pada SATU level
@@ -949,6 +1017,10 @@ def generate_previews(
                           ini (COG GOLD untuk PROCESSED, hasil crop BRONZE
                           untuk RAW), kalau pemanggil sudah punya.
         s1_gold_files:    nama lama `s1_files`, masih diterima.
+        max_side:         batas sisi TERPANJANG PNG (lihat MAX_SIDE).
+        max_width:        nama lama `max_side`, masih diterima. Artinya ikut
+                          berubah: sekarang membatasi sisi terpanjang, bukan
+                          lebar — itu memang perbaikannya.
         processing_level: RAW atau PROCESSED. Menentukan tier yang dibaca
                           (bronze/ vs gold/) DAN folder output
                           preview/{tanggal}/{LEVEL}/.
@@ -969,6 +1041,8 @@ def generate_previews(
     adalah artefak turunan — kegagalan render tidak boleh menjatuhkan scene
     yang datanya sendiri baik-baik saja.
     """
+    if max_width is not None:
+        max_side = max_width
     level = fm.normalize_preview_level(processing_level)
     tier = tier_for_level(level)
     wanted = _normalize_options(options)
@@ -978,13 +1052,15 @@ def generate_previews(
 
     # Dibaca SEBELUM render, karena render menimpa sidecar yang sama. Lihat
     # "SATU TANGGAL, SATU SET PNG" di docstring modul.
-    replaced_scene_key = _previous_s1_scene_key(level_dir / "preview_metadata.json")
+    replaced_scene_key = _previous_s1_scene_key(
+        level_dir / fm.dated_filename(date_key, "preview_metadata.json"), date_key
+    )
     if replaced_scene_key == s1_scene_key or not s1_scene_key:
         replaced_scene_key = None
     if replaced_scene_key:
         logger.warning(
             "[M10] PREVIEW %s level=%s: scene %s menimpa preview scene %s "
-            "(folder preview dikunci per tanggal)",
+            "(nama berkas PNG hanya berprefiks tanggal, bukan scene)",
             date_key, level, s1_scene_key, replaced_scene_key,
         )
 
@@ -1020,7 +1096,7 @@ def generate_previews(
     for s1_key in ("s1_vv", "s1_vh"):
         if s1_key in inputs:
             try:
-                grid = _preview_grid(inputs[s1_key], max_width=max_width)
+                grid = _preview_grid(inputs[s1_key], max_side=max_side)
                 grid_source = s1_key
             except Exception:
                 logger.exception("[M10] gagal baca grid %s, lapisan aux tanpa grid bersama", s1_key)
@@ -1053,7 +1129,7 @@ def generate_previews(
 
         try:
             layer = _read_downsampled(
-                src_path, max_width=max_width, log_db=spec.log_db,
+                src_path, max_side=max_side, log_db=spec.log_db,
                 grid=grid if spec.source != "sentinel1" else None,
                 categorical=spec.categorical,
             )
@@ -1176,6 +1252,52 @@ def generate_previews(
                 "reason": f"gagal render: {exc}",
             })
 
+    # Overlay MODIS/GPM di atas Sentinel-1: hanya bermakna kalau ada S1 sebagai
+    # peta dasar (dan otomatis begitu, karena lapisan aux baru punya grid yang
+    # sama dengan S1 saat S1 ada).
+    if composite_dir is not None and grid is not None and grid_source in layers:
+        base_layer = layers[grid_source]
+        for spec in PREVIEW_SPECS:
+            layer = layers.get(spec.key)
+            if spec.source == "sentinel1" or layer is None:
+                continue
+            out_path = composite_dir / fm.dated_filename(date_key, overlay_filename(spec.key))
+            try:
+                if _render_overlay_on_s1(base_layer, layer, spec, out_path) is None:
+                    continue
+                entry = {
+                    "key": f"{spec.key}_on_s1",
+                    "source": spec.source,
+                    "band": spec.band,
+                    "label": f"{spec.label} di atas Sentinel-1",
+                    "units": spec.units,
+                    "file": out_path.name,
+                    "colormap": f"{spec.cmap} di atas grayscale {grid_source}",
+                    "range_method": spec.scale,
+                    "basemap": grid_source,
+                    "width": layer.width,
+                    "height": layer.height,
+                    "interpretation": (
+                        f"{spec.interpretation} Latar abu-abu adalah citra "
+                        f"{grid_source} (garis pantai, daratan, laut) supaya "
+                        "posisi piksel terbaca secara geografis."
+                    ),
+                    "size_bytes": out_path.stat().st_size,
+                }
+                if spec.categorical:
+                    entry["legend"] = [
+                        {"value": v, "color": c, "alpha": a, "label": lbl}
+                        for v, c, a, lbl in spec.categories
+                    ]
+                composite_entries.append(entry)
+                written.append(out_path)
+            except Exception as exc:
+                logger.exception("[M10] gagal render overlay %s", spec.key)
+                skipped.append({
+                    "key": f"{spec.key}_on_s1", "source": spec.source,
+                    "band": spec.band, "reason": f"gagal render: {exc}",
+                })
+
     # PNG render lama untuk lapisan yang kali ini dilewati (mis. NDVI yang
     # sekarang seluruhnya awan) harus hilang: API mendaftar PNG lewat glob
     # folder, jadi berkas basi akan tetap tampil seolah hasil render terbaru.
@@ -1186,7 +1308,10 @@ def generate_previews(
         # yang justru masih sahih.
         known = {
             fm.dated_filename(date_key, f"{spec.key}.png") for spec in PREVIEW_SPECS
-        } | {fm.dated_filename(date_key, f"{S1_RGB_KEY}.png")}
+        } | {fm.dated_filename(date_key, f"{S1_RGB_KEY}.png")} | {
+            fm.dated_filename(date_key, overlay_filename(spec.key))
+            for spec in PREVIEW_SPECS if spec.source != "sentinel1"
+        }
         for kind_dir, entries in (
             (gray_dir, gray_entries), (color_dir, color_entries),
             (composite_dir, composite_entries),
@@ -1207,10 +1332,16 @@ def generate_previews(
     ):
         if kind_dir is None:
             continue
-        written.append(_write_json(kind_dir / f"{kind}_info.json", info_fn(entries)))
+        # Berprefiks tanggal, persis seperti PNG-nya. Satu folder kind memuat
+        # PNG SEMUA tanggal dataset (tidak ada lagi folder tanggal), jadi
+        # sidecar tanpa prefiks akan ditulis ulang penuh oleh tiap scene dan
+        # yang tersisa cuma milik scene yang selesai terakhir -- galeri lalu
+        # menampilkan gambar tanggal itu untuk SEMUA tanggal.
+        info_name = fm.dated_filename(date_key, f"{kind}_info.json")
+        written.append(_write_json(kind_dir / info_name, info_fn(entries)))
         kinds[kind] = {
             "dir": kind,
-            "info": f"{kind}_info.json",
+            "info": info_name,
             "files": [e["file"] for e in entries],
         }
 
@@ -1232,7 +1363,7 @@ def generate_previews(
         # berbohong soal provenance-nya.
         "derived_from": tier.upper(),
         "options": sorted(wanted),
-        "max_width_px": max_width,
+        "max_side_px": max_side,
         "grid": (
             {"aligned_to": grid_source, "width": grid.width, "height": grid.height}
             if grid is not None else None
@@ -1254,14 +1385,14 @@ def generate_previews(
             "not_for": "Analisis kuantitatif — pakai gold/*.tif atau fusion/*.h5.",
         },
     }
-    # Sidecar per level, bukan satu per tanggal: dua level menulis ke folder
-    # tanggal yang sama, dan satu berkas bersama akan ditimpa oleh level yang
-    # dirender belakangan.
+    # Sidecar per level DAN per tanggal. Level karena dua level menulis ke
+    # folder yang sama; tanggal karena folder preview dipakai bersama seluruh
+    # tanggal dataset (lihat komentar info_name di atas).
+    metadata_name = fm.dated_filename(date_key, "preview_metadata.json")
     level_dir.mkdir(parents=True, exist_ok=True)
-    written.append(_write_json(level_dir / "preview_metadata.json", metadata))
-    # Salinan di folder tanggal supaya pembaca lama (dan listing API yang
-    # belum menyebut level) tetap menemukan ringkasan yang valid.
-    written.append(_write_json(preview_dir / "preview_metadata.json", metadata))
+    written.append(_write_json(level_dir / metadata_name, metadata))
+    # Salinan di akar preview/ untuk pembaca yang belum menyebut level.
+    written.append(_write_json(preview_dir / metadata_name, metadata))
 
     total_mb = sum(p.stat().st_size for p in written if p.exists()) / (1024 ** 2)
     logger.info(

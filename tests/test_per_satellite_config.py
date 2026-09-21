@@ -234,7 +234,7 @@ def stub_rasters(monkeypatch):
             "2024-03-05": {"checksum_md5": "0" * 32, "run": "F"}
         }
 
-    def fake_gpm_reproject(accum, src_transform, src_crs, aoi_bbox, output_path):
+    def fake_gpm_reproject(accum, src_transform, src_crs, aoi_bbox, output_path, tags=None):
         return Path(_write_tif(output_path, 7.0))
 
     monkeypatch.setattr(m5, "discover_scenes", fake_discover)
@@ -249,7 +249,7 @@ def stub_rasters(monkeypatch):
     monkeypatch.setattr(m7, "_build_band_for_date", fake_modis_build)
     monkeypatch.setattr(m7, "_md5", lambda p, chunk=0: "0" * 32)
     monkeypatch.setattr(m8, "_accumulate_window", fake_accumulate)
-    monkeypatch.setattr(m8, "_reproject_and_crop_to_s1_grid", fake_gpm_reproject)
+    monkeypatch.setattr(m8, "_crop_to_aoi", fake_gpm_reproject)
     monkeypatch.setattr(m8, "_md5", lambda p, chunk=0: "0" * 32)
     monkeypatch.setattr(m4, "export_scene_to_gold", fake_gold)
     monkeypatch.setattr(m9.m4, "export_scene_to_gold", fake_gold)
@@ -399,7 +399,8 @@ class TestMixedLevelsSingleStack:
         h5 = fusion_files(dataset_id, name)[0]
         assert h5_layers(h5) == {
             "sentinel1/VV", "sentinel1/VH",
-            "modis/FLOOD", "modis/NDVI", "modis/NDWI",
+            "modis/FLOOD", "modis/FLOOD_SOURCE",
+            "modis/NDVI", "modis/NDVI_AGE_DAYS", "modis/NDWI", "modis/NDWI_AGE_DAYS",
             "gpm/rainfall_daily",
         }
 
@@ -426,7 +427,7 @@ class TestMixedLevelsSingleStack:
         dataset_id, name = ran
         meta_path = (
             fusion_dir(dataset_id, name, "CO_OCCURRENCE")
-            / m9.fusion_metadata_name("PROCESSED")
+            / m9.fusion_metadata_name("20240305", "PROCESSED", "CO_OCCURRENCE")
         )
         meta = json.loads(meta_path.read_text(encoding="utf-8"))
         assert meta["source_levels"] == {
@@ -441,11 +442,25 @@ class TestMixedLevelsSingleStack:
         # daripada sidecar yang diam.
         assert set(meta["layers"]) == h5_layers(fusion_files(dataset_id, name)[0])
 
+    def test_h5_layers_carry_their_own_provenance(self, ran):
+        """Tanggal sumber, offset, dan satuan harus ada di HDF5 sendiri --
+        di 24_try8 satu-satunya jejak itu ada di sidecar yang tertimpa."""
+        import h5py
+
+        dataset_id, name = ran
+        with h5py.File(fusion_files(dataset_id, name)[0], "r") as f:
+            assert f.attrs["feature_date"] == "2024-03-05"
+            assert "linear" in f["sentinel1/VV"].attrs["units"]
+            ndvi = f["modis/NDVI"].attrs
+            assert ndvi["source_date"] == "2024-03-05"
+            assert ndvi["day_offset"] == 0
+            assert 0.0 <= ndvi["valid_fraction"] <= 1.0
+
     def test_layer_sources_point_at_the_right_tier_on_disk(self, ran):
         dataset_id, name = ran
         meta_path = (
             fusion_dir(dataset_id, name, "CO_OCCURRENCE")
-            / m9.fusion_metadata_name("PROCESSED")
+            / m9.fusion_metadata_name("20240305", "PROCESSED", "CO_OCCURRENCE")
         )
         srcs = json.loads(meta_path.read_text(encoding="utf-8"))["layer_sources"]
         assert "sentinel-1/RAW" in srcs["sentinel1/VV"]["path"].replace("\\", "/")
@@ -542,7 +557,7 @@ class TestMixedLevelsDatabaseTagging:
         dataset_id, name = ran
         h5 = fusion_files(dataset_id, name)[0]
         meta = json.loads(
-            (h5.parent / m9.fusion_metadata_name("PROCESSED")).read_text(encoding="utf-8")
+            h5.with_name(h5.stem + "_metadata.json").read_text(encoding="utf-8")
         )
         from etl.lineage_tracker import LineageTracker
         assert meta["checksum_sha256"] == LineageTracker.compute_sha256(h5)
@@ -640,7 +655,8 @@ class TestBothLevelsProduceTwoStacks:
         assert raw == proc
         assert raw == {
             "sentinel1/VV", "sentinel1/VH",
-            "modis/FLOOD", "modis/NDVI", "modis/NDWI",
+            "modis/FLOOD", "modis/FLOOD_SOURCE",
+            "modis/NDVI", "modis/NDVI_AGE_DAYS", "modis/NDWI", "modis/NDWI_AGE_DAYS",
         }
 
     def test_s1_layers_actually_differ_between_stacks(self, ran):
@@ -728,9 +744,8 @@ class TestBothLevelsProduceTwoStacks:
         dataset_id, name = ran
         d = fusion_dir(dataset_id, name, "HYBRID")
         for level in ("RAW", "PROCESSED"):
-            meta = json.loads(
-                (d / m9.fusion_metadata_name(level)).read_text(encoding="utf-8")
-            )
+            (sidecar,) = d.glob(f"*_{level.lower()}_metadata.json")
+            meta = json.loads(sidecar.read_text(encoding="utf-8"))
             assert meta["processing_level"] == level
             assert meta["source_tiers"]["SENTINEL1"] == (
                 "ALIGNED" if level == "RAW" else "COG"
@@ -824,8 +839,11 @@ class TestOutputLevelRules:
         assert s1.tier_for_run("PROCESSED") == "COG"
 
     @pytest.mark.parametrize("levels,expected", [
-        ({"MODIS": "RAW"}, ["modis/FLOOD"]),
-        ({"MODIS": "PROCESSED"}, ["modis/FLOOD", "modis/NDVI", "modis/NDWI"]),
+        ({"MODIS": "RAW"}, ["modis/FLOOD", "modis/FLOOD_SOURCE"]),
+        ({"MODIS": "PROCESSED"}, [
+            "modis/FLOOD", "modis/FLOOD_SOURCE", "modis/NDVI", "modis/NDVI_AGE_DAYS",
+            "modis/NDWI", "modis/NDWI_AGE_DAYS",
+        ]),
         ({"GPM": "RAW"}, ["gpm/rainfall_daily"]),
         ({"GPM": "PROCESSED"},
          ["gpm/rainfall_24h", "gpm/rainfall_72h", "gpm/rainfall_7d"]),
@@ -870,7 +888,9 @@ class TestPreviewReadsCorrectTier:
         for level, tier in (("RAW", "ALIGNED"), ("PROCESSED", "COG")):
             meta = json.loads((
                 fm.get_preview_level_dir(dataset_id, name, DATE_KEY, level)
-                / "preview_metadata.json"
+                # Sidecar berprefiks tanggal: satu folder preview dipakai
+                # bersama seluruh tanggal dataset.
+                / fm.dated_filename(DATE_KEY, "preview_metadata.json")
             ).read_text(encoding="utf-8"))
             assert meta["processing_level"] == level
             assert meta["derived_from"] == tier

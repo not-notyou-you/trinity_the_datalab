@@ -119,6 +119,29 @@ MODULE = "MODULE7_MODIS_DOWNLOAD"
 # varian penamaan antar koleksi ("Flood 2-Day 250m" vs "Flood_2Day_250m") cocok.
 FLOOD_SUBDATASET = "Flood_2Day_250m"
 
+# Pengisi celah FLOOD. Komposit 2 hari mensyaratkan observasi cerah di kedua
+# harinya, jadi di musim hujan hampir seluruh AOI jadi "insufficient data":
+# di 24_try8 cakupan 2-day 0-6,5% per hari, sementara komposit 1 hari dengan
+# mask bayangan awan (CS) di granule yang sama 0-33%. Piksel 2-day tetap
+# diutamakan (lebih tahan false positive); 1-day CS hanya mengisi piksel yang
+# 2-day-nya kosong, dan asal tiap piksel dicatat di band 2 (FLOOD_SOURCE_*)
+# supaya konsumen bisa menyaring label yang lebih lemah. Varian 1-day TANPA
+# CS tetap tidak dipakai (lihat catatan di atas soal bayangan awan).
+FLOOD_FILL_SUBDATASET = "FloodCS_1Day_250m"
+FLOOD_SOURCE_2DAY = 1
+FLOOD_SOURCE_1DAY_CS = 2
+FLOOD_NODATA = 255
+
+# NDVI/NDWI: komposit "observasi cerah terbaru" lintas beberapa periode
+# MOD09A1, bukan satu periode 8 hari saja. Di 24_try8 satu periode cuma
+# menyisakan 0,1-0,15% piksel cerah (QA: 91-93% AOI berawan). Tiap piksel
+# mengambil observasi cerah paling baru yang tanggalnya <= tanggal fitur dan
+# umurnya <= INDEX_LOOKBACK_DAYS; umurnya (hari) ditulis di band 2. Observasi
+# SETELAH tanggal fitur dibuang: komposit 8 hari untuk 11 Jan memuat piksel
+# yang diamati sampai 16 Jan, dan itu informasi masa depan bagi stack 11 Jan.
+INDEX_LOOKBACK_DAYS = 32
+DAY_OF_YEAR_SDS = "sur_refl_day_of_year"
+
 # Grid sinusoidal MODIS (MOD09GA dkk): tile 10 derajat = 1111950.52 m.
 MODIS_SINUSOIDAL_CRS = "+proj=sinu +lon_0=0 +x_0=0 +y_0=0 +R=6371007.181 +units=m +no_defs"
 _SIN_TILE_SIZE_M = 1111950.5196666666
@@ -186,7 +209,11 @@ def _product_query_date(product: str, date: datetime) -> datetime:
         return date
     doy = date.timetuple().tm_yday
     start_doy = (doy - 1) // MOD09A1_PERIOD_DAYS * MOD09A1_PERIOD_DAYS + 1
-    return datetime(date.year, 1, 1) + timedelta(days=start_doy - 1)
+    # tzinfo ikut dibawa: orchestrator mengirim tanggal tz-aware, dan hasil
+    # fungsi ini dibandingkan lagi dengan `date` (_mod09a1_periods). Tanggal
+    # naive di sini membuat seluruh NDVI/NDWI gagal "can't compare
+    # offset-naive and offset-aware datetimes".
+    return datetime(date.year, 1, 1, tzinfo=date.tzinfo) + timedelta(days=start_doy - 1)
 
 # band_name -> nilai data_products.product_type
 MODIS_PRODUCT_TYPES: dict[str, str] = {
@@ -590,35 +617,45 @@ def _read_eos_grid_field(hdf_path: Path, subdataset: str) -> tuple[np.ndarray, d
     return data, grid
 
 
-def _hdf_subdataset_to_geotiff(
-    hdf_path: Path,
-    subdataset: str,
-    output_path: Path,
-    dst_crs: str = DST_CRS,
-) -> Path:
-    data, grid = _read_eos_grid_field(hdf_path, subdataset)
-    nodata = grid["nodata"]
+def _flood_tile(hdf_path: Path, output_path: Path, dst_crs: str = DST_CRS) -> dict:
+    """Peta banjir satu tile MCDWD -> GeoTIFF 2 band (EPSG:4326, nearest).
+
+    Band 1: kelas banjir (0-3, FLOOD_NODATA = data tidak cukup) dari komposit
+    2 hari, celahnya diisi komposit 1 hari CS (FLOOD_FILL_SUBDATASET).
+    Band 2: asal tiap piksel (FLOOD_SOURCE_2DAY / FLOOD_SOURCE_1DAY_CS).
+
+    Granule NRT F2 hanya memuat komposit 2 hari; di sana band 2 cuma berisi
+    FLOOD_SOURCE_2DAY dan `filled` bernilai False."""
+    primary, grid = _read_eos_grid_field(hdf_path, FLOOD_SUBDATASET)
+    try:
+        fill, _ = _read_eos_grid_field(hdf_path, FLOOD_FILL_SUBDATASET)
+    except RuntimeError:
+        fill = None
+
+    classes = primary.astype("uint8").copy()
+    source = np.where(classes != FLOOD_NODATA, FLOOD_SOURCE_2DAY, FLOOD_NODATA).astype("uint8")
+    if fill is not None:
+        gap = (classes == FLOOD_NODATA) & (fill != FLOOD_NODATA)
+        classes[gap] = fill[gap]
+        source[gap] = FLOOD_SOURCE_1DAY_CS
+
     transform, width, height = calculate_default_transform(
         grid["crs"], dst_crs, grid["width"], grid["height"], *grid["bounds"]
     )
-    dest = np.full((height, width), nodata if nodata is not None else 0, dtype=data.dtype)
-    reproject(
-        source=data,
-        destination=dest,
-        src_transform=grid["transform"],
-        src_crs=grid["crs"],
-        src_nodata=nodata,
-        dst_transform=transform,
-        dst_crs=dst_crs,
-        dst_nodata=nodata,
-        resampling=Resampling.nearest,
-    )
     with rasterio.open(
-        output_path, "w", driver="GTiff", height=height, width=width, count=1,
-        dtype=data.dtype.name, crs=dst_crs, transform=transform, nodata=nodata,
+        output_path, "w", driver="GTiff", height=height, width=width, count=2,
+        dtype="uint8", crs=dst_crs, transform=transform, nodata=FLOOD_NODATA,
     ) as dst:
-        dst.write(dest, 1)
-    return output_path
+        for band_index, array in ((1, classes), (2, source)):
+            dest = np.full((height, width), FLOOD_NODATA, dtype="uint8")
+            reproject(
+                source=array, destination=dest,
+                src_transform=grid["transform"], src_crs=grid["crs"],
+                src_nodata=FLOOD_NODATA, dst_transform=transform, dst_crs=dst_crs,
+                dst_nodata=FLOOD_NODATA, resampling=Resampling.nearest,
+            )
+            dst.write(dest, band_index)
+    return {"filled": fill is not None}
 
 
 def _read_reflectance(hdf_path: Path, subdataset: str) -> tuple[np.ndarray, dict]:
@@ -661,12 +698,44 @@ def _cloud_mask(hdf_path: Path, shape: tuple[int, int], state_sds: str) -> np.nd
     return np.repeat(np.repeat(bad, fy, axis=0), fx, axis=1)
 
 
+def _observation_ordinals(
+    hdf_path: Path, product: str, shape: tuple[int, int],
+    period_start: datetime | None, obs_date: datetime | None,
+) -> np.ndarray:
+    """Tanggal observasi tiap piksel sebagai ordinal (date.toordinal()),
+    float32, NaN kalau tidak diketahui.
+
+    MOD09A1 menyimpan hari-ke-berapa tiap piksel komposit benar-benar diamati
+    (sur_refl_day_of_year); periode yang melewati akhir tahun (DOY 361 ->
+    1-3 Januari) ditangani dengan menaikkan tahun untuk DOY < DOY awal
+    periode. MOD09GA harian: semua piksel diamati pada `obs_date`."""
+    out = np.full(shape, np.nan, dtype="float32")
+    if _reflectance_family(product) == "MOD09A1" and period_start is not None:
+        doy, _ = _read_eos_grid_field(hdf_path, DAY_OF_YEAR_SDS)
+        if doy.shape != shape:
+            raise RuntimeError(f"grid {DAY_OF_YEAR_SDS} {doy.shape} != {shape} di {hdf_path.name}")
+        start_doy = period_start.timetuple().tm_yday
+        valid = (doy != 65535) & (doy >= 1) & (doy <= 366)
+        year_ord = datetime(period_start.year, 1, 1).toordinal()
+        next_year_ord = datetime(period_start.year + 1, 1, 1).toordinal()
+        doy_f = doy.astype("float64")
+        ordinals = np.where(doy_f < start_doy, next_year_ord + doy_f - 1, year_ord + doy_f - 1)
+        out[valid] = ordinals[valid]
+    elif obs_date is not None:
+        out[:] = obs_date.toordinal()
+    return out
+
+
 def _normalized_index_tile(
     hdf_path: Path,
     product: str,
     band: str,
     output_path: Path,
     dst_crs: str = DST_CRS,
+    *,
+    target_date: datetime | None = None,
+    period_start: datetime | None = None,
+    obs_date: datetime | None = None,
 ) -> Path:
     """Hitung indeks ternormalisasi `band` (lihat MODIS_INDICES) dari granule
     reflectance `product` (MOD09A1 / MOD09GA), lalu reproject ke `dst_crs`.
@@ -694,27 +763,35 @@ def _normalized_index_tile(
     # mengabaikan NaN, jadi nilai awan tidak ikut merembes ke piksel cerah.
     index[_cloud_mask(hdf_path, index.shape, sds["state"])] = np.nan
 
+    # Band 2: tanggal observasi tiap piksel. Observasi setelah `target_date`
+    # dibuang dari indeks di sini juga -- sebelum reproject, alasannya sama
+    # dengan awan di atas.
+    observed = _observation_ordinals(hdf_path, product, index.shape, period_start, obs_date)
+    if target_date is not None:
+        index[observed > target_date.toordinal()] = np.nan
+    observed[~np.isfinite(index)] = np.nan
+    index = index.astype("float32")
+
     transform, width, height = calculate_default_transform(
         grid["crs"], dst_crs, grid["width"], grid["height"], *grid["bounds"]
     )
-    dest = np.full((height, width), np.nan, dtype="float32")
-    reproject(
-        source=index,
-        destination=dest,
-        src_transform=grid["transform"],
-        src_crs=grid["crs"],
-        src_nodata=np.nan,
-        dst_transform=transform,
-        dst_crs=dst_crs,
-        dst_nodata=np.nan,
-        resampling=Resampling.bilinear,
-    )
-
     with rasterio.open(
-        output_path, "w", driver="GTiff", height=height, width=width, count=1,
+        output_path, "w", driver="GTiff", height=height, width=width, count=2,
         dtype="float32", crs=dst_crs, transform=transform, nodata=np.nan,
     ) as dst:
-        dst.write(dest, 1)
+        for band_index, array, resampling in (
+            (1, index, Resampling.bilinear),
+            # Tanggal itu label, bukan besaran: nearest, tidak dirata-rata.
+            (2, observed, Resampling.nearest),
+        ):
+            dest = np.full((height, width), np.nan, dtype="float32")
+            reproject(
+                source=array, destination=dest,
+                src_transform=grid["transform"], src_crs=grid["crs"],
+                src_nodata=np.nan, dst_transform=transform, dst_crs=dst_crs,
+                dst_nodata=np.nan, resampling=resampling,
+            )
+            dst.write(dest, band_index)
     return output_path
 
 
@@ -762,6 +839,275 @@ def _mosaic_and_crop(
     return output_path
 
 
+def _build_source_mosaic(
+    *,
+    band: str,
+    product: str,
+    query_date: datetime,
+    tiles: list[str],
+    raw_dir: Path,
+    out_path: Path,
+    aoi_bbox: tuple[float, float, float, float],
+    tile_fn,
+    plog: PipelineLogger | None,
+    dataset_id: int | None,
+    scene_label: str,
+) -> dict:
+    """Listing granule `product` untuk `query_date` -> download per tile ->
+    `tile_fn(hdf_path, product_used, tile_tif)` -> mosaic -> crop ke AOI.
+
+    Melempar RuntimeError kalau tidak ada tile yang berhasil; ImportError
+    (environment) selalu diteruskan."""
+    items, product_used = _discover_tile_files_with_fallback(query_date, tiles, product)
+    if not items:
+        raise RuntimeError(f"tidak ada granule {product} untuk {query_date.date().isoformat()}")
+    if product_used != product:
+        logger.info(
+            "[M7] %s tanggal %s: NRT tidak tersedia, pakai arsip standar %s",
+            band, query_date.date().isoformat(), product_used,
+        )
+
+    tile_tifs: list[Path] = []
+    source_checksums: dict[str, str] = {}
+    failed_tiles: list[str] = []
+    tile_info: list[dict] = []
+    for item in items:
+        try:
+            hdf_path = raw_dir / item["file_name"]
+            source_checksums[item["tile"]] = _download_with_retry(
+                item["download_url"], hdf_path,
+                plog=plog, dataset_id=dataset_id, scene_id=scene_label,
+                item_label=f"{band} tile {item['tile']}",
+            )
+            tile_tif = raw_dir / f"{Path(item['file_name']).stem}_{band.lower()}.tif"
+            tile_info.append(tile_fn(hdf_path, product_used, tile_tif) or {})
+            tile_tifs.append(tile_tif)
+        except ImportError:
+            # Masalah environment, bukan data: tile lain pasti gagal juga.
+            raise
+        except Exception as exc:
+            logger.warning(
+                "[M7] %s tile %s gagal (%s %s): %s",
+                band, item["tile"], product_used, query_date.date().isoformat(), exc,
+            )
+            failed_tiles.append(item["tile"])
+
+    if not tile_tifs:
+        raise RuntimeError(f"semua tile {band} {product_used} gagal ({', '.join(failed_tiles)})")
+
+    _mosaic_and_crop(tile_tifs, aoi_bbox, out_path)
+    return {
+        "product_used": product_used,
+        "granules": sorted(i["file_name"] for i in items),
+        "source_checksums": source_checksums,
+        "failed_tiles": failed_tiles,
+        "tile_info": tile_info,
+    }
+
+
+def _mod09a1_periods(date: datetime, lookback_days: int = INDEX_LOOKBACK_DAYS) -> list[datetime]:
+    """Awal periode MOD09A1 yang mungkin memuat observasi dalam
+    [date - lookback_days, date], terbaru dulu. Periode diberi nama per DOY
+    1, 9, 17, ... dan dimulai ulang tiap tahun, jadi periode sebelumnya
+    dicari lewat hari sebelum awal periode, bukan dengan mengurangi 8 hari."""
+    earliest = date - timedelta(days=lookback_days)
+    periods: list[datetime] = []
+    start = _product_query_date(MODIS_REFLECTANCE_PRODUCT, date)
+    while start + timedelta(days=MOD09A1_PERIOD_DAYS - 1) >= earliest:
+        periods.append(start)
+        start = _product_query_date(MODIS_REFLECTANCE_PRODUCT, start - timedelta(days=1))
+    return periods
+
+
+def _read_two_bands(path: Path, ref: dict | None) -> tuple[np.ndarray, np.ndarray, dict]:
+    """(band1, band2, grid) sebuah raster indeks per periode; kalau `ref`
+    diberikan dan grid-nya berbeda, keduanya direproject (nearest) ke `ref`."""
+    with rasterio.open(path) as src:
+        grid = {"transform": src.transform, "crs": src.crs, "shape": (src.height, src.width)}
+        if ref is None or (grid["shape"] == ref["shape"] and grid["transform"] == ref["transform"]):
+            return src.read(1).astype("float32"), src.read(2).astype("float32"), grid
+        out = []
+        for band_index in (1, 2):
+            dest = np.full(ref["shape"], np.nan, dtype="float32")
+            reproject(
+                source=rasterio.band(src, band_index), destination=dest,
+                src_transform=src.transform, src_crs=src.crs, src_nodata=np.nan,
+                dst_transform=ref["transform"], dst_crs=ref["crs"], dst_nodata=np.nan,
+                resampling=Resampling.nearest,
+            )
+            out.append(dest)
+        return out[0], out[1], ref
+
+
+def _composite_latest_clear(
+    period_paths: list[Path], date: datetime, out_path: Path, lookback_days: int,
+) -> dict:
+    """Gabungkan raster per periode jadi satu: tiap piksel mengambil
+    observasi cerah paling baru (tanggal <= `date`, umur <= lookback_days).
+    Band 1 = indeks, band 2 = umur observasi dalam hari."""
+    target = date.toordinal()
+    ref = None
+    best_value = best_obs = None
+    for path in period_paths:
+        value, observed, grid = _read_two_bands(path, ref)
+        if ref is None:
+            ref = grid
+            best_value = np.full(grid["shape"], np.nan, dtype="float32")
+            best_obs = np.full(grid["shape"], -np.inf, dtype="float64")
+        usable = (
+            np.isfinite(value) & np.isfinite(observed)
+            & (observed <= target) & (target - observed <= lookback_days)
+        )
+        newer = usable & (observed > best_obs)
+        best_value[newer] = value[newer]
+        best_obs[newer] = observed[newer]
+
+    age = np.where(np.isfinite(best_obs), target - best_obs, np.nan).astype("float32")
+    with rasterio.open(
+        out_path, "w", driver="GTiff", height=ref["shape"][0], width=ref["shape"][1],
+        count=2, dtype="float32", crs=ref["crs"], transform=ref["transform"], nodata=np.nan,
+    ) as dst:
+        dst.write(best_value, 1)
+        dst.write(age, 2)
+    ages = age[np.isfinite(age)]
+    return {
+        "age_days_median": float(np.median(ages)) if ages.size else None,
+        "age_days_max": float(ages.max()) if ages.size else None,
+    }
+
+
+def _build_flood_for_date(
+    *, date: datetime, tiles: list[str], raw_dir: Path, out_path: Path,
+    aoi_bbox: tuple[float, float, float, float], plog, dataset_id, scene_label,
+) -> tuple[dict, dict]:
+    built = _build_source_mosaic(
+        band="FLOOD", product=MODIS_FLOOD_PRODUCT, query_date=date, tiles=tiles,
+        raw_dir=raw_dir, out_path=out_path, aoi_bbox=aoi_bbox,
+        tile_fn=lambda hdf, _used, tif: _flood_tile(hdf, tif),
+        plog=plog, dataset_id=dataset_id, scene_label=scene_label,
+    )
+    with rasterio.open(out_path) as src:
+        source = src.read(2)
+    total = source.size or 1
+    from_2day = float((source == FLOOD_SOURCE_2DAY).sum()) / total
+    from_1day = float((source == FLOOD_SOURCE_1DAY_CS).sum()) / total
+    filled = any(info.get("filled") for info in built["tile_info"])
+    tags = {
+        "FLOOD_COMPOSITE": FLOOD_SUBDATASET,
+        "FLOOD_FILL": FLOOD_FILL_SUBDATASET if filled else "none",
+        "BAND_2": (
+            f"FLOOD_SOURCE: {FLOOD_SOURCE_2DAY}={FLOOD_SUBDATASET}, "
+            f"{FLOOD_SOURCE_1DAY_CS}={FLOOD_FILL_SUBDATASET}, {FLOOD_NODATA}=tanpa data"
+        ),
+        "FRACTION_FROM_2DAY": f"{from_2day:.4f}",
+        "FRACTION_FROM_1DAY_CS": f"{from_1day:.4f}",
+        "OBSERVATION_DATE": date.date().isoformat(),
+    }
+    if not filled:
+        logger.info(
+            "[M7] FLOOD tanggal %s: granule %s tidak memuat %s, celah tidak diisi",
+            date.date().isoformat(), built["product_used"], FLOOD_FILL_SUBDATASET,
+        )
+    return built, {
+        "tags": tags,
+        "entry": {
+            "fraction_from_2day": round(from_2day, 4),
+            "fraction_from_1day_cs": round(from_1day, 4),
+        },
+    }
+
+
+def _build_index_for_date(
+    *, band: str, date: datetime, date_key: str, tiles: list[str], raw_dir: Path,
+    out_path: Path, aoi_bbox: tuple[float, float, float, float],
+    plog, dataset_id, scene_label,
+) -> tuple[dict, dict]:
+    """NDVI/NDWI satu tanggal sebagai komposit observasi cerah terbaru
+    lintas periode MOD09A1 dalam INDEX_LOOKBACK_DAYS (lihat konstanta itu).
+
+    Periode yang belum terbit dilewati; kalau periode TERBARU belum terbit,
+    MOD09GA harian untuk `date` dipakai sebagai pengganti observasi terbaru."""
+    period_paths: list[Path] = []
+    used: list[dict] = []
+    errors: list[str] = []
+    periods = _mod09a1_periods(date)
+    for position, period_start in enumerate(periods):
+        tmp = raw_dir / f"_{band.lower()}_{date_key}_p{period_start.strftime('%Y%j')}.tif"
+        try:
+            built = _build_source_mosaic(
+                band=band, product=MODIS_REFLECTANCE_PRODUCT, query_date=period_start,
+                tiles=tiles, raw_dir=raw_dir, out_path=tmp, aoi_bbox=aoi_bbox,
+                tile_fn=lambda hdf, used_product, tif, _ps=period_start: _normalized_index_tile(
+                    hdf, used_product, band, tif, target_date=date, period_start=_ps,
+                ),
+                plog=plog, dataset_id=dataset_id, scene_label=scene_label,
+            )
+        except ImportError:
+            raise
+        except Exception as exc:
+            errors.append(f"{MODIS_REFLECTANCE_PRODUCT} {period_start.date().isoformat()}: {exc}")
+            if position != 0:
+                continue
+            # Periode terbaru belum terbit (latensi ~1-2 minggu): observasi
+            # harian hari itu jadi pengganti "yang terbaru".
+            tmp = raw_dir / f"_{band.lower()}_{date_key}_daily.tif"
+            try:
+                built = _build_source_mosaic(
+                    band=band, product=MODIS_REFLECTANCE_FALLBACK_PRODUCT, query_date=date,
+                    tiles=tiles, raw_dir=raw_dir, out_path=tmp, aoi_bbox=aoi_bbox,
+                    tile_fn=lambda hdf, used_product, tif: _normalized_index_tile(
+                        hdf, used_product, band, tif, target_date=date, obs_date=date,
+                    ),
+                    plog=plog, dataset_id=dataset_id, scene_label=scene_label,
+                )
+            except ImportError:
+                raise
+            except Exception as fallback_exc:
+                errors.append(f"{MODIS_REFLECTANCE_FALLBACK_PRODUCT} {date.date().isoformat()}: {fallback_exc}")
+                continue
+        period_paths.append(tmp)
+        used.append({**built, "period_start": period_start.date().isoformat()})
+
+    if not period_paths:
+        raise RuntimeError("; ".join(errors) or f"tidak ada periode {band} yang bisa dibangun")
+
+    try:
+        ages = _composite_latest_clear(period_paths, date, out_path, INDEX_LOOKBACK_DAYS)
+    finally:
+        for tmp in period_paths:
+            tmp.unlink(missing_ok=True)
+
+    products = sorted({u["product_used"] for u in used})
+    merged = {
+        "product_used": ",".join(products),
+        "granules": sorted(g for u in used for g in u["granules"]),
+        "source_checksums": {
+            f"{u['period_start']}/{tile}": md5
+            for u in used for tile, md5 in u["source_checksums"].items()
+        },
+        "failed_tiles": sorted({t for u in used for t in u["failed_tiles"]}),
+    }
+    tags = {
+        "COMPOSITE_RULE": (
+            f"observasi cerah terbaru <= {date.date().isoformat()}, "
+            f"maksimal {INDEX_LOOKBACK_DAYS} hari"
+        ),
+        "LOOKBACK_DAYS": str(INDEX_LOOKBACK_DAYS),
+        "PERIODS_USED": ",".join(u["period_start"] for u in used),
+        "BAND_2": "AGE_DAYS: umur observasi (hari) terhadap tanggal fitur",
+        **({"AGE_DAYS_MEDIAN": f"{ages['age_days_median']:.1f}"} if ages["age_days_median"] is not None else {}),
+    }
+    return merged, {
+        "tags": tags,
+        "entry": {
+            "periods_used": [u["period_start"] for u in used],
+            "periods_missing": errors,
+            "lookback_days": INDEX_LOOKBACK_DAYS,
+            **ages,
+        },
+    }
+
+
 def _build_band_for_date(
     *,
     band: str,
@@ -776,55 +1122,22 @@ def _build_band_for_date(
     dataset_id: int | None,
     scene_label: str,
 ) -> dict:
-    """Bangun satu band MODIS untuk satu tanggal: listing granule -> download
-    per tile -> ekstrak/hitung -> mosaic -> crop ke AOI.
+    """Bangun satu band MODIS untuk satu tanggal. Hasilnya GeoTIFF 2 band:
+    band 1 nilai, band 2 kualitasnya (FLOOD: asal piksel; NDVI/NDWI: umur
+    observasi dalam hari).
 
     Mengembalikan dict hasil. Melempar RuntimeError kalau band ini tidak bisa
     dibangun sama sekali untuk tanggal tsb; pemanggil memutuskan apakah itu
     fatal (tidak, per band) atau tidak."""
-    query_date = _product_query_date(product, date)
-    items, product_used = _discover_tile_files_with_fallback(query_date, tiles, product)
-    if not items:
-        raise RuntimeError(f"tidak ada granule {product} untuk {date.date().isoformat()}")
-    if product_used != product:
-        logger.info(
-            "[M7] %s tanggal %s: NRT tidak tersedia, pakai arsip standar %s",
-            band, date.date().isoformat(), product_used,
-        )
+    common = dict(
+        date=date, tiles=tiles, raw_dir=raw_dir, out_path=out_path,
+        aoi_bbox=aoi_bbox, plog=plog, dataset_id=dataset_id, scene_label=scene_label,
+    )
+    if band == "FLOOD":
+        built, extra = _build_flood_for_date(**common)
+    else:
+        built, extra = _build_index_for_date(band=band, date_key=date_key, **common)
 
-    tile_tifs: list[Path] = []
-    source_checksums: dict[str, str] = {}
-    failed_tiles: list[str] = []
-
-    for item in items:
-        try:
-            hdf_path = raw_dir / item["file_name"]
-            source_checksums[item["tile"]] = _download_with_retry(
-                item["download_url"], hdf_path,
-                plog=plog, dataset_id=dataset_id, scene_id=scene_label,
-                item_label=f"{band} tile {item['tile']}",
-            )
-            stem = Path(item["file_name"]).stem
-            tile_tif = raw_dir / f"{stem}_{band.lower()}.tif"
-            if band == "FLOOD":
-                _hdf_subdataset_to_geotiff(hdf_path, FLOOD_SUBDATASET, tile_tif)
-            else:
-                _normalized_index_tile(hdf_path, product_used, band, tile_tif)
-            tile_tifs.append(tile_tif)
-        except ImportError:
-            # Masalah environment, bukan data: tile lain pasti gagal juga.
-            raise
-        except Exception as exc:
-            logger.warning(
-                "[M7] %s tile %s gagal (tanggal %s): %s",
-                band, item["tile"], date.date().isoformat(), exc,
-            )
-            failed_tiles.append(item["tile"])
-
-    if not tile_tifs:
-        raise RuntimeError(f"semua tile {band} gagal ({', '.join(failed_tiles)})")
-
-    _mosaic_and_crop(tile_tifs, aoi_bbox, out_path)
     valid_fraction = _valid_fraction(out_path)
     low_coverage = valid_fraction < MIN_VALID_FRACTION
     logger.log(
@@ -834,24 +1147,39 @@ def _build_band_for_date(
         " (sisanya awan/tanpa data)" if band != "FLOOD" else " (sisanya insufficient data)",
     )
 
-    entry = {
+    tags = {
+        "SOURCE_PRODUCT": built["product_used"],
+        "SOURCE_GRANULES": ",".join(built["granules"]),
+        "VALID_FRACTION": f"{valid_fraction:.4f}",
+        **extra["tags"],
+    }
+    with rasterio.open(out_path, "r+") as dst:
+        dst.update_tags(**tags)
+
+    return {
         "band": band,
-        "product": product_used,
+        "product": built["product_used"],
         "path": str(out_path),
         "checksum_md5": _md5(out_path),
-        "source_tiles": source_checksums,
+        "source_tiles": built["source_checksums"],
         "skipped": False,
-        "degraded": bool(failed_tiles) or low_coverage,
-        "failed_tiles": failed_tiles,
+        "degraded": bool(built["failed_tiles"]) or low_coverage,
+        "failed_tiles": built["failed_tiles"],
         "valid_fraction": round(valid_fraction, 4),
         "low_coverage": low_coverage,
+        **extra["entry"],
     }
-    if product == MODIS_REFLECTANCE_PRODUCT:
-        period_end = query_date + timedelta(days=MOD09A1_PERIOD_DAYS - 1)
-        entry["composite_period"] = [
-            query_date.date().isoformat(), period_end.date().isoformat()
-        ]
-    return entry
+
+
+def _is_current_format(path: Path) -> bool:
+    """Berkas band dari versi sebelum band kualitas (satu band saja) harus
+    dibangun ulang, bukan dipakai ulang: tanpa band 2, fusion tidak punya
+    FLOOD_SOURCE / umur NDVI-NDWI untuk tanggal itu."""
+    try:
+        with rasterio.open(path) as src:
+            return src.count >= 2
+    except Exception:
+        return False
 
 
 def _valid_fraction(path: Path) -> float:
@@ -964,8 +1292,10 @@ def download_modis_scene(
 
         for band, products in (
             ("FLOOD", (MODIS_FLOOD_PRODUCT,)),
-            ("NDVI", MODIS_REFLECTANCE_PRODUCTS),
-            ("NDWI", MODIS_REFLECTANCE_PRODUCTS),
+            # Fallback MOD09GA ditangani di dalam _build_index_for_date
+            # (hanya untuk periode terbaru yang belum terbit).
+            ("NDVI", (MODIS_REFLECTANCE_PRODUCT,)),
+            ("NDWI", (MODIS_REFLECTANCE_PRODUCT,)),
         ):
             product = products[0]
             if band not in wanted_bands:
@@ -998,6 +1328,10 @@ def download_modis_scene(
                 entry["targets"] = written
                 return entry
 
+            if out_path.exists() and not _is_current_format(out_path):
+                logger.info("[M7] format lama (tanpa band kualitas), bangun ulang: %s", out_path.name)
+                for _tier, _level, stale in targets:
+                    stale.unlink(missing_ok=True)
             if out_path.exists():
                 logger.info("[M7] output sudah ada, skip: %s", out_path.name)
                 valid_fraction = _valid_fraction(out_path)

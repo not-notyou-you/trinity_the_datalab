@@ -62,8 +62,10 @@ lineage RAW→FUSION dan tidak pernah ikut dihapus `compute_tiers_to_delete`.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+import os
 import re
 from datetime import date, datetime
 from pathlib import Path
@@ -598,7 +600,43 @@ def get_scratch_dir(dataset_id: int, dataset_name: str, scene_key: str) -> Path:
     """Folder kerja sementara (hasil kalibrasi radiometrik sebelum crop),
     dihapus otomatis setelah tahap CROP selesai — bukan bagian dari tier
     resmi, jadi diletakkan di luar folder tanggal."""
-    return get_dataset_root(dataset_id, dataset_name) / SCRATCH_DIRNAME / scene_slug(scene_key)
+    return get_dataset_root(dataset_id, dataset_name) / SCRATCH_DIRNAME / scratch_slug(scene_key)
+
+
+# Batas panjang nama folder scratch. product_identifier S1 (~70 karakter)
+# muncul dua kali di path RAW (folder scratch + nama .zip di dalamnya), dan
+# dengan root repo + nama dataset yang agak panjang totalnya melewati
+# MAX_PATH Windows (260). Kasus nyata: dataset "jan_mar_2025_hybrid" -> 264
+# karakter; M1 tetap bisa menulis lewat prefix extended-length tapi kalibrasi
+# (zipfile) dan sapuan _work/ tidak melihat berkasnya -> semua scene S1 gagal.
+SCRATCH_SLUG_MAX = 32
+
+
+def scratch_slug(key: str) -> str:
+    """Nama folder scratch yang pendek dan deterministik untuk `key`.
+
+    Kunci pendek (tanggal YYYYMMDD) dipakai apa adanya; kunci panjang
+    dipotong lalu diberi sufiks hash kunci utuh supaya tetap unik per scene
+    (dua potongan S1 satu orbit hanya berbeda di akhir nama)."""
+    slug = scene_slug(key)
+    if len(slug) <= SCRATCH_SLUG_MAX:
+        return slug
+    digest = hashlib.sha1(str(key).encode("utf-8")).hexdigest()[:10]
+    return f"{slug[:SCRATCH_SLUG_MAX - 11]}_{digest}"
+
+
+def long_path(path: Path | str) -> Path:
+    """Path aman dari batas MAX_PATH (260) Windows lewat prefix
+    extended-length ``\\\\?\\``. LongPathsEnabled di registry sering dikunci
+    kebijakan institusi, jadi jangan bergantung ke konfigurasi mesin.
+    No-op di luar Windows. Hanya untuk API Python (open, zipfile, shutil);
+    GDAL/rasterio tidak selalu menerima prefix ini."""
+    path = Path(path)
+    if os.name != "nt":
+        return path
+    s = str(path.resolve())
+    prefix = "\\\\?\\"
+    return Path(s) if s.startswith(prefix) else Path(prefix + s)
 
 
 def get_granule_cache_root(dataset_root: Path) -> Path:
@@ -822,6 +860,24 @@ def get_preview_scene_files(dataset_id: int, dataset_name: str, scene_key: str) 
     """Semua berkas satu scene preview, termasuk yang ada di dalam subfolder
     {LEVEL}/{grayscale,colored,composite}/ (_files_under rglob rekursif)."""
     return _files_under(get_preview_dir(dataset_id, dataset_name, scene_key))
+
+
+def get_preview_date_files(
+    dataset_id: int, dataset_name: str, date_key_str: str
+) -> list[Path]:
+    """Berkas preview yang benar-benar milik SATU tanggal.
+
+    Beda dari get_preview_scene_files, yang mengembalikan seluruh isi folder
+    preview dataset: folder itu dipakai bersama semua tanggal, jadi memakainya
+    untuk melaporkan ukuran satu tanggal akan melaporkan ukuran seluruh
+    dataset di setiap tanggal. Berkas tanpa tanggal di namanya (sidecar
+    bersama dari render lama) tidak ikut — dia bukan milik tanggal mana pun
+    secara pasti."""
+    want = scene_date_key(date_key_str)
+    return [
+        f for f in _files_under(get_preview_dir(dataset_id, dataset_name, date_key_str))
+        if date_from_filename(f.name) == want
+    ]
 
 
 def get_sourceless_scene_files(

@@ -42,12 +42,8 @@ from pathlib import Path
 
 import numpy as np
 import rasterio
-from rasterio.enums import Resampling
-from rasterio.io import MemoryFile
-from rasterio.mask import mask
 from rasterio.transform import from_origin
 from rasterio.warp import reproject
-from shapely.geometry import box, mapping
 
 from etl import download_guard as dg
 from etl import folder_manager as fm
@@ -89,6 +85,10 @@ _listing_lock = threading.Lock()
 JABODETABEK_BBOX = (106.4, -6.7, 107.2, -5.9)
 
 DST_CRS = "EPSG:4326"
+# Resolusi asli IMERG. Berkas rainfall disimpan di resolusi ini (lihat
+# _crop_to_aoi), jadi inilah yang dilaporkan sidecar -- bukan lagi resolusi
+# Sentinel-1, yang dulu benar hanya karena berkasnya di-upsample ke sana.
+IMERG_RESOLUTION_DEG = 0.1
 S1_RESOLUTION_M = 10
 S1_RESOLUTION_DEG = S1_RESOLUTION_M / 111_320.0  # meters -> degrees at the equator
 MAX_RETRIES = 3
@@ -343,6 +343,28 @@ def _download_with_retry(
     raise RuntimeError(f"gagal download {url} setelah {MAX_RETRIES} percobaan: {last_exc}")
 
 
+def _snap_resolution(res: float) -> float:
+    """Resolusi grid IMERG dari selisih koordinat, dijepit ke 0.1 derajat.
+
+    Koordinat lat/lon IMERG disimpan float32, jadi (lon[-1] - lon[0]) / (n-1)
+    menghasilkan 0.0999999983, bukan 0.1. Selisih 1.7e-9 itu terakumulasi
+    sepanjang 2.870 sel dari -180 sampai AOI, sehingga tepi sel di 107.2
+    bergeser beberapa mikroderajat -- cukup untuk membuat crop AOI 106.4-107.2
+    ikut mengambil kolom ke-9 (107.2-107.3) yang seluruhnya nodata (dataset
+    24_try8: semua berkas GPM 9x8, bukan 8x8). Kalau hasil hitungnya berbeda
+    jauh dari resolusi resmi, nilai hitungnya yang dipakai: berarti berkasnya
+    memang bukan grid 0.1 derajat, dan menjepitnya akan menggeser seluruh
+    raster."""
+    if abs(res - IMERG_RESOLUTION_DEG) < 1e-6:
+        return IMERG_RESOLUTION_DEG
+    return res
+
+
+def _snap_edge(edge: float, res: float) -> float:
+    """Tepi grid ke kelipatan `res` terdekat (-180/90 untuk IMERG global)."""
+    return round(round(edge / res) * res, 9)
+
+
 def _read_daily_precip(nc4_path: Path):
     """Read the daily precipitation band (mm/day) from an IMERG NetCDF granule.
     Nodata pixels are filled with 0 mm so they contribute nothing to the
@@ -378,9 +400,14 @@ def _read_daily_precip(nc4_path: Path):
         data = data[:, ::-1]
         lon = lon[::-1]
 
-    res_x = abs(lon[-1] - lon[0]) / (lon.size - 1)
-    res_y = abs(lat[0] - lat[-1]) / (lat.size - 1)
-    transform = from_origin(lon[0] - res_x / 2, lat[0] + res_y / 2, res_x, res_y)
+    res_x = _snap_resolution(abs(lon[-1] - lon[0]) / (lon.size - 1))
+    res_y = _snap_resolution(abs(lat[0] - lat[-1]) / (lat.size - 1))
+    # Tepi grid di-snap ke kelipatan resolusi: koordinat IMERG disimpan
+    # float32, jadi lon[0] - res/2 hasilnya -179.999997, bukan -180 persis.
+    transform = from_origin(
+        _snap_edge(lon[0] - res_x / 2, res_x), _snap_edge(lat[0] + res_y / 2, res_y),
+        res_x, res_y,
+    )
 
     # _FillValue IMERG = -9999.9; curah hujan tidak pernah negatif.
     data[~np.isfinite(data) | (data < 0)] = 0.0
@@ -465,78 +492,115 @@ def _accumulate_window(
     return accum, transform, crs, source_checksums
 
 
-def _reproject_and_crop_to_s1_grid(
+def _crop_to_aoi(
     accum,
     src_transform,
     src_crs: str,
     aoi_bbox: tuple[float, float, float, float],
     output_path: Path,
+    tags: dict[str, str] | None = None,
 ) -> Path:
-    """Crop the accumulated rainfall grid to the AOI, then reproject the
-    (small) cropped grid to the Sentinel-1 target resolution/CRS.
+    """Crop akumulasi hujan ke AOI dan simpan PADA RESOLUSI ASLINYA (0.1
+    derajat IMERG).
 
-    Cropping must happen BEFORE reprojecting to the 10 m Sentinel-1 grid:
-    the raw GPM accumulation covers a much larger extent than the AOI, and
-    resampling that full extent straight to a 10 m pixel size produces a
-    raster with billions of pixels (GDAL's free-disk-space check then
-    aborts with a multi-petabyte "required space" figure). Cropping first
-    bounds the reprojection to the AOI's ~tens-of-millions of pixels.
+    Sebelumnya berkas ini di-resample ke grid Sentinel-1 ~10 m supaya bisa
+    ditumpuk langsung dengan S1. Itu menggandakan nilai yang sama jutaan kali:
+    AOI 0,8 derajat memuat 8x8 sel IMERG, tapi berkasnya ditulis 8906x8906
+    piksel -- 64 nilai unik dalam 2,4 MB, dan 214 MB untuk satu bulan (93
+    berkas di dataset 22_try6). Data aslinya muat di bawah 1 KB.
 
-    Grid tujuan adalah `aoi_bbox` persis (bukan batas sel IMERG yang
-    tersentuh), jadi berkas GPM menutupi area yang sama dengan Sentinel-1.
-    Resampling-nya nearest: satu sel IMERG 0.1 derajat (~11 km) adalah satu
-    nilai, dan bilinear ke 10 m mengarang gradien halus di antara segelintir
-    sel yang tidak punya dasar fisik. Disimpan float32 + DEFLATE: presisi
-    float64 tidak bermakna untuk mm hujan, dan blok bernilai sama
-    terkompresi hampir habis.
+    Penumpukan tidak hilang karena itu: kedua konsumennya mereproyeksi sendiri
+    ke grid tujuan masing-masing -- module9 lewat _reproject_to_grid ke grid
+    dataset, module10 ke grid preview -- dan keduanya memakai nearest, jadi
+    hasil akhirnya identik dengan resample dini ini. Yang hilang cuma salinan
+    perantara yang kebesaran.
+
+    Crop tetap dilakukan: akumulasi IMERG mentah jauh lebih luas dari AOI, dan
+    menyimpan seluruh globe per tanggal jauh lebih mahal daripada memotongnya.
+    Setiap sel yang tersentuh AOI ikut, termasuk sel tepi yang pusatnya di
+    luar bbox -- tanpa itu 12,5% AOI jadi nodata. Konsekuensinya berkas ini
+    bisa sedikit LEBIH LUAS dari AOI (sebatas sel IMERG yang tersentuh), dan
+    itu memang yang diinginkan: pemotongan presisi dilakukan saat reproyeksi
+    ke grid tujuan. Sel yang cuma BERSINGGUNGAN di tepi tidak ikut.
+
+    `tags` ditulis sebagai metadata GeoTIFF (lihat _window_tags): berkas
+    akumulasi tidak menyebut sendiri rentang waktu yang dijumlahkannya, dan
+    module9 menyalin tag ini ke atribut lapisan HDF5.
+
+    Disimpan float32 + DEFLATE: presisi float64 tidak bermakna untuk mm hujan.
     """
+    from rasterio.windows import Window
+    from rasterio.windows import transform as window_transform
+
+    # Jendela sel dihitung langsung dari affine, bukan lewat rasterize
+    # all_touched: tepi AOI di sini jatuh TEPAT di tepi sel (106.4, 107.2, ...),
+    # dan all_touched pada garis yang berimpit dengan tepi piksel ikut
+    # mengambil sel tetangganya -- kolom nodata ekstra di 24_try8. Toleransi
+    # 1e-6 sel membuang sisa pembulatan float tanpa pernah membuang sel yang
+    # benar-benar tersentuh AOI.
     height, width = accum.shape
-
-    with MemoryFile() as memfile:
-        with memfile.open(
-            driver="GTiff", height=height, width=width, count=1,
-            dtype="float64", crs=src_crs, transform=src_transform,
-            nodata=DEFAULT_NODATA,
-        ) as tmp:
-            tmp.write(accum, 1)
-
-        geom = mapping(box(*aoi_bbox))
-        with memfile.open() as src:
-            # all_touched: sel IMERG 0.1 derajat jauh lebih besar dari AOI; tanpa
-            # ini sel tepi yang pusatnya di luar bbox jadi nodata padahal
-            # sebagian AOI ada di dalamnya (terukur 12.5% AOI kosong).
-            crop_image, crop_transform = mask(
-                src, [geom], crop=True, all_touched=True, nodata=DEFAULT_NODATA
-            )
-            crop_crs = src.crs
-
     min_lon, min_lat, max_lon, max_lat = aoi_bbox
-    dst_width = max(1, int(np.ceil(round((max_lon - min_lon) / S1_RESOLUTION_DEG, 6))))
-    dst_height = max(1, int(np.ceil(round((max_lat - min_lat) / S1_RESOLUTION_DEG, 6))))
-    dst_transform = from_origin(min_lon, max_lat, S1_RESOLUTION_DEG, S1_RESOLUTION_DEG)
+    inv = ~src_transform
+    col_a, row_a = inv * (min_lon, max_lat)
+    col_b, row_b = inv * (max_lon, min_lat)
+    eps = 1e-6
+    col0 = max(0, int(np.floor(min(col_a, col_b) + eps)))
+    col1 = min(width, int(np.ceil(max(col_a, col_b) - eps)))
+    row0 = max(0, int(np.floor(min(row_a, row_b) + eps)))
+    row1 = min(height, int(np.ceil(max(row_a, row_b) - eps)))
+    if col1 <= col0 or row1 <= row0:
+        raise ValueError(f"AOI {aoi_bbox} tidak beririsan dengan grid IMERG")
+    window = Window(col0, row0, col1 - col0, row1 - row0)
+    crop_image = accum[row0:row1, col0:col1][np.newaxis, ...]
+    crop_transform = window_transform(window, src_transform)
+    crop_crs = src_crs
 
-    dest = np.full((dst_height, dst_width), DEFAULT_NODATA, dtype="float32")
-    reproject(
-        source=crop_image[0].astype("float32"),
-        destination=dest,
-        src_transform=crop_transform,
-        src_crs=crop_crs,
-        src_nodata=DEFAULT_NODATA,
-        dst_transform=dst_transform,
-        dst_crs=DST_CRS,
-        dst_nodata=DEFAULT_NODATA,
-        resampling=Resampling.nearest,
-    )
+    dest = crop_image[0].astype("float32")
+    dst_height, dst_width = dest.shape
 
     with rasterio.open(
         output_path, "w", driver="GTiff", height=dst_height, width=dst_width,
-        count=1, dtype="float32", crs=DST_CRS, transform=dst_transform,
+        count=1, dtype="float32", crs=crop_crs, transform=crop_transform,
         nodata=DEFAULT_NODATA, compress="deflate", predictor=3,
         tiled=True, blockxsize=512, blockysize=512,
     ) as dst:
         dst.write(dest, 1)
+        if tags:
+            dst.update_tags(**tags)
 
     return output_path
+
+
+def _window_tags(date: datetime, window_name: str, num_days: int, runs: list[str]) -> dict[str, str]:
+    """Metadata waktu satu berkas akumulasi.
+
+    Granule harian IMERG mencakup satu hari UTC penuh (00:00-24:00), jadi
+    window `num_days` yang berakhir di `date` menjumlahkan hujan dari 00:00
+    UTC hari pertama sampai 00:00 UTC hari SETELAH `date`. Ditulis eksplisit
+    karena konsumen fusion perlu tahu berapa jam hujan di window ini jatuh
+    SETELAH citra Sentinel-1 diambil."""
+    day = datetime(date.year, date.month, date.day)
+    start = day - timedelta(days=num_days - 1)
+    end = day + timedelta(days=1)
+    return {
+        "SOURCE_PRODUCT": "GPM_3IMERGD",
+        "WINDOW": window_name,
+        "WINDOW_DAYS": str(num_days),
+        "WINDOW_START_UTC": start.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "WINDOW_END_UTC": end.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "IMERG_RUNS": ",".join(runs),
+        "UNITS": "mm",
+    }
+
+
+def _is_current_format(path: Path) -> bool:
+    """True kalau berkas akumulasi ditulis versi yang mencatat jendela
+    waktunya (tag WINDOW_END_UTC, lihat _window_tags)."""
+    try:
+        with rasterio.open(path) as src:
+            return "WINDOW_END_UTC" in src.tags()
+    except Exception:
+        return False
 
 
 def _window_targets(
@@ -648,6 +712,12 @@ def download_gpm_scene(
             entry["targets"] = written
             return entry
 
+        if out_path.exists() and not _is_current_format(out_path):
+            # Berkas dari versi sebelum snap grid 0.1 derajat (kolom nodata
+            # ekstra) dan tanpa tag jendela waktu: bangun ulang, jangan pakai.
+            logger.info("[M8] format lama, bangun ulang: %s", out_path.name)
+            for _tier, _level, stale in targets:
+                stale.unlink(missing_ok=True)
         if out_path.exists():
             logger.info("[M8] output sudah ada, skip: %s", out_path.name)
             window_outputs[window_name] = _record({
@@ -664,7 +734,13 @@ def download_gpm_scene(
                 date, num_days, raw_dir,
                 plog=plog, dataset_id=dataset_id, scene_id=scene_label, window_name=window_name,
             )
-            _reproject_and_crop_to_s1_grid(accum, transform, crs, aoi_bbox, out_path)
+            _crop_to_aoi(
+                accum, transform, crs, aoi_bbox, out_path,
+                tags=_window_tags(
+                    date, window_name, num_days,
+                    sorted({e["run"] for e in source_checksums.values()}),
+                ),
+            )
         except Exception as exc:
             logger.warning("[M8] window %s gagal tanggal %s: %s", window_name, date.date().isoformat(), exc)
             _plog_event(
@@ -730,7 +806,7 @@ def download_gpm_scene(
         "date": date.date().isoformat(),
         "aoi_bbox": aoi_bbox,
         "crs": DST_CRS,
-        "resolution_m": S1_RESOLUTION_M,
+        "resolution_deg": IMERG_RESOLUTION_DEG,
         "windows": window_outputs,
         "quality": quality,
         "failed_windows": failed_windows,

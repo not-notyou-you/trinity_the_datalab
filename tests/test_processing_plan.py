@@ -350,13 +350,13 @@ def gpm_stub(monkeypatch, tmp_path):
             "2024-03-05": {"checksum_md5": "0" * 32, "run": "F"}
         }
 
-    def fake_reproject(accum, src_transform, src_crs, aoi_bbox, output_path):
+    def fake_reproject(accum, src_transform, src_crs, aoi_bbox, output_path, tags=None):
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_bytes(b"tif")
         return output_path
 
     monkeypatch.setattr(m8, "_accumulate_window", fake_accumulate)
-    monkeypatch.setattr(m8, "_reproject_and_crop_to_s1_grid", fake_reproject)
+    monkeypatch.setattr(m8, "_crop_to_aoi", fake_reproject)
     monkeypatch.setattr(m8, "_md5", lambda p, chunk=0: "0" * 32)
     return accumulated
 

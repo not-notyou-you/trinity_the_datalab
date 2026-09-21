@@ -32,20 +32,11 @@ logger = logging.getLogger(__name__)
 
 
 def _long(path: Path) -> Path:
-    """Path aman dari batas MAX_PATH (260) Windows.
+    """Path aman dari batas MAX_PATH (260) Windows. Lihat
+    folder_manager.long_path."""
+    from etl.folder_manager import long_path
 
-    Nama produk S1 (~90 karakter) muncul dua kali di path scene (nama folder
-    .SAFE dan nama file .zip/.zip.part di dalamnya), jadi gampang melewati
-    260 karakter. LongPathsEnabled di registry bisa menghapus limit ini,
-    tapi banyak mesin (kebijakan domain/institusi) menguncinya, jadi
-    prefix extended-length ``\\\\?\\`` diberikan di sini alih-alih
-    bergantung ke konfigurasi mesin.
-    """
-    if os.name != "nt":
-        return path
-    resolved = path.resolve()
-    s = str(resolved)
-    return path if s.startswith("\\\\?\\") else Path("\\\\?\\" + s)
+    return long_path(path)
 
 
 @dataclass
@@ -65,6 +56,12 @@ class DownloadResult:
     incidence_far: float | None
     download_url: str = ""
     kept_raw: bool = False
+
+
+# Status yang berarti "server tidak mau melayani permintaan lanjutan ini".
+# 501 yang dijawab CDSE untuk header Range, 405 kalau metodenya ditolak, dan
+# 400 yang dipakai sebagian gateway untuk Range yang tidak dikenal.
+_RANGE_UNSUPPORTED = frozenset({400, 405, 501})
 
 
 def _get_cdse_token(user: str, password: str) -> str:
@@ -88,6 +85,63 @@ def _get_cdse_token(user: str, password: str) -> str:
             "Daftar: https://dataspace.copernicus.eu"
         )
     return r.json()["access_token"]
+
+
+# Di bawah porsi AOI ini sebuah TANGGAL S1 (gabungan semua frame-nya) tidak
+# diunduh. Sama dengan ambang "lapisan nyaris kosong" di module9: 24_try8
+# mengunduh 1,6 GB untuk scene descending 14 Jan yang cuma menyentuh 0,6% AOI,
+# lalu menulis stack fusion 455 MB yang 99,4% NaN. Footprint sudah ada di
+# respons katalog, jadi ini bisa diputuskan sebelum unduhan dimulai.
+MIN_S1_AOI_COVERAGE = 0.05
+
+
+def _footprint_wkt(item: dict) -> str | None:
+    """Footprint scene dari respons OData CDSE sebagai WKT, atau None.
+
+    `GeoFootprint` (GeoJSON) dipakai lebih dulu karena bisa langsung dibaca
+    shapely; `Footprint` berbentuk "geography'SRID=4326;POLYGON(...)'" dan
+    hanya jadi cadangan."""
+    from shapely import wkt as shapely_wkt
+    from shapely.geometry import shape
+
+    geo = item.get("GeoFootprint")
+    if isinstance(geo, dict) and geo.get("coordinates"):
+        try:
+            return shape(geo).wkt
+        except Exception:
+            pass
+    raw = item.get("Footprint")
+    if isinstance(raw, str) and ";" in raw:
+        try:
+            return shapely_wkt.loads(raw.split(";", 1)[1].rstrip("'")).wkt
+        except Exception:
+            pass
+    return None
+
+
+def aoi_coverage(footprints_wkt: list[str], bbox_wkt: str) -> float | None:
+    """Porsi luas AOI yang tertutup gabungan `footprints_wkt` (0..1), atau
+    None kalau tidak ada satu pun footprint yang bisa dibaca.
+
+    Dihitung di derajat lon/lat: yang dicari rasio, dan distorsi luas di
+    dalam AOI selebar <1 derajat di dekat ekuator bisa diabaikan."""
+    from shapely import wkt as shapely_wkt
+    from shapely.ops import unary_union
+
+    aoi = shapely_wkt.loads(bbox_wkt)
+    if aoi.area <= 0:
+        return None
+    geoms = []
+    for fp in footprints_wkt:
+        if not fp:
+            continue
+        try:
+            geoms.append(shapely_wkt.loads(fp))
+        except Exception:
+            continue
+    if not geoms:
+        return None
+    return float(unary_union(geoms).intersection(aoi).area / aoi.area)
 
 
 def discover_scenes(
@@ -158,6 +212,8 @@ def discover_scenes(
             "size_mb": item.get("ContentLength", 0) / (1024 ** 2),
             "download_url": f"https://download.dataspace.copernicus.eu/odata/v1/Products({item['Id']})/$value",
             "_id": item["Id"],
+            "footprint_wkt": (fp := _footprint_wkt(item)),
+            "aoi_coverage": aoi_coverage([fp], bbox_wkt) if fp else None,
         })
 
     return results
@@ -243,7 +299,13 @@ def download_scene(
             session.headers.update({"Range": f"bytes={resume_from}-"})
 
         MAX_RETRIES = 3
-        for attempt in range(1, MAX_RETRIES + 1):
+        attempt = 0
+        # Percobaan ulang yang tidak menghabiskan jatah MAX_RETRIES: server
+        # menolak Range. Dibatasi sendiri supaya server yang terus-menerus
+        # menolak tidak membuat loop tak berujung.
+        restarts_left = 2
+        while attempt < MAX_RETRIES:
+            attempt += 1
             try:
                 with session.get(
                     download_url, stream=True, timeout=dg.REQUEST_TIMEOUT, allow_redirects=True
@@ -258,6 +320,32 @@ def download_scene(
                         logger.info("[M1] File sudah lengkap di .part, rename saja.")
                         _long(part_path).rename(_long(zip_path))
                         break
+
+                    # CDSE tidak selalu melayani permintaan lanjutan: endpoint
+                    # /$value menjawab 501 Not Implemented untuk header Range.
+                    # Karena 501 bukan error jaringan, retry berikutnya
+                    # mengirim Range yang sama dan ditolak lagi -- scene sehat
+                    # yang cuma putus sekali di tengah jadi gagal permanen
+                    # (26_JAWA 2026-09-20: IncompleteRead di attempt 1, lalu
+                    # dua 501 berturut-turut). Kalau server menolak Range,
+                    # .part dibuang dan berkas diunduh ulang dari nol.
+                    if (
+                        resp.status_code in _RANGE_UNSUPPORTED
+                        and resume_from > 0
+                        and restarts_left > 0
+                    ):
+                        logger.warning(
+                            "[M1] Server menolak resume (HTTP %d), download "
+                            "diulang dari awal.", resp.status_code,
+                        )
+                        session.headers.pop("Range", None)
+                        resume_from = 0
+                        _long(part_path).unlink(missing_ok=True)
+                        # Penolakan Range bukan kegagalan transfer, jadi tidak
+                        # menghabiskan jatah percobaan.
+                        restarts_left -= 1
+                        attempt -= 1
+                        continue
 
                     resp.raise_for_status()
 

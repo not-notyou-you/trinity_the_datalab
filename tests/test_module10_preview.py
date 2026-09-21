@@ -24,6 +24,12 @@ DATASET_NAME = "Preview Test"
 DATE_KEY = "20260712"
 
 
+def sidecar(stem: str, date_key: str = None) -> str:
+    """Nama sidecar preview: berprefiks tanggal, sama seperti PNG-nya, karena
+    satu folder preview dipakai bersama seluruh tanggal dataset."""
+    return f"{date_key or DATE_KEY}_{stem}"
+
+
 def png(stem: str) -> str:
     """Nama berkas PNG preview.
 
@@ -89,11 +95,11 @@ class TestRendering:
         assert sorted(p.name for p in composite.glob("*.png")) == [
             png("s1_rgb_composite"),
         ]
-        assert (gray / "grayscale_info.json").exists()
-        assert (color / "colored_info.json").exists()
-        assert (composite / "composite_info.json").exists()
+        assert (gray / sidecar("grayscale_info.json")).exists()
+        assert (color / sidecar("colored_info.json")).exists()
+        assert (composite / sidecar("composite_info.json")).exists()
         assert (fm.get_preview_dir(DATASET_ID, DATASET_NAME, DATE_KEY)
-                / "preview_metadata.json").exists()
+                / sidecar("preview_metadata.json")).exists()
 
         assert result["counts"]["grayscale"] == 2
         assert result["counts"]["colored"] == 2
@@ -108,7 +114,7 @@ class TestRendering:
         m10.generate_previews(DATASET_ID, DATASET_NAME, DATE_KEY, s1_scene_key=S1_SCENE)
 
         gray = fm.get_preview_kind_dir(DATASET_ID, DATASET_NAME, DATE_KEY, "grayscale")
-        info = json.loads((gray / "grayscale_info.json").read_text(encoding="utf-8"))
+        info = json.loads((gray / sidecar("grayscale_info.json")).read_text(encoding="utf-8"))
         entry = next(e for e in info["images"] if e["key"] == "s1_vv")
 
         assert entry["transform"] == "10*log10(sigma0)"
@@ -125,7 +131,7 @@ class TestRendering:
         m10.generate_previews(DATASET_ID, DATASET_NAME, DATE_KEY, s1_scene_key=S1_SCENE)
 
         gray = fm.get_preview_kind_dir(DATASET_ID, DATASET_NAME, DATE_KEY, "grayscale")
-        info = json.loads((gray / "grayscale_info.json").read_text(encoding="utf-8"))
+        info = json.loads((gray / sidecar("grayscale_info.json")).read_text(encoding="utf-8"))
         entry = next(e for e in info["images"] if e["key"] == "s1_vv")
         assert entry["transform"] == "none"
 
@@ -151,7 +157,32 @@ class TestRendering:
         assert cimg.mode == "RGBA"
         assert np.array(cimg)[0, 0, 3] == 0
 
-    def test_downsamples_to_max_width(self, data_root):
+    def test_downsamples_to_max_side(self, data_root):
+        from PIL import Image
+
+        _s1_gold(data_root, "VV", _linear_sigma0(6, shape=(400, 800)))
+        m10.generate_previews(
+            DATASET_ID, DATASET_NAME, DATE_KEY, s1_scene_key=S1_SCENE, max_side=100
+        )
+        gray = fm.get_preview_kind_dir(DATASET_ID, DATASET_NAME, DATE_KEY, "grayscale")
+        assert Image.open(gray / png("s1_vv")).size == (100, 50)
+
+    def test_tall_strip_is_capped_by_its_height(self, data_root):
+        """Scene yang cuma menyerempet AOI berbentuk jalur sempit. Membatasi
+        lebarnya saja membuat PNG jauh lebih tinggi dari batas yang dikira
+        berlaku (1488x8789 -> 1024x6048 di dataset 22_try6)."""
+        from PIL import Image
+
+        _s1_gold(data_root, "VV", _linear_sigma0(7, shape=(800, 200)))
+        m10.generate_previews(
+            DATASET_ID, DATASET_NAME, DATE_KEY, s1_scene_key=S1_SCENE, max_side=100
+        )
+        gray = fm.get_preview_kind_dir(DATASET_ID, DATASET_NAME, DATE_KEY, "grayscale")
+        w, h = Image.open(gray / png("s1_vv")).size
+        assert (w, h) == (25, 100)
+        assert max(w, h) <= 100
+
+    def test_max_width_alias_still_accepted(self, data_root):
         from PIL import Image
 
         _s1_gold(data_root, "VV", _linear_sigma0(6, shape=(400, 800)))
@@ -174,7 +205,7 @@ class TestRendering:
         m10.generate_previews(DATASET_ID, DATASET_NAME, DATE_KEY)
 
         color = fm.get_preview_kind_dir(DATASET_ID, DATASET_NAME, DATE_KEY, "colored")
-        info = json.loads((color / "colored_info.json").read_text(encoding="utf-8"))
+        info = json.loads((color / sidecar("colored_info.json")).read_text(encoding="utf-8"))
         entry = next(e for e in info["images"] if e["key"] == "gpm_rain_24h")
         assert entry["value_range"][0] == 0.0
         assert entry["range_method"] == "zero_based"
@@ -190,7 +221,7 @@ class TestRendering:
         m10.generate_previews(DATASET_ID, DATASET_NAME, DATE_KEY)
 
         color = fm.get_preview_kind_dir(DATASET_ID, DATASET_NAME, DATE_KEY, "colored")
-        info = json.loads((color / "colored_info.json").read_text(encoding="utf-8"))
+        info = json.loads((color / sidecar("colored_info.json")).read_text(encoding="utf-8"))
         entry = next(e for e in info["images"] if e["key"] == "modis_ndvi")
         assert entry["value_range"] == [-0.2, 0.8]
 
@@ -216,7 +247,7 @@ class TestRendering:
         m10.generate_previews(DATASET_ID, DATASET_NAME, DATE_KEY)
 
         color = fm.get_preview_kind_dir(DATASET_ID, DATASET_NAME, DATE_KEY, "colored")
-        info = json.loads((color / "colored_info.json").read_text(encoding="utf-8"))
+        info = json.loads((color / sidecar("colored_info.json")).read_text(encoding="utf-8"))
         entry = next(e for e in info["images"] if e["key"] == "modis_flood")
         assert entry["range_method"] == "categorical"
         assert {item["value"] for item in entry["legend"]} == {0, 1, 2, 3}
@@ -259,7 +290,7 @@ class TestRendering:
         assert result["grid"]["aligned_to"] == "s1_vv"
 
         color = fm.get_preview_kind_dir(DATASET_ID, DATASET_NAME, DATE_KEY, "colored")
-        info = json.loads((color / "colored_info.json").read_text(encoding="utf-8"))
+        info = json.loads((color / sidecar("colored_info.json")).read_text(encoding="utf-8"))
         entry = next(e for e in info["images"] if e["key"] == "gpm_rain_24h")
         assert entry["aligned_to"] == "s1_vv"
         # Nearest: hanya 4 nilai sel asli, tidak ada nilai antara hasil interpolasi.
@@ -310,7 +341,8 @@ class TestResilience:
 
         assert result["counts"]["total_png"] == 0
         assert len(result["skipped"]) == len(m10.PREVIEW_SPECS)
-        meta = fm.get_preview_dir(DATASET_ID, DATASET_NAME, DATE_KEY) / "preview_metadata.json"
+        meta = (fm.get_preview_dir(DATASET_ID, DATASET_NAME, DATE_KEY)
+                / sidecar("preview_metadata.json"))
         assert json.loads(meta.read_text(encoding="utf-8"))["counts"]["total_png"] == 0
 
     def test_all_nodata_band_is_skipped(self, data_root):
@@ -380,12 +412,12 @@ class TestSameDateScenes:
             )
 
         assert second["replaced_s1_scene_key"] == S1_SCENE
-        sidecar = json.loads(
+        written = json.loads(
             (fm.get_preview_level_dir(DATASET_ID, DATASET_NAME, DATE_KEY, "PROCESSED")
-             / "preview_metadata.json").read_text()
+             / sidecar("preview_metadata.json")).read_text()
         )
-        assert sidecar["s1_scene_key"] == self.OTHER_SCENE
-        assert sidecar["replaced_s1_scene_key"] == S1_SCENE
+        assert written["s1_scene_key"] == self.OTHER_SCENE
+        assert written["replaced_s1_scene_key"] == S1_SCENE
         assert any(S1_SCENE in r.getMessage() and r.levelname == "WARNING"
                    for r in caplog.records)
 
@@ -415,11 +447,25 @@ class TestSameDateScenes:
         )
         assert raw["replaced_s1_scene_key"] is None
 
+    def test_other_date_is_not_a_replacement(self, data_root, caplog):
+        """Satu folder preview dipakai seluruh tanggal dataset, jadi sidecar
+        yang ada hampir selalu milik tanggal lain -- itu bukan penimpaan."""
+        _s1_gold(data_root, "VV", _linear_sigma0(16))
+        m10.generate_previews(DATASET_ID, DATASET_NAME, DATE_KEY, s1_scene_key=S1_SCENE)
+
+        with caplog.at_level("WARNING", logger=m10.logger.name):
+            other_day = m10.generate_previews(
+                DATASET_ID, DATASET_NAME, "20260713", s1_scene_key=self.OTHER_SCENE
+            )
+
+        assert other_day["replaced_s1_scene_key"] is None
+        assert not [r for r in caplog.records if "menimpa" in r.getMessage()]
+
     def test_corrupt_previous_sidecar_does_not_block_render(self, data_root):
         _s1_gold(data_root, "VV", _linear_sigma0(15))
         level_dir = fm.get_preview_level_dir(DATASET_ID, DATASET_NAME, DATE_KEY, "PROCESSED")
         level_dir.mkdir(parents=True, exist_ok=True)
-        (level_dir / "preview_metadata.json").write_text("{bukan json")
+        (level_dir / sidecar("preview_metadata.json")).write_text("{bukan json")
 
         result = m10.generate_previews(
             DATASET_ID, DATASET_NAME, DATE_KEY, s1_scene_key=S1_SCENE

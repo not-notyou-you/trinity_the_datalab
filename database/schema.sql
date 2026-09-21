@@ -198,7 +198,7 @@ CREATE TABLE IF NOT EXISTS processing_jobs (
                            EXTRACT(EPOCH FROM (completed_at - started_at))
                        ) STORED,
     worker_hostname    VARCHAR(100),
-    cpu_usage_percent  NUMERIC(5,2),
+    cpu_usage_percent  NUMERIC(7,2),   -- total seluruh core: 24 core = sampai 2400% (migrasi 022)
     memory_usage_mb    NUMERIC(10,2),
     input_size_mb      NUMERIC(12,3),
     output_size_mb     NUMERIC(12,3),

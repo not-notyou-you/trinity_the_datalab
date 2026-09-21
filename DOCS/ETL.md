@@ -166,6 +166,7 @@ Full chain: calibrate + crop + **Lee filter 7×7** + **QA analytics** + **COG ex
 **Stage 1: DOWNLOAD**
 - Input: CDSE OData query (bbox, date range, GRD/IW filter)
 - Process: OAuth2 auth → discover scenes → download SAFE ZIP (HTTP Range-resume) → extract VV/VH GeoTIFFs → MD5 verify
+- AOI coverage gate: before any download, the orchestrator unions the catalogue footprints of all frames on a date and drops the date when they cover less than `MIN_S1_AOI_COVERAGE` (5%) of the AOI. Decided per date, not per frame, so both halves of a split pass are kept. Scenes without a readable footprint are never dropped. (24_try8 downloaded 1.6 GB for a 14 Jan pass that covered 0.5% of the AOI and fused a 455 MB stack that was 99.4% NaN.)
 - Output: `RAW/sentinel1/{product_identifier}/`
 - DB: Insert `satellite_scenes` row
 - Retry: 3 attempts, exponential backoff
@@ -314,7 +315,9 @@ moved elsewhere loses its folder context.
    - If gpm RAW: `/gpm/rainfall_daily` only
    - If gpm PROCESSED: `/gpm/rainfall_24h`, `/gpm/rainfall_72h`, `/gpm/rainfall_7d`
 5. All datasets: gzip compressed, chunked (256×256)
-6. Write `fusion_metadata.json` (bbox, shape, CRS, source scene IDs, temporal offsets, strategy, processing_level per source)
+6. Write the sidecar `fusion_{date}_{strategy}_{level}_metadata.json` (bbox, shape, CRS, source scene IDs, temporal offsets, strategy, processing_level per source). The date is in the name because the fusion folder is shared by all dates: the old `fusion_metadata_{level}.json` was overwritten by every date (24_try8 kept one sidecar for three HDF5 files)
+   - The same provenance is also written as HDF5 attributes. Root: `feature_date`, `acquisition_datetime_utc`, `s1_offset_days`, `temporal_offset_modis/gpm`. Per layer: `units` (S1 is **linear sigma0, not dB**), `source_date`, `day_offset`, `valid_fraction`, the source file's provenance tags (`source_product`, `composite_start/end` for the 8-day MOD09A1 NDVI/NDWI, `window_start_utc/end_utc` for GPM), and for GPM `hours_after_s1_acquisition`
+   - MODIS/GPM are taken from the feature date D, or D-1 as a fallback, **never D+1** (see IMPLEMENTATION_NOTES §3.4)
 7. DB: Insert `fusion_products`, `data_products` (tier=FUSION), `data_lineage` edges
 
 ## Preview Stage (Optional)
@@ -331,7 +334,27 @@ Non-fatal: preview failures don't fail the scene.
 
 Ordering: runs after the S1 chain and `ensure_aux_inputs_for_date`, before FUSION and before tier cleanup (the only window where every source raster for the date is still on disk). Pause/cancel is re-checked right before rendering. PNGs are recorded per level, so a failure at the second level keeps the first level's files in the job accounting.
 
-One set per date: preview folders are keyed by date, not by scene. A second Sentinel-1 scene on the same date overwrites the first scene's PNGs at the same level. This is intentional; module10 logs a WARNING and records the replaced scene in `replaced_s1_scene_key` in `preview_metadata.json`.
+Sidecars are per date: `{date}_preview_metadata.json` and `{date}_{kind}_info.json`. One preview folder holds every date of the dataset (files carry a date prefix), so an unprefixed sidecar was rewritten in full by each scene and the gallery ended up showing the last-rendered date's images for every date (dataset 22_try6). The gallery API still reads the old unprefixed sidecar for datasets rendered before this change, but only for the date it actually describes.
+
+PNG size is capped on the LONGEST side, not the width. A Sentinel-1 scene that only clips the AOI produces a narrow strip (1488 x 8789 px in 22_try6); capping width alone rendered it 1024 x 6048 — six times taller than the intended limit.
+
+One scene set per date: an AOI longer than a single Sentinel-1 frame is covered by two scenes from the same pass. They are mosaicked (`etl/s1_mosaic.py`) before PREVIEW and FUSION run, so the date produces one output covering the whole AOI instead of the later frame silently overwriting the earlier one.
+
+## Per-date finalization
+
+PREVIEW and FUSION do not run inside the per-scene pipeline. Both write files named by DATE only (`20250123_s1_vv.png`, `fusion_20250123_hybrid_processed.h5`), while one date can hold several Sentinel-1 scenes. Run per scene, the scene that finished last overwrote the one that finished first — in dataset 22_try6 a frame covering 68.7% of the AOI was overwritten by one covering 51.7%, and half the AOI disappeared from the deliverable.
+
+The pipeline worker therefore collects finished scenes per date and finalizes a date once every one of its scenes has been processed (`_finalize_date`): mosaic the frames, render PREVIEW once, write FUSION once. Cleanup is queued only after that, because for `fusion_output_only` datasets cleanup deletes the very rasters those stages read. A cancelled job leaves unfinalized dates alone rather than writing half a date's data.
+
+## Fusion Grid
+
+Every stack in a dataset is assembled on ONE grid: the AOI box at the resolution of the dataset's own Sentinel-1 rasters (`_dataset_fusion_grid`). Previously each S1 day used its own scene footprint, so a single month produced five different shapes (22_try6: 8789x1488, 6067x8752, 8790x1483, 6068x8752, 8790x1492), none of them pixel-aligned with the others — the time series could not be stacked into one array, which is the point of the FUSION tier. Some covered only 17% of the AOI while their `aoi_bbox` attribute promised the full AOI.
+
+Days whose scene only clips the AOI now write a full-AOI raster that is mostly NaN. That is cheap on disk (gzip collapses NaN blocks) and bounded in memory: layers are written one at a time as they are computed (`_FusionH5Layers`) instead of being accumulated in a dict.
+
+Root attributes added: `grid_bbox` (the raster's real bounds, next to the requested `aoi_bbox`) and `grid_offset_row_col` (its position inside the AOI box, in pixels).
+
+Every layer's valid-pixel fraction is recorded in `layer_coverage` in the sidecar JSON, and layers below 5% valid pixels are logged as a WARNING. Three of the five dates in 22_try6 held 3.6-3.7% valid Sentinel-1 pixels and were reported as plain successes.
 
 ## Tier Cleanup
 
@@ -371,3 +394,9 @@ After all stages complete, delete tiers NOT in `required_tiers` (derived from al
   }
 }
 ```
+
+## GPM Storage
+
+Rainfall rasters are stored at IMERG's native 0.1 degree resolution, cropped to the AOI (every cell the AOI overlaps is kept, but not cells that only share an edge with it). The IMERG grid is snapped to exactly 0.1° with its origin at -180/90: its coordinates are stored as float32, and the resulting 0.0999999983° resolution used to pull in a ninth, all-nodata column (107.2-107.3) in dataset 24_try8. They used to be resampled to the ~10 m Sentinel-1 grid so they could be stacked directly: an AOI of 0.8 degrees holds 8x8 IMERG cells but was written as 8906x8906 pixels — 64 distinct values in 2.4 MB, 214 MB for one month in dataset 22_try6.
+
+Nothing downstream loses alignment: both consumers reproject to their own target grid anyway (module9 to the dataset fusion grid, module10 to the preview grid), both with nearest resampling, so the result is identical.

@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import threading
 from datetime import date, datetime, timezone
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from etl.database_client import (
     CleanupOperation,
     Dataset,
@@ -922,18 +922,37 @@ class DatasetManager:
         failed: int = 0,
         cleaned: int = 0,
     ) -> None:
+        # UPDATE x = x + n di database, bukan baca-tambah-tulis di Python:
+        # thread download (paralel), pipeline, dan cleanup memanggil ini
+        # bersamaan, dan versi baca-tulis kehilangan hitungan saat dua
+        # transaksi membaca nilai yang sama.
         with self._db.session() as sess:
-            job = sess.get(DatasetJob, job_id)
-            if job is None:
+            dataset_id = sess.scalar(
+                select(DatasetJob.dataset_id).where(DatasetJob.job_id == job_id)
+            )
+            if dataset_id is None:
                 return
-            job.downloaded_count += downloaded
-            job.processed_count += processed
-            job.failed_count += failed
-            job.cleaned_count += cleaned
-            dataset = sess.get(Dataset, job.dataset_id)
-            if dataset:
-                dataset.completed_scenes += processed
-                dataset.failed_scenes += failed
+            sess.execute(
+                update(DatasetJob)
+                .where(DatasetJob.job_id == job_id)
+                .values(
+                    downloaded_count=DatasetJob.downloaded_count + downloaded,
+                    processed_count=DatasetJob.processed_count + processed,
+                    failed_count=DatasetJob.failed_count + failed,
+                    cleaned_count=DatasetJob.cleaned_count + cleaned,
+                )
+                .execution_options(synchronize_session=False)
+            )
+            if processed or failed:
+                sess.execute(
+                    update(Dataset)
+                    .where(Dataset.dataset_id == dataset_id)
+                    .values(
+                        completed_scenes=Dataset.completed_scenes + processed,
+                        failed_scenes=Dataset.failed_scenes + failed,
+                    )
+                    .execution_options(synchronize_session=False)
+                )
 
     def set_job_status(
         self,

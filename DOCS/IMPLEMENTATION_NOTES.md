@@ -130,17 +130,29 @@ every auxiliary layer fills with NaN — with no error anywhere, because "no fil
 found" is a supported condition. `_as_utc()` in `module9_fusion.py` normalizes
 first.
 
-### 3.4 The alignment window is the full 24 hours
+### 3.4 Auxiliary data comes from the feature date, never the day after
 
-`ALIGNMENT_WINDOW_HOURS = 24`, and `_find_nearest_daily_file()` uses all of it,
-not `// 2`.
+`_find_aux_daily_file()` looks for the MODIS/GPM file of the fusion's feature
+date D, then D-1 as a fallback (`AUX_DAY_OFFSETS = (0, -1)`). It never uses D+1.
 
-Half the window means "nearest midnight". The descending S1 pass over
-Jabodetabek is at ~22:50 UTC: 22.8 h from that day's midnight, 1.2 h from the
-next day's. The pipeline only downloads *that day's* auxiliary data
-(`ensure_aux_inputs_for_date` receives `s1_date`), so a 12 h window excludes the
-only file that exists. Candidates are still ranked by smallest difference, so a
-next-day file wins when it is actually present.
+This replaced a "nearest midnight within 24 h" rule. For the descending S1 pass
+over Jabodetabek (~22:25 UTC) the nearest midnight is the *next* day's, so
+dataset 24_try8 wrote `fusion_20250114_*.h5` containing GPM and MODIS from 15
+Jan. An IMERG daily granule covers 00:00-24:00 UTC, so every millimetre in that
+"24h" layer fell 1.6-25.6 h *after* the image was taken: future information
+leaking into a predictor. The old rule was also non-deterministic: D+1 was only
+picked when it happened to be on disk (HYBRID/FULL_COVERAGE download daily,
+CO_OCCURRENCE does not).
+
+The reference is the feature date, not the scene's acquisition time. On days
+that borrow an S1 scene from another date (FULL_COVERAGE), the aux layers must
+still belong to that day.
+
+A daily product cannot be cut at the acquisition time, so the same-day window
+still includes some rain after the image (up to ~13 h for the 11:15 UTC
+ascending pass). Each GPM layer records this as `hours_after_s1_acquisition`
+(from the `WINDOW_END_UTC` tag written by module8), so a consumer can filter
+or pick a window that stays before the acquisition.
 
 ### 3.5 Unconfigured sources get no group; configured-but-missing get NaN
 
@@ -157,7 +169,7 @@ absent.
 | Thing | Pattern | Defined in |
 |---|---|---|
 | Fusion HDF5 | `fusion_{YYYYMMDD}_{level}.h5` | `module9_fusion.fusion_h5_name()` |
-| Fusion sidecar | `fusion_metadata_{level}.json` | `module9_fusion.fusion_metadata_name()` |
+| Fusion sidecar | `fusion_{YYYYMMDD}_{strategy}_{level}_metadata.json` (same stem as the HDF5) | `module9_fusion.fusion_metadata_name()` |
 | MODIS raster | `modis_{YYYYMMDD}_{band}.tif` | `module7_modis_download.band_filename()` |
 | GPM raster | `gpm_rain_{window}_{YYYYMMDD}.tif` | `module8_gpm_download.band_filename()` |
 | S1 BRONZE | `*_{BAND}_crop.tif` | `module2_crop.run()` |

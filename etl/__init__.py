@@ -36,3 +36,16 @@ except ImportError:  # python-dotenv opsional saat runtime minimal
 for _var in ("PROJ_LIB", "PROJ_DATA", "GDAL_DATA"):
     os.environ.pop(_var, None)
 del _var
+
+# Kinerja GDAL. Default GDAL cuma 5% RAM untuk cache blok dan satu thread untuk
+# kompresi/dekompresi GTiff (deflate) -- di raster AOI Jawa (32k x 100k piksel)
+# itu membuat mosaik/COG/fusion berjalan di satu core sementara 23 lainnya diam.
+# Isi keluaran tidak berubah; hanya jumlah thread dan besar cache. setdefault:
+# nilai yang sudah diset di environment/.env tetap menang.
+os.environ.setdefault("GDAL_CACHEMAX", "4096")  # MB
+os.environ.setdefault("GDAL_NUM_THREADS", "ALL_CPUS")
+
+# Thread untuk rasterio.warp.reproject. rasterio memaksa NUM_THREADS=1 kalau
+# argumen num_threads tidak diberikan, jadi GDAL_NUM_THREADS di atas tidak
+# berlaku untuk warp -- modul yang mereproject meneruskan nilai ini.
+WARP_THREADS = max(1, (os.cpu_count() or 1))

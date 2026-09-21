@@ -10,6 +10,8 @@ import numpy as np
 import rasterio
 from rasterio.warp import Resampling, calculate_default_transform, reproject
 
+from etl import WARP_THREADS
+
 # CRS lookups below (calculate_default_transform/reproject to EPSG:4326) hit
 # rasterio's PROJ database. If you see "Cannot find proj.db" / "unknown EPSG
 # code" here, it's a conflicting PROJ_LIB/PROJ_DATA/GDAL_DATA env var — see
@@ -20,7 +22,11 @@ logger = logging.getLogger(__name__)
 
 def _find_calibration_xml(zip_path: str, polarisation: str) -> bytes:
     pol = polarisation.lower()
-    with zipfile.ZipFile(zip_path) as zf:
+    from etl.folder_manager import long_path
+
+    # ZIP SAFE hidup di _work/ dengan nama produk panjang; buka lewat prefix
+    # extended-length supaya tidak jatuh di MAX_PATH Windows.
+    with zipfile.ZipFile(long_path(zip_path)) as zf:
         candidates = [
             n for n in zf.namelist()
             if "annotation/calibration/calibration-" in n
@@ -129,6 +135,7 @@ def _reproject_with_gcps(data: np.ndarray, src_path: str, output_path: str, dst_
                 dst_crs=dst_crs,
                 dst_nodata=float("nan"),
                 resampling=Resampling.bilinear,
+                num_threads=WARP_THREADS,
             )
 
     logger.info("[M1b] reprojected -> %s (%dx%d)", Path(output_path).name, width, height)
