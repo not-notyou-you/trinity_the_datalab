@@ -217,3 +217,41 @@ Pemetaannya jatuh tepat pada definisi D2:
 - `_work/` disapu di akhir SETIAP job, bukan hanya saat `fusion_output_only` — isinya scratch menurut definisinya sendiri.
 
 **Tidak ada migrasi**: dataset pra-relayout dibiarkan apa adanya, dideteksi `is_legacy_layout()`, dan panel Struktur menampilkan pesan "format lama" alih-alih merender pohon dengan kosakata yang sudah tidak berlaku. Berkasnya tetap bisa diunduh utuh.
+
+## D16: Bbox JAWA Dipecah Jadi 4 Sub-Dataset, Bukan Dipersempit
+
+**Decision**: Dataset 26 (JAWA) diganti oleh empat dataset bersebelahan 26a–26d dengan bbox strip membujur. Bbox tunggal yang lebih kecil **tidak dibuat**, karena tidak menghemat apa pun.
+
+**Why**: Bbox JAWA (105,2095467 −8,780418 → 114,6053892 −5,8755039) memuat 333.976 km², 60,4% di antaranya laut. Tetapi extent poligon darat OSM di dalam bbox itu persis sama dengan bbox-nya — Jawa menyentuh keempat sisinya, karena pulaunya memanjang diagonal: ujung barat di utara, ujung timur di selatan. Lautnya bukan margin di tepi, melainkan ruang di dalam rectangle yang tidak diisi pulau. Memangkas tepi mana pun akan memotong daratan.
+
+Penghematan hanya datang dari memecah jadi beberapa kotak (darat + buffer 5 km = 45,96%, batas bawah teoretis):
+
+| Strip | Area | Hemat |
+|---|---|---|
+| 1 (asal) | 333.976 km² | 0% |
+| 2 | 283.077 km² | 15,2% |
+| **4** | **238.400 km²** | **28,6%** |
+| 8 | 210.514 km² | 37,0% |
+| 16 | 196.388 km² | 41,2% |
+| 24 | 193.912 km² | 41,9% |
+
+**Empat dipilih, bukan delapan**: 8 strip menghemat 8,4 poin lebih banyak tetapi menggandakan jumlah stack yang diserahkan ke ML engineer. Setelah 8, tiap kotak tambahan hanya menambah overhead orkestrasi.
+
+**Bbox** (sudah dikunci ke kisi terpaku `datasets.fusion_grid` dataset 26, piksel 9,100297437167133e−05°, supaya piksel sub-dataset sejajar induknya):
+
+| Sub | bbox_wkt | Area | Darat | Piksel |
+|---|---|---|---|---|
+| 26a | `POLYGON ((105.2095467 -7.6066535, 107.5585155 -7.6066535, 107.5585155 -5.8755039, 105.2095467 -5.8755039, 105.2095467 -7.6066535))` | 49.722 km² | 55,5% | 25812×19023 |
+| 26b | `POLYGON ((107.5585155 -7.9009571, 109.9074842 -7.9009571, 109.9074842 -5.8788710, 107.5585155 -5.8788710, 107.5585155 -7.9009571))` | 58.060 km² | 56,4% | 25812×22220 |
+| 26c | `POLYGON ((109.9074842 -8.4517981, 112.2564530 -8.4517981, 112.2564530 -5.8755039, 109.9074842 -5.8755039, 109.9074842 -8.4517981))` | 73.928 km² | 56,6% | 25812×28310 |
+| 26d | `POLYGON ((112.2564530 -8.7804098, 114.6054218 -8.7804098, 114.6054218 -6.8020962, 112.2564530 -6.8020962, 112.2564530 -8.7804098))` | 56.691 km² | 52,9% | 25812×21739 |
+
+Laut turun dari 60,4% ke 44,6%. Batas lat tiap strip = extent darat+5 km di dalam strip itu, dibulatkan ke kisi.
+
+**Satu bbox per dataset adalah batas skema**: `datasets.bbox_wkt` kolom tunggal NOT NULL ([etl/database_client.py:908](../etl/database_client.py#L908)). Karena itu pemecahan berarti empat dataset, bukan empat baris bbox di satu dataset. ML engineer menerima empat stack bersebelahan yang piksel-sejajar, bukan satu.
+
+**Yang TIDAK dijanjikan angka ini**: penghematan **area olahan**, bukan GB unduhan. S1 diunduh per SAFE utuh, jadi sub-bbox hanya mengurangi unduhan kalau benar-benar menggugurkan scene — dan itu belum bisa diverifikasi, lihat D17.
+
+## D17: Footprint Scene S1 Tidak Pernah Tercatat
+
+**Temuan, belum diperbaiki.** Untuk jendela 1–6 Desember 2025, 18 dari 19 baris `satellite_scenes` menyimpan bbox dataset sebagai `bbox`-nya, bukan footprint SAFE yang sebenarnya; hanya satu baris yang punya footprint nyata (387 km²). Akibatnya setiap pertanyaan "scene mana yang gugur kalau bbox dipersempit" tidak bisa dijawab dari database, dan penghematan biaya unduh D16 tidak terhitung. Perbaikannya: isi `satellite_scenes.bbox` dari footprint di metadata produk saat discovery, lalu hitung ulang.
