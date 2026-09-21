@@ -1558,9 +1558,9 @@ body.lightbox-open { overflow: hidden; }
    disembunyikan: alasan penolakannya justru yang perlu dibaca peneliti. */
 
 .merge-panel {
-  background: var(--panel, #12161f);
-  border: 1px solid var(--border, #232a36);
-  border-radius: 14px;
+  background: var(--panel);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius);
   padding: 18px 20px;
   margin-bottom: 18px;
 }
@@ -1575,13 +1575,13 @@ body.lightbox-open { overflow: hidden; }
 
 .merge-head h4 { margin: 0; font-size: 15px; }
 
-.merge-sub { font-size: 12px; color: var(--text-dim, #8b95a7); }
+.merge-sub { font-size: 12px; color: var(--text-dim); }
 
 .merge-note {
   margin: 8px 0 14px;
   font-size: 12px;
   line-height: 1.5;
-  color: var(--text-dim, #8b95a7);
+  color: var(--text-dim);
 }
 
 .merge-rows { display: flex; flex-direction: column; gap: 10px; }
@@ -1592,8 +1592,8 @@ body.lightbox-open { overflow: hidden; }
   gap: 10px 16px;
   align-items: center;
   padding: 12px 14px;
-  border: 1px solid var(--border, #232a36);
-  border-radius: 10px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius);
   background: rgba(255, 255, 255, 0.02);
 }
 
@@ -1603,7 +1603,7 @@ body.lightbox-open { overflow: hidden; }
 
 .merge-sources {
   font-size: 12px;
-  color: var(--text-dim, #8b95a7);
+  color: var(--text-dim);
   margin-top: 2px;
 }
 
@@ -1613,7 +1613,7 @@ body.lightbox-open { overflow: hidden; }
   gap: 4px 14px;
   margin-top: 6px;
   font-size: 11px;
-  color: var(--text-dim, #8b95a7);
+  color: var(--text-dim);
 }
 
 .merge-row-action {
@@ -1635,11 +1635,11 @@ body.lightbox-open { overflow: hidden; }
   border-left: 2px solid currentColor;
 }
 
-.merge-reason { color: var(--danger, #e5544b); }
-.merge-warn { color: var(--warn, #d9a441); }
+.merge-reason { color: var(--coral); }
+.merge-warn { color: var(--amber); }
 
-.merge-blocked { font-size: 12px; color: var(--danger, #e5544b); }
-.merge-done { font-size: 12px; color: var(--ok, #4caf7d); }
+.merge-blocked { font-size: 12px; color: var(--coral); }
+.merge-done { font-size: 12px; color: var(--cyan); }
 
 .btn-sm {
   padding: 6px 12px;
