@@ -273,3 +273,25 @@ Konsekuensinya arah penghematan jadi berlawanan tergantung sumber daya mana yang
 **Dua kendala operasional yang muncul saat run pertama:**
 - Menjalankan empat job serentak memicu **HTTP 429** dari Copernicus; job 23 (JAWA_B) FAILED. Strip harus dijalankan berurutan, bukan paralel.
 - Sisa disk 50 GB dari 953 GB. 24 unduhan (~41 GB) plus empat stack fusi (~22 GB) tidak muat. Perlu pembebasan ruang lebih dulu.
+
+## D19: Penggabungan Lintas Dataset, dan Kenapa Strip Jawa Belum Bisa Digabung
+
+**Modul**: [etl/dataset_merge.py](../etl/dataset_merge.py), endpoint `/api/merge/candidates` dan `/api/merge/run`, panel "Gabungkan Dataset" di atas daftar dataset.
+
+Pemecahan AOI (D16) menyisakan N stack terpisah per tanggal. Modul ini menyatukannya kembali dengan **menempel, bukan meresample**: resample akan menginterpolasi backscatter SAR, besaran fisis dalam dB yang rata-ratanya tidak bermakna di batas darat/air. Karena itu grid yang tidak sejajar **ditolak**, bukan dipaksakan — `GridMismatch` ada supaya kegagalannya terang-terangan, bukan diam-diam mengubah angka.
+
+Alurnya dua langkah, LIHAT lalu IZINKAN. `GET /candidates` tidak pernah menulis; `POST /run` tidak pernah menebak kandidat dan menolak kalau `dataset_ids` tidak disebut. Yang tahu apakah beberapa strip itu memang satu pulau yang sama adalah peneliti.
+
+**Temuan yang membatalkan satu klaim D16.** D16 menjanjikan piksel sub-dataset sejajar dengan induknya karena batas strip dikunci ke `datasets.fusion_grid` dataset 26. Dijalankan pada stack yang sungguh ada, penggabungannya menolak — dan benar menolak:
+
+| Dataset | Resolusi grid fusion |
+|---|---|
+| 26 (dipaku, sudah dihapus) | 9,100297437167133e−05 |
+| 27 JAWA_A, 28 JAWA_B | 9,10306849989e−05 |
+| 29 JAWA_C, 30 JAWA_D | 9,066768187e−05 |
+
+Mengunci **bbox** ke grid dataset 26 tidak mengunci **grid fusion**-nya. Tiap dataset memaku grid-nya sendiri dari resolusi raster S1 miliknya sendiri, persis seperti yang sudah diperingatkan: grid fusion bukan konstanta, ia ikut scene. Akibatnya jarak bujur yang di grid 26 tepat 25812 piksel menjadi 25804,14 piksel di grid baru — meleset 0,14 piksel, jadi tidak bisa ditempel.
+
+**Perbaikannya tidak butuh kode baru.** `_pin_dataset_grid` hanya menulis saat `fusion_grid IS NULL` ([module9_fusion.py:1441](../etl/module9_fusion.py#L1441)), jadi mengisi kolom itu lebih dulu dengan satu grid bersama untuk keempat strip — resolusi sama, origin berselisih kelipatan bulat piksel — akan membuat fusion memakainya apa adanya. Yang harus dibayar: stack yang sudah terlanjur dirakit di grid lama perlu dirakit ulang.
+
+**Pelajaran untuk pemecahan berikutnya (Sumatra, dan seterusnya)**: grid bersama dipaku ke SEMUA sub-dataset sebelum fusion pertama jalan, bukan disimpulkan dari bbox. Bbox menentukan di mana, grid menentukan di kisi mana — dan hanya yang kedua yang menentukan bisa-tidaknya digabung.

@@ -1551,3 +1551,103 @@ body.lightbox-open { overflow: hidden; }
   font-family: var(--font-mono); font-size: 10px;
   color: var(--text-dim); overflow-wrap: anywhere;
 }
+
+/* --- Penggabungan dataset -------------------------------------------------
+   Duduk di atas daftar dataset dan hanya muncul kalau ada yang bisa digabung.
+   Baris yang terhalang sengaja tetap terlihat, diredupkan tapi tidak
+   disembunyikan: alasan penolakannya justru yang perlu dibaca peneliti. */
+
+.merge-panel {
+  background: var(--panel, #12161f);
+  border: 1px solid var(--border, #232a36);
+  border-radius: 14px;
+  padding: 18px 20px;
+  margin-bottom: 18px;
+}
+
+.merge-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.merge-head h4 { margin: 0; font-size: 15px; }
+
+.merge-sub { font-size: 12px; color: var(--text-dim, #8b95a7); }
+
+.merge-note {
+  margin: 8px 0 14px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-dim, #8b95a7);
+}
+
+.merge-rows { display: flex; flex-direction: column; gap: 10px; }
+
+.merge-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 10px 16px;
+  align-items: center;
+  padding: 12px 14px;
+  border: 1px solid var(--border, #232a36);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.merge-row.is-blocked { opacity: 0.72; }
+
+.merge-date { font-weight: 600; font-size: 14px; }
+
+.merge-sources {
+  font-size: 12px;
+  color: var(--text-dim, #8b95a7);
+  margin-top: 2px;
+}
+
+.merge-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--text-dim, #8b95a7);
+}
+
+.merge-row-action {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.merge-notes { grid-column: 1 / -1; }
+
+.merge-reason,
+.merge-warn {
+  margin: 6px 0 0;
+  font-size: 12px;
+  line-height: 1.5;
+  padding-left: 10px;
+  border-left: 2px solid currentColor;
+}
+
+.merge-reason { color: var(--danger, #e5544b); }
+.merge-warn { color: var(--warn, #d9a441); }
+
+.merge-blocked { font-size: 12px; color: var(--danger, #e5544b); }
+.merge-done { font-size: 12px; color: var(--ok, #4caf7d); }
+
+.btn-sm {
+  padding: 6px 12px;
+  font-size: 12px;
+  border-radius: 8px;
+}
+
+@media (max-width: 640px) {
+  .merge-row { grid-template-columns: 1fr; }
+  .merge-row-action { justify-content: flex-start; }
+}

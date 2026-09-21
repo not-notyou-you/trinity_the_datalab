@@ -1270,6 +1270,12 @@ async function loadDatasets() {
     state.datasets = result.items;
     await refreshProgress();
   } catch (err) { showToast(err.message, 'error'); }
+  // Sengaja HANYA di sini, bukan di refreshProgress: /api/merge/candidates
+  // membuka atribut setiap berkas HDF5 di disk, jadi terlalu mahal untuk ikut
+  // polling 10 detik. Pemuatan eksplisit (buka tab, tekan Segarkan, selesai
+  // menggabungkan) sudah cukup -- daftar kandidat berubah hanya saat ada
+  // stack fusion baru, yang butuh menit sampai jam.
+  renderMergePanel();
 }
 async function loadDatasetsQuiet() {
   try {
@@ -2391,4 +2397,164 @@ async function loadTierFiles(id, tier, source) {
   } catch (e) {
     box.innerHTML = '<div class="empty-small">' + escapeHTML(e.message) + '</div>';
   }
+}
+
+
+// ---------------------------------------------------------------------------
+// Penggabungan dataset (/api/merge).
+//
+// Kenapa ini ada: bbox itu persegi panjang, pulau tidak. AOI sebesar Jawa
+// karena itu dipecah jadi beberapa strip supaya porsi lautnya turun
+// (DOCS/DECISIONS.md D16) -- dan pemecahan itu menyisakan N stack terpisah per
+// tanggal, bukan satu. Panel ini yang menutup lingkarannya.
+//
+// Dua aturan yang membentuk UI-nya:
+//
+// 1. MENAWARKAN, BUKAN MENJALANKAN SENDIRI. Penggabungan menulis berkas besar
+//    dan lama. Yang tahu apakah empat strip itu memang satu pulau yang sama
+//    adalah peneliti, bukan kode. Jadi panel ini hanya muncul dan menunggu;
+//    tidak ada jalur yang menggabungkan tanpa user menekan tombolnya.
+//
+// 2. YANG TERHALANG TETAP DITAMPILKAN, LENGKAP DENGAN ALASANNYA. Kandidat yang
+//    grid-nya tidak sejajar justru yang paling perlu dilihat -- menyembunyikannya
+//    membuat UI diam soal data yang hampir bisa digabung.
+// ---------------------------------------------------------------------------
+
+async function renderMergePanel() {
+  const box = document.getElementById('mergePanel');
+  if (!box) return;
+
+  let data;
+  try {
+    data = await api('/api/merge/candidates');
+  } catch (e) {
+    box.classList.add('hidden');
+    return;
+  }
+
+  if (!data.candidates || data.candidates.length === 0) {
+    // Tidak ada yang bisa digabung adalah keadaan normal (dataset tunggal,
+    // atau strip yang fusion-nya belum jadi) -- jangan ributkan.
+    box.classList.add('hidden');
+    box.innerHTML = '';
+    return;
+  }
+
+  const rows = data.candidates.map(c => {
+    const names = c.dataset_names.map(escapeHTML).join(' + ');
+    const shape = c.output_shape[0] && c.output_shape[1]
+      ? c.output_shape[1].toLocaleString('id-ID') + ' x ' +
+        c.output_shape[0].toLocaleString('id-ID') + ' px'
+      : '-';
+
+    let action;
+    if (!c.mergeable) {
+      action = '<span class="merge-blocked">Tidak bisa digabung</span>';
+    } else if (c.already_merged) {
+      action =
+        '<span class="merge-done">Sudah digabung · ' +
+          humanBytes(c.output_size_bytes || 0) + '</span>' +
+        '<button class="btn btn-ghost btn-sm" data-merge-date="' +
+          escapeHTML(c.date) + '" data-merge-ids="' + c.dataset_ids.join(',') +
+          '" data-merge-overwrite="1">Gabung Ulang</button>';
+    } else {
+      action =
+        '<button class="btn btn-accent btn-sm" data-merge-date="' +
+          escapeHTML(c.date) + '" data-merge-ids="' + c.dataset_ids.join(',') +
+          '">Gabungkan</button>';
+    }
+
+    const notes = [];
+    if (c.blocked_reason) {
+      notes.push('<p class="merge-reason">' + escapeHTML(c.blocked_reason) + '</p>');
+    }
+    (c.warnings || []).forEach(w => {
+      notes.push('<p class="merge-warn">' + escapeHTML(w) + '</p>');
+    });
+
+    return (
+      '<div class="merge-row' + (c.mergeable ? '' : ' is-blocked') + '">' +
+        '<div class="merge-row-main">' +
+          '<div class="merge-date">' + escapeHTML(formatDateKey(c.date)) + '</div>' +
+          '<div class="merge-sources">' + names + '</div>' +
+          '<div class="merge-facts">' +
+            '<span>' + c.stack_count + ' stack</span>' +
+            '<span>' + shape + '</span>' +
+            '<span>' + c.layers.length + ' lapisan</span>' +
+            '<span>' + humanBytes(c.input_bytes) + '</span>' +
+          '</div>' +
+        '</div>' +
+        '<div class="merge-row-action">' + action + '</div>' +
+        (notes.length ? '<div class="merge-notes">' + notes.join('') + '</div>' : '') +
+      '</div>'
+    );
+  }).join('');
+
+  const html =
+    '<div class="merge-head">' +
+      '<h4>Gabungkan Dataset</h4>' +
+      '<span class="merge-sub">' + data.mergeable_count + ' dari ' +
+        data.candidate_count + ' tanggal siap digabung</span>' +
+    '</div>' +
+    '<p class="merge-note">' + escapeHTML(data.explanation) + '</p>' +
+    '<div class="merge-rows">' + rows + '</div>';
+
+  if (box._html !== html) {
+    box._html = html;
+    box.innerHTML = html;
+    bindMergePanel(box);
+  }
+  box.classList.remove('hidden');
+}
+
+function formatDateKey(key) {
+  if (!key || key.length !== 8) return key || '-';
+  return key.slice(6, 8) + '/' + key.slice(4, 6) + '/' + key.slice(0, 4);
+}
+
+function bindMergePanel(box) {
+  box.querySelectorAll('[data-merge-date]').forEach(btn => {
+    btn.addEventListener('click', () => runMerge(btn));
+  });
+}
+
+async function runMerge(btn) {
+  const date = btn.dataset.mergeDate;
+  const ids = btn.dataset.mergeIds.split(',').map(Number);
+  const overwrite = btn.dataset.mergeOverwrite === '1';
+
+  // Konfirmasi eksplisit untuk gabung ulang: itu menimpa berkas yang sudah
+  // ada. Penggabungan pertama tidak perlu ditanya -- tidak ada yang hilang.
+  if (overwrite && !window.confirm(
+      'Berkas gabungan untuk ' + formatDateKey(date) +
+      ' sudah ada dan akan ditimpa. Lanjutkan?')) {
+    return;
+  }
+
+  const original = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Menggabungkan...';
+  try {
+    const result = await api('/api/merge/run', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ date: date, dataset_ids: ids, overwrite: overwrite }),
+    });
+    showToast(
+      result.output_name + ' dibuat · ' + humanBytes(result.output_size_bytes) +
+      ' · sumber tidak diubah', 'success');
+    box_refreshMerge();
+  } catch (err) {
+    showToast(err.message, 'error');
+    btn.disabled = false;
+    btn.textContent = original;
+  }
+}
+
+function box_refreshMerge() {
+  // Panel dibangun ulang supaya baris yang baru digabung berubah jadi
+  // "Sudah digabung" tanpa user perlu menyegarkan halaman.
+  const box = document.getElementById('mergePanel');
+  if (box) box._html = null;
+  renderMergePanel();
 }

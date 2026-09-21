@@ -225,6 +225,12 @@
       <p class="panel-title" style="margin:0">Dataset Saya</p>
       <button class="btn btn-ghost" id="refreshDatasets">Segarkan</button>
     </div>
+    <!-- Tawaran penggabungan. Sengaja duduk DI ATAS daftar dataset, bukan di
+         dalam kartu salah satunya: yang digabung adalah beberapa dataset
+         sekaligus, jadi menempelkannya pada satu kartu akan menyesatkan soal
+         siapa subjeknya. Kosong dan tak terlihat kalau tidak ada yang bisa
+         digabung. -->
+    <div class="merge-panel hidden" id="mergePanel"></div>
     <div class="card-list" id="datasetList"></div>
   </section>
 
