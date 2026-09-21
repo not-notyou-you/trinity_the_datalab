@@ -314,3 +314,27 @@ Yang membuatnya berbahaya adalah diamnya. Berkasnya tetap terbuka normal, tidak 
 **Padanannya untuk stack sudah ada**: `audit_dataset_grids` ([module9_fusion.py:1339](../etl/module9_fusion.py#L1339)) memeriksa setiap stack terhadap grid terpaku tiap kali fusion menulis, dan memperingati tanpa menggagalkan job. Yang hilang memang hanya sisi mask-nya. Setelah D20, kedua turunan grid punya penjaganya masing-masing.
 
 **Sisa pekerjaan yang TIDAK diperbaiki sendiri**: tiga stack yang lahir sebelum pemakuan tetap di grid lama dan hanya bisa dipulihkan dengan fusi ulang — `27/fusion_20251204`, `27/fusion_20251206`, `28/fusion_20251204`. Audit melaporkannya; memperbaikinya keputusan operator, karena merakit ulang stack berjam-jam tidak boleh dipicu diam-diam oleh penjaga.
+
+
+## D21: Merakit Ulang Satu Tanggal Tanpa Mengunduh Ulang
+
+**Modul**: [etl/refusion.py](../etl/refusion.py).
+
+Stack fusion bisa jadi usang tanpa scene-nya ikut usang — tiga stack strip Jawa tertinggal di grid lama setelah pemakuan grid bersama (D19). Ternyata tidak ada jalur untuk memperbaikinya:
+
+- `run_dataset_job` **melewati scene yang `scene_is_done`** (CLEANUP/COMPLETED). Job 22 yang diulang selesai dalam 0,04 detik tanpa menyentuh fusion sama sekali.
+- Mereset status scene memang memaksa pipeline mengulang, tapi mengulang **dari DOWNLOAD**. Sejak D15 ZIP SAFE tidak disimpan, jadi harganya ~1,7 GB per scene — 17 GB untuk pekerjaan yang tidak butuh satu byte pun dari jaringan, karena raster yang dibutuhkan fusi sudah ada di `sentinel-1/PROCESSED/`.
+
+**Memakai ulang `_finalize_date`, bukan memanggil `create_fusion_stack`.** Dua dari tiga tanggal yang diperbaiki tertutup lebih dari satu frame S1 (JAWA_B 4 Desember: tiga frame). Memanggil `create_fusion_stack` dengan satu `scene_id` akan menghasilkan stack yang cuma memuat satu frame — persis penyakit yang `s1_mosaic` dibuat untuk menyembuhkan. Urutan mosaik → preview → fusi → layer referensi hidup di `_finalize_date`; menirunya berarti membuat salinan kedua yang menyimpang diam-diam begitu salah satunya diubah. Jadi modul ini menyusun `_JobContext` yang sama dan memanggil fungsi yang sama.
+
+**Hasilnya**, tanpa satu pun unduhan:
+
+| Dataset | Tanggal | Frame | Waktu |
+|---|---|---|---|
+| 27 JAWA_A | 20251206 | 1 | 95 detik |
+| 27 JAWA_A | 20251204 | 2 (mosaik) | ~100 detik |
+| 28 JAWA_B | 20251204 | 3 (mosaik) | ~200 detik |
+
+Audit grid keempat strip sekarang bersih (11 stack, 0 tidak cocok), dan kandidat penggabungan naik dari 2 jadi **4 tanggal, semuanya bisa digabung**.
+
+**Batasan yang disengaja**: hanya untuk tanggal yang raster PROCESSED-nya masih ada. Tanggal yang rasternya sudah tersapu memang harus lewat pipeline penuh, dan modul ini menolaknya alih-alih menghasilkan stack separuh.
