@@ -23,8 +23,11 @@ antar-strip selalu kelipatan BULAT satu piksel. Akibatnya piksel strip A
 bersambung dengan piksel strip B tanpa geser setengah piksel, dan penyatuannya
 cuma soal menaruh blok di offset yang benar.
 
-Itu bukan kemewahan. Resample akan menginterpolasi nilai backscatter SAR --
-besaran fisis dalam dB yang rata-ratanya tidak bermakna di batas darat/air.
+Itu bukan kemewahan. Resample akan menginterpolasi nilai backscatter SAR.
+Stack ini menyimpan sigma0 LINEAR (VV median ~0,12, VH ~0,03 pada strip Jawa),
+bukan dB, dan justru di skala linear interpolasi paling menyesatkan: satu
+piksel terang speckle menarik rata-rata tetangganya jauh lebih kuat daripada
+di skala logaritmik, tepat di batas darat/air tempat sinyal banjir dibaca.
 Karena itu modul ini MENOLAK menggabungkan grid yang tidak sejajar alih-alih
 diam-diam meresamplenya: lihat `GridMismatch`. Lebih baik gagal terang-terangan
 daripada menyerahkan angka yang sudah berubah tanpa ada yang tahu.
@@ -226,7 +229,16 @@ def read_stack_info(path: Path, dataset_id: int, dataset_name: str) -> StackInfo
             height = int(attrs["height"]) if "height" in attrs else 0
             width = int(attrs["width"]) if "width" in attrs else 0
             if not height or not width:
-                first = h[next(iter(h.keys()))]
+                # Lapisan hidup di dalam grup (`sentinel1/VV`, `gpm/rainfall_24h`),
+                # jadi kunci tingkat atas adalah GRUP dan tidak punya `.shape`.
+                # Ambil bentuknya dari lapisan pertama yang benar-benar dataset.
+                first = h[layers[0]] if layers else None
+                if first is None or not hasattr(first, "shape"):
+                    logger.warning(
+                        "[%s] %s dilewati: ukuran raster tidak bisa ditentukan",
+                        MODULE, path.name,
+                    )
+                    return None
                 height, width = int(first.shape[0]), int(first.shape[1])
             strategy = attrs.get("fusion_strategy")
             return StackInfo(
