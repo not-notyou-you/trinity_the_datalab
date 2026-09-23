@@ -203,11 +203,11 @@ class DatasetSourceConfigResponse(BaseModel):
 
 
 class CreateDatasetRequest(BaseModel):
-    """Payload POST /api/datasets (DOCS/API.md, "Create Dataset").
+    """Payload POST /api/datasets (DOCS/INTERFACE.md, "Create Dataset").
 
     Menggantikan model prototipe yang memakai `tiers` + satu processing level
     global. `tiers` sekarang diturunkan internal dari `sources`
-    (DOCS/PROTOTYPE_CHANGELOG.md, "Changed: Dataset Creation API"), jadi tidak
+    (DOCS/DECISIONS.md, "Changed: Dataset Creation API"), jadi tidak
     lagi diterima di sini.
     """
     # Jalur utama UI: region_id dari tabel lokasi. `location` tetap diterima
@@ -274,7 +274,7 @@ class CreateDatasetRequest(BaseModel):
 
     @model_validator(mode="after")
     def _validate_fusion_strategy(self) -> "CreateDatasetRequest":
-        # Wajib kalau sumbernya >1, harus null kalau cuma 1 (DOCS/API.md,
+        # Wajib kalau sumbernya >1, harus null kalau cuma 1 (DOCS/INTERFACE.md,
         # bagian Validation). Aturan ini tidak bisa jadi CHECK constraint --
         # jumlah sumber ada di tabel lain -- jadi ditegakkan di sini dan lagi
         # di database_client untuk penulis non-API.
@@ -340,7 +340,7 @@ class DatasetItem(BaseModel):
     live_enabled: bool
     # Konfigurasi per-satelit ikut di listing, bukan cuma di detail: kartu
     # dataset (Tab 2) menampilkan satelit + level pemrosesan + strategi fusi
-    # (DOCS/PROTOTYPE_CHANGELOG.md, "Changed: Dataset Cards"), dan kartu itu
+    # (DOCS/DECISIONS.md, "Changed: Dataset Cards"), dan kartu itu
     # dirender dari GET /api/datasets tanpa menarik detail satu per satu.
     # Model lama -- selected_satellites + satu processing_level global --
     # digantikan seluruhnya oleh source_configs.
@@ -366,7 +366,7 @@ class DatasetItem(BaseModel):
     model_config = {"from_attributes": True}
 
 
-# Alias eksplisit: DOCS/API.md menyebut skema respons dataset "DatasetResponse".
+# Alias eksplisit: DOCS/INTERFACE.md menyebut skema respons dataset "DatasetResponse".
 DatasetResponse = DatasetItem
 
 

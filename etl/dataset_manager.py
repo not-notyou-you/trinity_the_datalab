@@ -21,6 +21,8 @@ from etl.location_resolver import resolve_location, resolve_region_id
 
 from etl import tier_names as tn
 from etl.fusion_strategies import FULL_COVERAGE, HYBRID
+from etl.job_lock import LOCK_DIRNAME as JOB_LOCK_DIRNAME
+from etl.job_lock import JobLock
 
 logger = logging.getLogger(__name__)
 
@@ -176,7 +178,7 @@ class DatasetManager:
         Jalur utama sekarang lewat `sources` (konfigurasi per-satelit).
         `tiers` dipertahankan sebagai jalur lama untuk pemanggil yang belum
         pindah; kalau `sources` diisi, `required_tiers` diturunkan darinya dan
-        `tiers` diabaikan (DOCS/PROTOTYPE_CHANGELOG.md: "`tiers` is no longer
+        `tiers` diabaikan (DOCS/DECISIONS.md: "`tiers` is no longer
         user-facing -- derived internally").
 
         Returns:
@@ -1038,11 +1040,25 @@ class DatasetManager:
         key = f"job-{job_id}"
         if _is_thread_alive(key):
             return
+        # _is_thread_alive cuma melihat proses ini. Saat `uvicorn --reload`
+        # menjalankan proses baru sementara yang lama belum selesai menutup,
+        # recover_interrupted_jobs() di proses baru akan me-resume job yang
+        # masih dikerjakan proses lama -- keduanya lalu menulis berkas yang
+        # sama. Lock berkas tingkat OS yang memutus itu, dan lepas sendiri
+        # kalau proses pemegangnya mati.
+        lock = JobLock.acquire(job_id, fm.DATA_ROOT.parent / JOB_LOCK_DIRNAME)
+        if lock is None:
+            logger.warning(
+                "[DATASET] job_id=%d sedang dikerjakan proses lain, tidak dijalankan lagi",
+                job_id,
+            )
+            return
         get_pause_event(job_id).set()
         try:
             from etl.module5_orchestrator import run_dataset_job
         except ImportError as exc:
             logger.error("[DATASET] run_dataset_job belum tersedia di module5_orchestrator: %s", exc)
+            lock.release()
             with self._db.session() as sess:
                 job = sess.get(DatasetJob, job_id)
                 if job:
@@ -1059,6 +1075,7 @@ class DatasetManager:
                 logger.exception("[DATASET] job thread gagal job_id=%d", job_id)
             finally:
                 release_job_events(job_id)
+                lock.release()
 
         t = threading.Thread(target=_runner, daemon=True)
         _register_thread(key, t)
@@ -1159,7 +1176,7 @@ class DatasetManager:
                 "deleted_at": d.deleted_at,
                 # Konfigurasi per-satelit + strategi fusi ikut di detail karena
                 # orchestrator memutuskan cabang pipeline dari keduanya
-                # (DOCS/ETL.md, "Pipeline Branching Logic"). Dimuat lewat
+                # (DOCS/PIPELINE.md, "Pipeline Branching Logic"). Dimuat lewat
                 # relasi lazy="selectin", jadi tidak menambah query per baris.
                 "sources": {
                     c.source_name: list(c.processing_levels or [])

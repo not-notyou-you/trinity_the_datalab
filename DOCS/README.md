@@ -31,9 +31,11 @@ python3 -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
 
 # 2. Set up PostgreSQL (14+ with PostGIS + TimescaleDB)
-psql -U postgres -c "CREATE DATABASE trinity_datalab;"
-psql -U postgres -d trinity_datalab -f database/schema.sql
-for f in database/migrations/*.sql; do psql -U postgres -d trinity_datalab -f "$f"; done
+# Default DB name is sentinel1_flood (see .env.example) — a historical leftover
+# from before the project was renamed "Trinity: The DataLab", never reconciled.
+psql -U postgres -c "CREATE DATABASE sentinel1_flood;"
+psql -U postgres -d sentinel1_flood -f database/schema.sql
+for f in database/migrations/*.sql; do psql -U postgres -d sentinel1_flood -f "$f"; done
 
 # 3. Configure credentials
 cp .env.example .env
@@ -61,14 +63,12 @@ trinity-datalab/
 
 | File | Contents |
 |---|---|
-| `INFRASTRUCTURE.md` | Tech stack, DB setup, environment variables |
-| `DESIGN.md` | ER diagram, schema, tables, constraints |
-| `INTERFACE.md` | UI/UX flow, components, user journey |
-| `API.md` | All endpoints, request/response, error codes |
-| `ETL.md` | Pipeline stages per satellite, config params |
-| `DECISIONS.md` | Architecture decisions and rationale |
-| `IMPLEMENTATION_NOTES.md` | Breadcrumbs for maintainers: level rules, known traps, deliberate limits |
-| `PROTOTYPE_CHANGELOG.md` | What changed from the earlier prototype |
+| `ARCHITECTURE.md` | Tech stack, deployment, disk layout, DB schema (ER diagram, tables, constraints) |
+| `PIPELINE.md` | Pipeline stages per satellite, config params, plus implementation breadcrumbs: level rules, known traps, deliberate limits |
+| `INTERFACE.md` | REST API (all endpoints, request/response, error codes) and web UI/UX (flow, components, user journey) |
+| `DECISIONS.md` | Architecture decisions and rationale, plus what changed from the earlier prototype |
+
+(Four files, each merging what used to be two — see the top of each file for what it absorbed.)
 
 ## Hardware Requirements
 

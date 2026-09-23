@@ -1,5 +1,5 @@
 """
-Unit tests: percabangan pipeline per-satelit (DOCS/ETL.md).
+Unit tests: percabangan pipeline per-satelit (DOCS/PIPELINE.md).
 
 Coverage:
     - etl/processing_plan.py — SourcePlan/ProcessingPlan, pemetaan level ->
@@ -133,7 +133,7 @@ class TestSourcePlan:
         assert all(t == (("INDICES", PROCESSED),) for t in targets.values())
 
     def test_targets_both_levels_coexist(self):
-        """DOCS/ETL.md: artefak RAW dan PROCESSED hidup berdampingan."""
+        """DOCS/PIPELINE.md: artefak RAW dan PROCESSED hidup berdampingan."""
         targets = modis(RAW, PROCESSED).targets()
         assert targets["FLOOD"] == (("ALIGNED", RAW), ("INDICES", PROCESSED))
         assert targets["NDVI"] == (("INDICES", PROCESSED),)

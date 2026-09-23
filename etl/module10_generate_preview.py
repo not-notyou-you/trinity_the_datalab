@@ -16,7 +16,7 @@ GeoTIFF-nya sendiri sudah dipangkas.
 
 DARI TIER MANA?
 `processing_level` menentukan tier yang dibaca, mengikuti aturan yang sama
-dengan fusion (DOCS/ETL.md, "Preview Stage"):
+dengan fusion (DOCS/PIPELINE.md, "Preview Stage"):
 
     PROCESSED -> gold/    (COG hasil Lee filter / NDVI-NDWI / akumulasi)
     RAW       -> bronze/  (S1 terkalibrasi+crop, MODIS FLOOD saja,
@@ -344,7 +344,7 @@ _S1_SUFFIX_BY_LEVEL: dict[str, str] = {"PROCESSED": "_lee", "RAW": "_crop"}
 
 def tier_for_level(processing_level: str | None) -> str:
     """Tier on-disk yang dirender untuk level ini: PROCESSED -> gold,
-    RAW -> bronze (DOCS/ETL.md, "Preview Stage")."""
+    RAW -> bronze (DOCS/PIPELINE.md, "Preview Stage")."""
     return _TIER_BY_LEVEL[fm.normalize_preview_level(processing_level)]
 
 

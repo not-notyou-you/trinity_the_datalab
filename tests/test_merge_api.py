@@ -141,6 +141,115 @@ def test_candidates_menandai_yang_sudah_digabung(client):
     assert cand["output_size_bytes"] > 0
 
 
+class TestPreview:
+    """Penggabungan ikut menulis PNG.
+
+    Tanpa ini hasil penggabungan cuma HDF5 belasan GB, dan pertanyaan pertama
+    setelahnya -- apakah stripnya benar-benar bersambung -- tidak bisa dijawab
+    tanpa menulis kode dulu.
+    """
+
+    def test_run_menghasilkan_preview_yang_bisa_diambil(self, client):
+        r = client.post("/api/merge/run",
+                        json={"date": "20251201", "dataset_ids": [27, 28]})
+        images = r.json()["preview_images"]
+        assert images, "penggabungan seharusnya ikut menulis PNG"
+
+        png = client.get(images[0]["url"])
+        assert png.status_code == 200
+        assert png.headers["content-type"] == "image/png"
+        assert png.content[:8] == b"\x89PNG\r\n\x1a\n"
+
+    def test_candidates_membawa_preview_setelah_digabung(self, client):
+        cand = client.get("/api/merge/candidates").json()["candidates"][0]
+        assert cand["preview_images"] == [], "belum digabung, belum ada gambar"
+
+        client.post("/api/merge/run",
+                    json={"date": "20251201", "dataset_ids": [27, 28]})
+        cand = client.get("/api/merge/candidates").json()["candidates"][0]
+        assert len(cand["preview_images"]) >= 1
+
+    def test_rebuild_membuat_preview_tanpa_menyentuh_hdf5(self, client, merge_env):
+        """Berkas yang digabung sebelum preview ada harus bisa disusulkan
+        gambarnya tanpa menggabung ulang belasan GB."""
+        client.post("/api/merge/run",
+                    json={"date": "20251201", "dataset_ids": [27, 28]})
+        out = merge_env / "merged" / "merged_20251201.h5"
+        before = out.read_bytes()
+
+        import shutil
+        shutil.rmtree(out.parent / "preview")
+        assert client.get("/api/merge/candidates").json(
+        )["candidates"][0]["preview_images"] == []
+
+        r = client.post("/api/merge/preview/20251201/rebuild")
+        assert r.status_code == 200, r.text
+        assert r.json()["preview_images"], "rebuild seharusnya menulis PNG"
+        assert out.read_bytes() == before, "HDF5 ikut berubah"
+
+    def test_hapus_membuang_hdf5_dan_preview_tanpa_menyentuh_sumber(
+            self, client, merge_env):
+        client.post("/api/merge/run",
+                    json={"date": "20251201", "dataset_ids": [27, 28]})
+        out = merge_env / "merged" / "merged_20251201.h5"
+        src = merge_env / "datasets" / "27_JAWA_A" / "fusion" / "fusion_20251201_x.h5"
+        src_before = src.read_bytes()
+        assert out.exists()
+
+        r = client.delete("/api/merge/result/20251201")
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["freed_bytes"] > 0
+        assert not out.exists()
+        assert not (out.parent / "preview" / out.stem).exists()
+        assert src.read_bytes() == src_before, "stack sumber ikut terhapus"
+
+        # Sudah hilang dari daftar, dan bisa digabung lagi dari sumber yang utuh.
+        cand = client.get("/api/merge/candidates").json()["candidates"][0]
+        assert cand["already_merged"] is False
+        assert client.post(
+            "/api/merge/run",
+            json={"date": "20251201", "dataset_ids": [27, 28]}
+        ).status_code == 200
+
+    def test_hapus_preview_saja_menyisakan_hdf5(self, client, merge_env):
+        client.post("/api/merge/run",
+                    json={"date": "20251201", "dataset_ids": [27, 28]})
+        out = merge_env / "merged" / "merged_20251201.h5"
+
+        r = client.delete("/api/merge/result/20251201?preview_only=true")
+        assert r.status_code == 200
+        assert out.exists(), "preview_only seharusnya tidak menghapus HDF5"
+        assert client.get("/api/merge/candidates").json(
+        )["candidates"][0]["preview_images"] == []
+
+    def test_hapus_menolak_tanggal_tak_dikenal_dan_bentuk_aneh(
+            self, client, merge_env):
+        assert client.delete("/api/merge/result/20250101").status_code == 404
+
+        # Bukan delapan digit -> ditolak sebelum menyentuh disk. `..` bahkan
+        # tidak sampai ke handler: klien menormalkan path-nya lebih dulu. Yang
+        # dijaga di sini bukan kode status tertentu, tapi bahwa tidak satu pun
+        # bentuk ini berhasil menghapus sesuatu.
+        for bad in ("2025", "..", "20251201x", "%2e%2e"):
+            assert client.delete(f"/api/merge/result/{bad}").status_code != 200
+        assert (merge_env / "datasets" / "27_JAWA_A" / "fusion").is_dir()
+
+    def test_rebuild_menolak_tanggal_yang_belum_digabung(self, client):
+        r = client.post("/api/merge/preview/20250101/rebuild")
+        assert r.status_code == 404
+
+    def test_preview_hanya_melayani_berkas_yang_memang_ada(self, client):
+        client.post("/api/merge/run",
+                    json={"date": "20251201", "dataset_ids": [27, 28]})
+        # Nama dicocokkan ke isi folder, jadi bentuk apa pun yang bukan PNG di
+        # sana -- termasuk yang menaiki direktori -- berhenti di 404.
+        for name in ("tidak_ada.png", "../../merged_20251201.h5"):
+            assert client.get(
+                f"/api/merge/preview/20251201/{name}"
+            ).status_code == 404
+
+
 class TestAllDatasetsShape:
     """`_all_datasets` membaca hasil DatasetManager.list_datasets.
 

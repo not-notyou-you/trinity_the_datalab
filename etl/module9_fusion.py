@@ -23,7 +23,7 @@ metadata JSON, dicatat sebagai baris `fusion_products` (untuk lineage
 `fusion_id`) dan baris `data_products` (tier=FUSION, source=FUSION).
 
 Struktur HDF5 dikelompokkan per source, bukan datar, dan hanya memuat group
-untuk sumber yang benar-benar dikonfigurasi dataset ini (DOCS/ETL.md, "Fusion
+untuk sumber yang benar-benar dikonfigurasi dataset ini (DOCS/PIPELINE.md, "Fusion
 Process" langkah 4). Isi tiap group ikut level sumbernya:
 
     sentinel1 RAW / PROCESSED  ->  /sentinel1/VV, /sentinel1/VH
@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from dataclasses import dataclass
 from datetime import date as date_type, datetime, timedelta, timezone
 from pathlib import Path
@@ -103,7 +104,7 @@ MODIS_NODATA_U8 = 255  # uint8 can't hold NaN; 255 marks a missing/nodata pixel
 HDF5_CHUNK_MAX = 256
 
 # Band Sentinel-1 yang ikut difusikan. Sama di kedua level: "RAW" untuk SAR
-# tetap berarti terkalibrasi (DOCS/ETL.md), yang berubah cuma tier sumbernya.
+# tetap berarti terkalibrasi (DOCS/PIPELINE.md), yang berubah cuma tier sumbernya.
 S1_FUSION_BANDS: tuple[str, ...] = ("VV", "VH")
 
 
@@ -130,7 +131,7 @@ class _AuxLayer:
 
 # Lapisan aux per level. Level RAW hanya memuat artefak mentah sumbernya;
 # turunannya (NDVI/NDWI, akumulasi 72h/7d) tidak pernah dihitung di jalur RAW
-# jadi tidak ada berkasnya untuk dimasukkan (DOCS/DESIGN.md, tabel RAW vs
+# jadi tidak ada berkasnya untuk dimasukkan (DOCS/ARCHITECTURE.md, tabel RAW vs
 # PROCESSED per satelit).
 _FLOOD = _AuxLayer("FLOOD", "FLOOD", Resampling.nearest, categorical=True)
 # Asal tiap piksel FLOOD (1 = komposit 2 hari, 2 = pengisi 1 hari CS). Ikut di
@@ -223,7 +224,7 @@ def _find_s1_products(
     `tier` mengikuti level yang dikonfigurasi untuk SENTINEL1 pada run ini:
     GOLD untuk PROCESSED, BRONZE untuk RAW. BRONZE adalah artefak RAW S1 yang
     sah — sudah terkalibrasi, terreproyeksi, dan ter-crop, cuma belum
-    di-Lee-filter (DOCS/ETL.md, "What RAW means for Sentinel-1") — jadi
+    di-Lee-filter (DOCS/PIPELINE.md, "What RAW means for Sentinel-1") — jadi
     memfusikannya bukan kompromi, itu memang deliverable yang diminta user.
 
     Dicari lewat scene_id persis yang baru diproses pemanggil, bukan
@@ -519,7 +520,16 @@ class _FusionH5Layers:
         height, width = ref_shape
         self._chunks = (min(HDF5_CHUNK_MAX, height), min(HDF5_CHUNK_MAX, width))
         h5_path.parent.mkdir(parents=True, exist_ok=True)
-        self._file = h5py.File(h5_path, "w")
+        # Ditulis ke berkas antara lalu dipindahkan sekali jalan di finalize():
+        # path final tidak boleh pernah berisi stack separuh jadi, karena
+        # konsumen menilai "berkas ada" sebagai "berkas beres".
+        #
+        # Namanya sengaja tetap, bukan unik per proses: pemanggil yang gagal di
+        # tengah jalan tidak punya try/finally yang membuang berkas antaranya,
+        # jadi nama tetap membuat sisa itu tertimpa percobaan berikutnya
+        # (mode "w") alih-alih menumpuk satu berkas baru tiap kegagalan.
+        self._partial_path = h5_path.with_name(h5_path.name + ".partial")
+        self._file = h5py.File(self._partial_path, "w")
         self.names: list[str] = []
 
     def add(self, name: str, array: np.ndarray, attrs: dict | None = None) -> None:
@@ -624,6 +634,8 @@ class _FusionH5Layers:
                 int(round((west - aoi_west) / res_x)),
             ]
         f.close()
+        # Stack lengkap dan tertutup: baru sekarang path final boleh ada.
+        os.replace(self._partial_path, self.path)
 
         logger.info(
             "[M9] Saving fusion H5 to FUSION tier: %s level=%s shape=(%d, %d) "
@@ -799,7 +811,7 @@ def _register_aux_products(
 
     `tier`/`processing_level` datang dari SourcePlan.targets(): band level RAW
     mendarat di BRONZE dan ditandai processing_level='RAW', band jalur penuh
-    di SILVER dan ditandai 'PROCESSED' (DOCS/ETL.md). Sebelum model
+    di SILVER dan ditandai 'PROCESSED' (DOCS/PIPELINE.md). Sebelum model
     per-satelit keduanya selalu SILVER/PROCESSED, karena cuma ada satu jalur.
 
     Mengembalikan ({band: product_id}, job_id) — product_id dipakai
@@ -918,7 +930,7 @@ def ensure_modis_inputs_for_date(
 
     RAW      : FLOOD saja -> bronze/, didaftarkan sebagai data_products BRONZE
                dengan processing_level='RAW'. TIDAK diekspor ke GOLD — level
-               RAW memang berhenti di BRONZE (DOCS/ETL.md).
+               RAW memang berhenti di BRONZE (DOCS/PIPELINE.md).
     PROCESSED: FLOOD+NDVI+NDWI -> silver/, lalu COG GOLD, keduanya ditandai
                processing_level='PROCESSED'.
 
@@ -1094,13 +1106,21 @@ def ensure_aux_inputs_for_date(
     satu sama lain.
 
     Returns:
-        {tier: [path, ...]} untuk file MODIS/GPM yang ditulis di sini.
-        Orchestrator memakainya untuk membersihkan tier aux yang tidak
-        diminta dataset — tanpa ini, file gold/modis + gold/gpm akan
-        tertinggal di disk saat user cuma meminta tier FUSION.
+        ({tier: [path, ...]}, {sumber yang gagal}).
+
+        Dict tier berisi file MODIS/GPM yang ditulis di sini. Orchestrator
+        memakainya untuk membersihkan tier aux yang tidak diminta dataset —
+        tanpa ini, file gold/modis + gold/gpm akan tertinggal di disk saat
+        user cuma meminta tier FUSION.
+
+        Set kedua berisi sumber yang DIKONFIGURASI tapi tidak menghasilkan
+        satu berkas pun (server NASA down, granule belum terbit). Tanggal
+        seperti itu selesai sebagian, dan pemanggil harus menandainya supaya
+        dicoba lagi di run berikutnya — bukan dianggap tuntas.
     """
     plan = plan or load_processing_plan(db, dataset_id)
     produced: dict[str, list[str]] = _empty_produced()
+    missing_sources: set[str] = set()
 
     # Sumber yang tidak ada di plan dilewati DI SINI, bukan diserahkan ke
     # fungsi per-sumber: fungsi itu punya fallback "baca dari database" untuk
@@ -1121,9 +1141,11 @@ def ensure_aux_inputs_for_date(
             db, dataset_id, dataset_name, region_id, aoi_bbox, target_date,
             plog=plog, plan=source_plan,
         )
+        if not any(part.values()):
+            missing_sources.add(source_name)
         for tier, paths in part.items():
             produced[tier].extend(paths)
-    return produced
+    return produced, missing_sources
 
 
 @dataclass(frozen=True)
@@ -2080,7 +2102,7 @@ def create_fusion_stack(
                 "dataset_source_config. Fusi di pipeline ini di-anchor ke grid "
                 "dan tanggal akuisisi scene S1; tanpa S1 tidak ada grid "
                 "referensi maupun tanggal untuk dipasangkan "
-                "(DOCS/IMPLEMENTATION_NOTES.md)."
+                "(DOCS/PIPELINE.md)."
             )
 
         return [

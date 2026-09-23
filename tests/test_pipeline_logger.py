@@ -100,6 +100,49 @@ class TestStageContextManager:
         assert "traceback" in details
 
 
+class TestCompletedAuxDates:
+    """_ingest_aux_days melewati tanggal yang dikembalikan di sini, jadi apa pun
+    yang lolos ke set ini tidak akan pernah diproses ulang. Tanggal yang selesai
+    sebagian HARUS tetap di luar set."""
+
+    def _aux(self, plog, dataset_id, date_key, status, details):
+        plog.log_event(
+            dataset_id, date_key, "ORCHESTRATOR", "SCENE_PIPELINE", status,
+            f"Aux {date_key}", details,
+        )
+
+    def test_fully_complete_date_is_skippable(self, plog, sample_dataset):
+        self._aux(plog, sample_dataset, "20250601", "COMPLETED",
+                  {"files_written": 14, "aux_complete": True, "missing_sources": []})
+        assert plog.completed_aux_dates(sample_dataset, ["20250601"]) == {"20250601"}
+
+    def test_partial_date_is_not_skippable(self, plog, sample_dataset):
+        # MODIS berhasil, GPM tidak menghasilkan apa pun: statusnya tetap
+        # COMPLETED karena ada berkas ditulis, tapi tanggalnya belum tuntas.
+        self._aux(plog, sample_dataset, "20250602", "COMPLETED",
+                  {"files_written": 7, "aux_complete": False, "missing_sources": ["gpm"]})
+        assert plog.completed_aux_dates(sample_dataset, ["20250602"]) == set()
+
+    def test_failed_date_is_not_skippable(self, plog, sample_dataset):
+        self._aux(plog, sample_dataset, "20250603", "FAILED",
+                  {"files_written": 0, "aux_complete": False, "missing_sources": ["modis", "gpm"]})
+        assert plog.completed_aux_dates(sample_dataset, ["20250603"]) == set()
+
+    def test_legacy_rows_without_the_flag_are_not_skippable(self, plog, sample_dataset):
+        # Baris dari sebelum aux_complete ada: tidak bisa dibuktikan tuntas,
+        # jadi harus diproses ulang sekali daripada melewatkannya selamanya.
+        self._aux(plog, sample_dataset, "20250604", "COMPLETED", {"files_written": 12})
+        assert plog.completed_aux_dates(sample_dataset, ["20250604"]) == set()
+
+    def test_other_datasets_do_not_leak(self, plog, sample_dataset):
+        self._aux(plog, sample_dataset, "20250605", "COMPLETED",
+                  {"files_written": 14, "aux_complete": True, "missing_sources": []})
+        assert plog.completed_aux_dates(sample_dataset + 9999, ["20250605"]) == set()
+
+    def test_empty_input_does_not_query(self, plog, sample_dataset):
+        assert plog.completed_aux_dates(sample_dataset, []) == set()
+
+
 class TestDatasetLogFile:
     """Regression cover for the run-log .txt files (logs/<id>_<dataset>.txt).
 

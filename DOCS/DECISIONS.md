@@ -18,7 +18,7 @@ teks. Klaim "core novelty" di atas baru benar setelah itu.
 Strategi terurai jadi **dua sumbu** — unduh (tanggal aux mana diambil) dan
 rakit (tanggal mana jadi berkas HDF5). HYBRID adalah strategi ketiga yang sah
 justru karena memilih sumbu berbeda dari masing-masing: unduh seperti
-FULL_COVERAGE, rakit seperti CO_OCCURRENCE. Lihat DOCS/ETL.md "Strategies: two
+FULL_COVERAGE, rakit seperti CO_OCCURRENCE. Lihat DOCS/PIPELINE.md "Strategies: two
 axes, not one" untuk tabelnya.
 
 ## D2: Per-Satellite Processing Level (Not Global Toggle)
@@ -79,7 +79,9 @@ axes, not one" untuk tabelnya.
 
 **Decision**: In-process Python scheduler, not OS-level cron.
 
-**Why**: Easy pause/resume, Python-native event handling, no external dependency. PostgreSQL advisory lock ensures only one API worker runs the scheduler in multi-worker deployments.
+**Why**: Easy pause/resume, Python-native event handling, no external dependency.
+
+**Correction (found auditing this file against the code)**: this entry used to claim "a PostgreSQL advisory lock ensures only one API worker runs the scheduler in multi-worker deployments." No such lock exists anywhere in the codebase — `etl/live_scheduler.py` starts a plain `APScheduler.BackgroundScheduler` with no cross-process guard of any kind. Running more than one API worker process today means each one runs its own copy of the daily live-ingestion cron, with nothing serializing them. `etl/job_lock.py` (D22) prevents two processes from writing the *same job's* files concurrently once a job is running, but that does not stop the cron from firing the job twice in the first place. This is a real gap, not just a documentation error — either add the advisory lock this entry always claimed to have, or restrict live ingestion to a single designated worker process.
 
 ## D8: Vanilla JS Frontend (No React/Vue)
 
@@ -191,8 +193,8 @@ axes, not one" untuk tabelnya.
 
 **Catatan koreksi dokumentasi** (ketidaksinkronan yang ditemukan saat keputusan ini disusun, harus dibereskan bersama migrasi):
 
-1. ~~[DOCS/ETL.md:110](ETL.md#L110) menyatakan layout `{source}/{processing_level}/{tier}/` sementara kode membangun `{YYYYMMDD}/{tier}/{source}/`.~~ **Sudah dibereskan** oleh relayout D15: layout sekarang `{source}/{RAW|PROCESSED}/` dan docs-nya ditulis ulang. Ironisnya bentuk yang diklaim docs lama justru lebih dekat ke bentuk akhir daripada yang dibangun kode saat itu.
-2. [DOCS/DESIGN.md:192](DESIGN.md#L192) menyebut "RAW tier quirk: tidak ada folder tier RAW". Sudah tidak berlaku — `folder_manager.TIERS` memuat `raw` sebagai tier tersendiri. Dengan D14 catatan quirk ini dihapus seluruhnya: `raw/` (native) dan `aligned/` (georeferenced) adalah dua kontrak berbeda yang namanya masing-masing sudah jelas, sehingga tidak ada lagi yang perlu dijelaskan sebagai pengecualian.
+1. ~~DOCS/PIPELINE.md (formerly ETL.md) menyatakan layout `{source}/{processing_level}/{tier}/` sementara kode membangun `{YYYYMMDD}/{tier}/{source}/`.~~ **Sudah dibereskan** oleh relayout D15: layout sekarang `{source}/{RAW|PROCESSED}/` dan docs-nya ditulis ulang. Ironisnya bentuk yang diklaim docs lama justru lebih dekat ke bentuk akhir daripada yang dibangun kode saat itu.
+2. DOCS/ARCHITECTURE.md (formerly DESIGN.md) menyebut "RAW tier quirk: tidak ada folder tier RAW". Sudah tidak berlaku — `folder_manager.TIERS` memuat `raw` sebagai tier tersendiri. Dengan D14 catatan quirk ini dihapus seluruhnya: `raw/` (native) dan `aligned/` (georeferenced) adalah dua kontrak berbeda yang namanya masing-masing sudah jelas, sehingga tidak ada lagi yang perlu dijelaskan sebagai pengecualian.
 
 ## D15: Amandemen D14 — Tier Bukan Lagi Segmen Path
 
@@ -292,7 +294,7 @@ Alurnya dua langkah, LIHAT lalu IZINKAN. `GET /candidates` tidak pernah menulis;
 
 Mengunci **bbox** ke grid dataset 26 tidak mengunci **grid fusion**-nya. Tiap dataset memaku grid-nya sendiri dari resolusi raster S1 miliknya sendiri, persis seperti yang sudah diperingatkan: grid fusion bukan konstanta, ia ikut scene. Akibatnya jarak bujur yang di grid 26 tepat 25812 piksel menjadi 25804,14 piksel di grid baru — meleset 0,14 piksel, jadi tidak bisa ditempel.
 
-**Perbaikannya tidak butuh kode baru.** `_pin_dataset_grid` hanya menulis saat `fusion_grid IS NULL` ([module9_fusion.py:1441](../etl/module9_fusion.py#L1441)), jadi mengisi kolom itu lebih dulu dengan satu grid bersama untuk keempat strip — resolusi sama, origin berselisih kelipatan bulat piksel — akan membuat fusion memakainya apa adanya. Yang harus dibayar: stack yang sudah terlanjur dirakit di grid lama perlu dirakit ulang.
+**Perbaikannya tidak butuh kode baru.** `_dataset_grid` sudah menahan diri kalau grid sudah terpaku (`_load_pinned_grid`, [module9_fusion.py:1298-1299](../etl/module9_fusion.py#L1298-L1299)) sebelum memanggil `_pin_grid` ([module9_fusion.py:1433](../etl/module9_fusion.py#L1433)) yang menulis kolomnya. Jadi mengisi kolom itu lebih dulu dengan satu grid bersama untuk keempat strip — resolusi sama, origin berselisih kelipatan bulat piksel — akan membuat fusion memakainya apa adanya. Yang harus dibayar: stack yang sudah terlanjur dirakit di grid lama perlu dirakit ulang.
 
 **Pelajaran untuk pemecahan berikutnya (Sumatra, dan seterusnya)**: grid bersama dipaku ke SEMUA sub-dataset sebelum fusion pertama jalan, bukan disimpulkan dari bbox. Bbox menentukan di mana, grid menentukan di kisi mana — dan hanya yang kedua yang menentukan bisa-tidaknya digabung.
 
@@ -311,7 +313,7 @@ Yang membuatnya berbahaya adalah diamnya. Berkasnya tetap terbuka normal, tidak 
 
 **Perbaikannya**: penjaga sekarang membandingkan grid berkas yang ada dengan `fusion_grid` terpaku (`_grid_matches`, toleransi setengah piksel supaya galat pembulatan lewat JSON tidak memicu bangun ulang percuma) dan membangun ulang saat berbeda. Pemulihannya **terjadi sendiri** — tidak menunggu seseorang ingat memanggil `force=True`, karena yang menyebabkan kerusakan ini justru tidak adanya seorang pun yang tahu harus melakukannya.
 
-**Padanannya untuk stack sudah ada**: `audit_dataset_grids` ([module9_fusion.py:1339](../etl/module9_fusion.py#L1339)) memeriksa setiap stack terhadap grid terpaku tiap kali fusion menulis, dan memperingati tanpa menggagalkan job. Yang hilang memang hanya sisi mask-nya. Setelah D20, kedua turunan grid punya penjaganya masing-masing.
+**Padanannya untuk stack sudah ada**: `audit_dataset_grids` ([module9_fusion.py:1361](../etl/module9_fusion.py#L1361)) memeriksa setiap stack terhadap grid terpaku tiap kali fusion menulis, dan memperingati tanpa menggagalkan job. Yang hilang memang hanya sisi mask-nya. Setelah D20, kedua turunan grid punya penjaganya masing-masing.
 
 **Sisa pekerjaan yang TIDAK diperbaiki sendiri**: tiga stack yang lahir sebelum pemakuan tetap di grid lama dan hanya bisa dipulihkan dengan fusi ulang — `27/fusion_20251204`, `27/fusion_20251206`, `28/fusion_20251204`. Audit melaporkannya; memperbaikinya keputusan operator, karena merakit ulang stack berjam-jam tidak boleh dipicu diam-diam oleh penjaga.
 
@@ -338,3 +340,255 @@ Stack fusion bisa jadi usang tanpa scene-nya ikut usang — tiga stack strip Jaw
 Audit grid keempat strip sekarang bersih (11 stack, 0 tidak cocok), dan kandidat penggabungan naik dari 2 jadi **4 tanggal, semuanya bisa digabung**.
 
 **Batasan yang disengaja**: hanya untuk tanggal yang raster PROCESSED-nya masih ada. Tanggal yang rasternya sudah tersapu memang harus lewat pipeline penuh, dan modul ini menolaknya alih-alih menghasilkan stack separuh.
+
+## D22: OS-Level File Lock + Atomic Write, Bukan Penanda Database
+
+**Modul**: [etl/job_lock.py](../etl/job_lock.py), [etl/atomic_write.py](../etl/atomic_write.py). Lihat juga DOCS/PIPELINE.md "Concurrency & Durability Safeguards".
+
+**Kejadian**: dataset 31/32 (21 Sep 2026) berakhir dengan granule GPM korup dan dua event `SCENE_PIPELINE` COMPLETED parsial untuk tanggal yang sama. Penyebabnya `uvicorn --reload`: proses baru mulai sebelum proses lama benar-benar berhenti, `recover_interrupted_jobs()` di proses baru me-resume job yang **masih** dikerjakan proses lama, dan kedua proses menulis berkas yang sama secara bersamaan.
+
+**Decision**: kunci kepemilikan job pakai lock berkas tingkat OS (`msvcrt.locking` di Windows, `fcntl.flock` di POSIX) per `job_id`, bukan penanda di database atau berkas PID. Penulisan berkas keluaran lewat `os.replace()` dari berkas sementara (`atomic_path()`), bukan menulis langsung ke path final.
+
+**Why**:
+- **Lock berkas OS, bukan flag database**: satu-satunya properti yang benar-benar dibutuhkan adalah lock harus lepas sendiri begitu proses pemegangnya mati dengan cara apa pun — exit normal, crash, taskkill. Kernel menjamin itu untuk lock berkas. Flag boolean di tabel `dataset_jobs` tidak: proses yang mati sebelum sempat membersihkan flag-nya meninggalkan job terkunci selamanya sampai ada operator yang sadar dan membersihkannya manual.
+- **Bukan berkas PID**: PID yang ditinggalkan proses yang di-kill tidak bisa dibedakan dari PID yang masih hidup tanpa menebak, dan OS memakai ulang PID. Lock berkas OS tidak punya masalah itu.
+- **`_active_threads` di `dataset_manager` tidak cukup**: itu cuma melindungi dalam satu proses Python. Race yang sebenarnya terjadi ANTAR proses.
+- **Atomic write menutup separuh masalah yang lain**: lock mencegah dua proses menulis berkas yang SAMA bersamaan, tapi tidak mencegah pembaca melihat berkas yang SEDANG ditulis (proses lain, atau bahkan proses yang sama di percobaan yang diulang). `atomic_path()` menjamin path akhir selalu berisi versi lama yang utuh atau versi baru yang utuh, tidak pernah di antaranya.
+
+**Trade-off**: kegagalan membuka berkas lock (disk penuh, folder read-only) sengaja **tidak menghentikan job** — job jalan tanpa lock, karena race hanya muncul saat ada dua proses, dan tidak berjalan sama sekali jauh lebih buruk daripada race yang jarang terjadi.
+
+## D23: Live Ingestion sebagai Satu Dataset Tersendiri (`dataset_kind='LIVE'`)
+
+**Decision**: ingestion harian dijalankan atas SATU dataset yang ditandai `dataset_kind='LIVE'` (kolom `datasets.dataset_kind`, [etl/database_client.py:942](../etl/database_client.py#L942)), bukan sebagai flag "jadwalkan ulang" pada dataset mana pun, dan bukan konstruksi terpisah dari tabel `datasets`.
+
+**Why**: seluruh mesin pemrosesan — orchestrator, folder layout, tier cleanup, storage summary, endpoint `/api/datasets/{id}/*` — sudah dibangun di atas "satu baris `datasets`, satu folder, satu rangkaian job". Membuat live ingestion sebagai flag berulang pada dataset APA PUN berarti dataset itu punya dua identitas sekaligus (studi ablasi yang dibekukan pada rentang tanggal tertentu, DAN aliran yang terus tumbuh) — dua konsep yang butuh aturan retensi dan tampilan UI yang bertentangan. Menjadikannya dataset tersendiri berarti seluruh mesin yang sudah ada dipakai ulang tanpa modifikasi; yang baru hanya `live_dataset_sources` (per-satelit enable flag, satu baris per source karena cuma ada satu dataset LIVE) dan `etl/live_scheduler.py` (cron yang menjalankannya).
+
+**Konsekuensi**: `GET /api/datasets` (list biasa) memfilter `dataset_kind=STANDARD` secara eksplisit supaya dataset LIVE tidak muncul di daftar "Dataset Saya" bercampur dengan studi ablasi; ia hanya terlihat lewat `/api/live`.
+
+## D24: Layer Referensi Darat/Air sebagai Metadata Non-Fatal, Bukan Bagian Lineage
+
+**Modul**: [etl/reference_layers.py](../etl/reference_layers.py), [etl/land_mask.py](../etl/land_mask.py), [etl/water_occurrence.py](../etl/water_occurrence.py), migrasi [023_reference_land_polygons.sql](../database/migrations/023_reference_land_polygons.sql).
+
+**Decision**: bangun dua raster referensi per dataset — jarak bertanda ke garis pantai (dari poligon darat OSM) dan frekuensi air permanen (dari JRC Global Surface Water) — sebagai berkas `masks/*.tif` di luar rantai `data_products`/`data_lineage` sama sekali, dan jangan pernah gagalkan job kalau pembuatannya gagal.
+
+**Why**:
+- **Di luar lineage karena bukan turunan satu scene.** Setiap tier lain di lineage adalah transformasi satu input jadi satu output yang bisa dilacak checksum-nya. Layer referensi bukan itu — ia properti AOI (dari tabel referensi statis + grid fusion dataset), sama untuk seluruh rentang tanggal dataset. Memaksakannya ke `data_products` akan mengarang scene/job asal yang tidak sungguh ada.
+- **Non-fatal karena informasi tambahan, bukan mata rantai wajib.** Dataset tanpa layer referensi (dibuat sebelum fitur ini ada, atau tabel `reference_land_polygons`/tile JRC belum termuat) tetap dataset yang sah dan lengkap — FUSED tetap bisa dipakai tanpa masks/. Menggagalkan job berjam-jam karena baris referensi belum termuat akan menghukum kesalahan konfigurasi yang tidak berkaitan dengan pipeline utama.
+- **Sungai/danau sengaja tidak dilubangi dari poligon darat.** Luapan sungai adalah sinyal yang justru dicari; melubangi poligon di sana akan membuat piksel banjir sungai selalu terhitung "laut/air", menyembunyikan tepat kejadian yang ingin ditangkap.
+- **Idempotensinya harus sadar grid, bukan cuma sadar keberadaan berkas** — lihat D20 untuk bug yang ditemukan justru dari keputusan ini (berkas ada tidak berarti berkas masih cocok dengan grid fusion saat ini).
+
+---
+
+## Prototype → DataLab Changelog
+
+What changed conceptually and architecturally from the earlier Trinity Prototype to Trinity: The DataLab. The DataLab is developed as a new product; this section exists for developer context only. (Merged in from the former `PROTOTYPE_CHANGELOG.md` — see DOCS/README.md for the current doc set.)
+
+### Core Conceptual Shift
+
+**Prototype**: Fixed pipeline. Hardcoded to ingest all three satellites, always run full processing, always produce fusion. No user choice over processing or fusion behavior.
+
+**DataLab**: Parametric pipeline. Users configure satellites, processing level, fusion strategy, and preview options at dataset creation time. The pipeline branches based on these parameters.
+
+### New: Per-Satellite Processing Configuration
+
+**Prototype**: All three satellites always ran with fixed processing. No user choice.
+
+**DataLab**: Each satellite has its own RAW/PROCESSED toggle, configured independently via a new `dataset_source_config` table:
+
+| Source | RAW (skip) | PROCESSED (full) |
+|---|---|---|
+| Sentinel-1 | Calibrate + crop only (no Lee filter, no QA) | + Lee filter + QA + COG |
+| MODIS | Flood map only (no derived indices) | + NDVI + NDWI computation |
+| GPM | Daily rainfall only | + 24h/72h/7d accumulation |
+
+The old single `processing_level TEXT[]` column on `datasets` is replaced by a junction table. The `data_products` table gains a `processing_level` column to tag each artifact.
+
+### New: Fusion Strategy Selection
+
+**Prototype**: Fusion always used full-coverage (fuse every S1 date, fill missing MODIS/GPM with ±1 day search, NaN if unavailable).
+
+**DataLab**: Three strategies available:
+- `CO_OCCURRENCE`: Only fuse dates where all selected sources have same-day data
+- `FULL_COVERAGE`: Fuse every date, fill missing with ±1-2 day or NaN
+- `HYBRID`: Daily auxiliary, S1-anchored fusion dates
+
+The `fusion_products` table gains `fusion_strategy` and explicit `temporal_offset_*` columns.
+
+### New: Selective Satellite Ingestion
+
+**Prototype**: Always ingested Sentinel-1 + MODIS + GPM. All three pipelines always ran.
+
+**DataLab**: Users select 1–3 sources, each with its own processing level. Pipeline only runs modules for configured sources. Fusion disabled when only 1 source configured. API `sources` object replaces the old flat `selected_satellites` array.
+
+### New: Configurable Preview Options
+
+**Prototype**: Previews were all-or-nothing (controlled by `generate_preview: true/false`).
+
+**DataLab**: Users select specific preview types: GRAYSCALE, COLORED, COMPOSITE, or any combination. Empty selection = no previews.
+
+### Changed: Dataset Creation API
+
+**Prototype request**:
+```json
+{
+  "location": "Jabodetabek",
+  "date_start": "2024-01-01",
+  "date_end": "2024-01-31",
+  "tiers": ["GOLD", "FUSION"],
+  "name": "..."
+}
+```
+
+**DataLab request**:
+```json
+{
+  "location": "Jabodetabek",
+  "date_start": "2024-01-01",
+  "date_end": "2024-01-31",
+  "name": "...",
+  "sources": {
+    "sentinel1": { "processing": ["RAW", "PROCESSED"] },
+    "modis": { "processing": ["PROCESSED"] },
+    "gpm": { "processing": ["RAW"] }
+  },
+  "fusion_strategy": "CO_OCCURRENCE",
+  "preview_options": ["COLORED"]
+}
+```
+
+`tiers` is no longer user-facing — derived internally. `sources` replaces both `selected_satellites` and `processing_level`.
+
+### Changed: Products API
+
+New filter parameter: `GET /api/products?processing_level=RAW` to retrieve only RAW-level or PROCESSED-level artifacts.
+
+### Changed: Pipeline Orchestrator
+
+**Prototype**: Linear stage sequence, always all stages, same for all sources.
+
+**DataLab**: Per-source conditional branching:
+- S1: Stages 4–6 (Lee filter, QA, COG) skipped if S1 config is RAW-only
+- MODIS: NDVI/NDWI computation skipped if MODIS config is RAW-only
+- GPM: Accumulation windows skipped if GPM config is RAW-only
+- Fusion skipped if single source configured
+- Fusion strategy selector determines date matching logic
+- Preview stage branches on selected preview types
+
+### Changed: Web Dashboard (Tab 1: Buat Dataset)
+
+**Prototype**: Simple form — location, dates, tier checkboxes, create.
+
+**DataLab**: 4-step wizard:
+1. Region & Date (same)
+2. Satellite & Processing Selection (new — per-satellite cards with individual RAW/PROCESSED toggles + "Pilih Semua" master toggle)
+3. Fusion & Preview (new — fusion strategy radio, preview option checkboxes)
+4. Review & Create (new — summary before submission)
+
+### Changed: Dataset Cards (Tab 2)
+
+Now display the dataset's configuration: selected satellites, processing level, fusion strategy. Previously only showed name/region/dates/progress.
+
+### Unchanged
+
+These components carry over architecturally (reimplemented, not forked):
+- 6-tier lakehouse storage layout
+- Sentinel-1 download + calibrate + crop + Lee filter pipeline
+- MODIS download + NDVI/NDWI computation
+- GPM download + accumulation windows
+- SHA-256 lineage tracking
+- PostgreSQL + PostGIS + TimescaleDB schema foundation
+- APScheduler live ingestion
+- Pause/resume/cancel via threading.Event
+- Quality scoring formula
+- FastAPI REST API structure
+- Vanilla JS + Leaflet frontend architecture
+
+### Changed: Fusion HDF5 Output
+
+**Prototype**: One HDF5 per date with a fixed set of eight layers — all three
+sensors, always, NaN-filled when a sensor had no data.
+
+**DataLab**: The group/layer names carry over unchanged
+(`/sentinel1/VV`, `/modis/FLOOD`, `/gpm/rainfall_24h`, …), but *which* of them
+appear is now derived from `dataset_source_config`:
+
+- An unconfigured source contributes no group at all (a configured source with
+  no data that day still gets its group, NaN-filled — the distinction matters
+  to a consumer).
+- A source configured RAW contributes only its raw artifact: `/modis/FLOOD`
+  alone, or `/gpm/rainfall_daily` (a new layer name — one day of rainfall, no
+  accumulation, so it is deliberately not called `rainfall_24h`).
+- A dataset requesting any source at both levels produces **two** stacks per
+  date instead of one.
+
+Filenames gain the level: `fusion_{YYYYMMDD}_{raw|processed}.h5` with a matching
+`fusion_metadata_{level}.json`. `data_products.band_name` for a fusion row is
+`FUSION_RAW` / `FUSION_PROCESSED` rather than `FUSION`.
+
+### Changed: Preview Output
+
+**Prototype**: `preview/{date}/{grayscale,colored}/`, always rendered from GOLD,
+with the RGB composite filed under `colored/`.
+
+**DataLab, as first introduced**: `preview/{date}/{RAW|PROCESSED}/{grayscale,colored,composite}/`.
+The level chooses the input tier (GOLD for PROCESSED, BRONZE for RAW) and
+separates the two renders, which would otherwise overwrite each other's identically
+named PNGs. The composite gets its own folder because its sidecar describes a
+channel mapping, not a colormap.
+
+**Superseded by D15**: the `{date}/` segment shown above no longer exists. Since the
+D15 relayout, preview lives directly at `preview/{RAW|PROCESSED}/{kind}/` off the
+dataset root — two segments, not three — with the date carried in each PNG's
+filename instead of a folder. See D15 above and DOCS/PIPELINE.md "On-disk layout".
+
+### Database Migration Path
+
+If migrating from Prototype DB to DataLab DB:
+
+```sql
+-- New junction table for per-satellite processing config
+CREATE TABLE dataset_source_config (
+  config_id SERIAL PRIMARY KEY,
+  dataset_id INT NOT NULL REFERENCES datasets(dataset_id) ON DELETE CASCADE,
+  source_name VARCHAR(20) NOT NULL,
+  processing_levels TEXT[] NOT NULL DEFAULT '{"PROCESSED"}',
+  UNIQUE(dataset_id, source_name)
+);
+
+-- Backfill: Prototype always ran all 3 sources as PROCESSED
+INSERT INTO dataset_source_config (dataset_id, source_name, processing_levels)
+SELECT dataset_id, unnest(ARRAY['SENTINEL1','MODIS','GPM']), '{"PROCESSED"}'
+FROM datasets;
+
+-- New columns on datasets
+ALTER TABLE datasets ADD COLUMN fusion_strategy VARCHAR(20) DEFAULT 'FULL_COVERAGE';
+ALTER TABLE datasets ADD COLUMN preview_options TEXT[] DEFAULT '{"GRAYSCALE","COLORED","COMPOSITE"}';
+
+-- Tag existing products
+ALTER TABLE data_products ADD COLUMN processing_level VARCHAR(20) DEFAULT 'PROCESSED';
+
+-- Fusion metadata
+ALTER TABLE fusion_products ADD COLUMN fusion_strategy VARCHAR(20) DEFAULT 'FULL_COVERAGE';
+ALTER TABLE fusion_products ADD COLUMN processing_level VARCHAR(20) DEFAULT 'PROCESSED';
+ALTER TABLE fusion_products ADD COLUMN temporal_offset_modis INT;
+ALTER TABLE fusion_products ADD COLUMN temporal_offset_gpm INT;
+```
+
+Migration 018 then completes the per-level model (see
+`database/migrations/018_fusion_per_processing_level.sql`):
+
+```sql
+-- Two stacks per date must be able to coexist
+ALTER TABLE fusion_products DROP CONSTRAINT uq_fusion_date_region;
+ALTER TABLE fusion_products
+  ADD CONSTRAINT uq_fusion_date_region_level
+  UNIQUE (feature_date, region_id, processing_level);
+
+-- Room for 'FUSION_PROCESSED'
+ALTER TABLE data_products ALTER COLUMN band_name TYPE VARCHAR(20);
+
+-- Empty array must unambiguously mean "no previews"
+UPDATE datasets SET preview_options = ARRAY['GRAYSCALE','COLORED','COMPOSITE']
+WHERE preview_options IS NULL;
+ALTER TABLE datasets ALTER COLUMN preview_options SET NOT NULL;
+```

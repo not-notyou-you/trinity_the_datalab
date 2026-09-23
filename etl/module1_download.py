@@ -5,7 +5,7 @@ Tahap DOWNLOAD Sentinel-1: discovery CDSE + unduh SAFE ZIP + ekstrak VV/VH.
 TAHAP INI TIDAK BERCABANG PER LEVEL. DOWNLOAD, CALIBRATE (module1b), dan CROP
 (module2) jalan sama persis untuk level RAW maupun PROCESSED: nilai DN mentah
 tanpa LUT sigma-nought tidak punya arti fisik, jadi "RAW" untuk SAR pun berarti
-terkalibrasi dan ter-crop (DOCS/ETL.md, "What RAW means for Sentinel-1").
+terkalibrasi dan ter-crop (DOCS/PIPELINE.md, "What RAW means for Sentinel-1").
 
 Percabangan level Sentinel-1 ada satu lapis di atas, di mana urutan tahap
 memang disusun:
@@ -19,7 +19,10 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import random
 import shutil
+import threading
+import time
 import zipfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -62,6 +65,30 @@ class DownloadResult:
 # 501 yang dijawab CDSE untuk header Range, 405 kalau metodenya ditolak, dan
 # 400 yang dipakai sebagian gateway untuk Range yang tidak dikenal.
 _RANGE_UNSUPPORTED = frozenset({400, 405, 501})
+
+# 429 dibatasi lebih longgar daripada error jaringan biasa: itu bukan
+# kegagalan transfer, melainkan akun sedang dijatah CDSE (maksimal 4 unduhan
+# paralel -- lihat module5_orchestrator.S1_PARALLEL_DOWNLOADS) dan pasti pulih
+# kalau didiamkan sebentar. Kalau dipukul rata dengan MAX_RETRIES=3 tanpa
+# jeda, 3 worker yang throttle bersamaan menghabiskan jatahnya dalam
+# hitungan detik dan scene yang sehat gagal permanen (okt_dec_2025_hybrid
+# 2026-09-23: 12 scene begitu; jul_sep_2025_hybrid: 236).
+MAX_RATE_LIMIT_RETRIES = 8
+
+
+def _retry_sleep(attempt: int, retry_after: str | None = None) -> None:
+    """Jeda sebelum percobaan ulang. Pakai Retry-After dari server kalau ada;
+    kalau tidak, backoff eksponensial + jitter supaya beberapa worker yang
+    gagal berbarengan tidak menembak ulang di detik yang sama persis."""
+    if retry_after is not None:
+        try:
+            delay = max(1.0, float(retry_after))
+        except ValueError:
+            delay = 15.0
+    else:
+        delay = min(60.0, 2.0 ** attempt) + random.uniform(0, 1.0)
+    logger.info("[M1] Menunggu %.1f s sebelum mencoba lagi...", delay)
+    time.sleep(delay)
 
 
 def _get_cdse_token(user: str, password: str) -> str:
@@ -304,6 +331,8 @@ def download_scene(
         # menolak Range. Dibatasi sendiri supaya server yang terus-menerus
         # menolak tidak membuat loop tak berujung.
         restarts_left = 2
+        # 429 punya jatah dan ritme retry sendiri -- lihat MAX_RATE_LIMIT_RETRIES.
+        rate_limit_attempt = 0
         while attempt < MAX_RETRIES:
             attempt += 1
             try:
@@ -318,7 +347,7 @@ def download_scene(
 
                     if resp.status_code == 416:
                         logger.info("[M1] File sudah lengkap di .part, rename saja.")
-                        _long(part_path).rename(_long(zip_path))
+                        os.replace(_long(part_path), _long(zip_path))
                         break
 
                     # CDSE tidak selalu melayani permintaan lanjutan: endpoint
@@ -344,6 +373,18 @@ def download_scene(
                         # Penolakan Range bukan kegagalan transfer, jadi tidak
                         # menghabiskan jatah percobaan.
                         restarts_left -= 1
+                        attempt -= 1
+                        continue
+
+                    if resp.status_code == 429 and rate_limit_attempt < MAX_RATE_LIMIT_RETRIES:
+                        rate_limit_attempt += 1
+                        logger.warning(
+                            "[M1] Download ditolak (429 rate limit, attempt %d/%d).",
+                            rate_limit_attempt, MAX_RATE_LIMIT_RETRIES,
+                        )
+                        _retry_sleep(rate_limit_attempt, resp.headers.get("Retry-After"))
+                        # Throttle bukan kegagalan transfer, jadi tidak
+                        # menghabiskan jatah MAX_RETRIES.
                         attempt -= 1
                         continue
 
@@ -382,7 +423,7 @@ def download_scene(
                                         if progress_cb:
                                             progress_cb(pct, f"{downloaded / 1e6:.0f} / {total / 1e6:.0f} MB")
 
-                    _long(part_path).rename(_long(zip_path))
+                    os.replace(_long(part_path), _long(zip_path))
                     logger.info("[M1] Download selesai.")
                     break
 
@@ -393,6 +434,10 @@ def download_scene(
                         resume_from = _long(part_path).stat().st_size
                         session.headers.update({"Range": f"bytes={resume_from}-"})
                         logger.info("[M1] Akan resume dari %.0f MB", resume_from / 1e6)
+                    # Backoff + jitter: retry instan terhadap server yang
+                    # baru saja memutus koneksi (SSL EOF, 429 yang habis
+                    # jatahnya di atas) cuma menabrak kondisi yang sama lagi.
+                    _retry_sleep(attempt)
                 else:
                     logger.error("[M1] Download gagal setelah %d attempts: %s", MAX_RETRIES, exc)
                     logger.info("[M1] File .part tersimpan di: %s", part_path)
@@ -452,10 +497,21 @@ def _extract_bands(zip_path: Path, output_dir: Path) -> tuple[Path, Path]:
         vv_out = output_dir / f"{stem}_VV.tif"
         vh_out = output_dir / f"{stem}_VH.tif"
 
-        with zf.open(vv_files[0]) as src, open(_long(vv_out), "wb") as dst:
-            shutil.copyfileobj(src, dst)
-        with zf.open(vh_files[0]) as src, open(_long(vh_out), "wb") as dst:
-            shutil.copyfileobj(src, dst)
+        # Diekstrak ke berkas antara lalu dipindahkan sekali jalan: tahap
+        # berikutnya menilai keberadaan _VV.tif/_VH.tif sebagai "ekstraksi
+        # beres", jadi ekstraksi yang terhenti di tengah tidak boleh
+        # meninggalkan berkas berukuran wajar di path final.
+        for member, out_path in ((vv_files[0], vv_out), (vh_files[0], vh_out)):
+            tmp_out = out_path.with_name(
+                f"{out_path.name}.{os.getpid()}.{threading.get_ident()}.tmp"
+            )
+            try:
+                with zf.open(member) as src, open(_long(tmp_out), "wb") as dst:
+                    shutil.copyfileobj(src, dst)
+                os.replace(_long(tmp_out), _long(out_path))
+            except BaseException:
+                Path(_long(tmp_out)).unlink(missing_ok=True)
+                raise
 
     logger.info("[M1] Ekstraksi selesai: VV=%s | VH=%s", vv_out.name, vh_out.name)
     return vv_out, vh_out

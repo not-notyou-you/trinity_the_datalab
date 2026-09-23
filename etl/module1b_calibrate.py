@@ -10,6 +10,8 @@ import numpy as np
 import rasterio
 from rasterio.warp import Resampling, calculate_default_transform, reproject
 
+from etl.atomic_write import atomic_path
+
 from etl import WARP_THREADS
 
 # CRS lookups below (calculate_default_transform/reproject to EPSG:4326) hit
@@ -125,18 +127,19 @@ def _reproject_with_gcps(data: np.ndarray, src_path: str, output_path: str, dst_
             "nodata": float("nan"),
         }
 
-        with rasterio.open(output_path, "w", **dst_meta) as dst:
-            reproject(
-                source=data,
-                destination=rasterio.band(dst, 1),
-                src_crs=gcp_crs,
-                gcps=gcps,
-                dst_transform=transform,
-                dst_crs=dst_crs,
-                dst_nodata=float("nan"),
-                resampling=Resampling.bilinear,
-                num_threads=WARP_THREADS,
-            )
+        with atomic_path(output_path) as tmp_out:
+            with rasterio.open(tmp_out, "w", **dst_meta) as dst:
+                reproject(
+                    source=data,
+                    destination=rasterio.band(dst, 1),
+                    src_crs=gcp_crs,
+                    gcps=gcps,
+                    dst_transform=transform,
+                    dst_crs=dst_crs,
+                    dst_nodata=float("nan"),
+                    resampling=Resampling.bilinear,
+                    num_threads=WARP_THREADS,
+                )
 
     logger.info("[M1b] reprojected -> %s (%dx%d)", Path(output_path).name, width, height)
 

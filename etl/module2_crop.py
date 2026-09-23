@@ -8,6 +8,8 @@ import rasterio
 from rasterio.mask import mask
 from shapely.geometry import box, mapping
 
+from etl.atomic_write import atomic_path
+
 logger = logging.getLogger(__name__)
 
 JABODETABEK_BBOX = (106.4, -6.7, 107.2, -5.9)
@@ -28,8 +30,9 @@ def crop_to_bbox(
             "width": out_image.shape[2],
             "transform": out_transform,
         })
-        with rasterio.open(output_path, "w", **out_meta) as dst:
-            dst.write(out_image)
+        with atomic_path(output_path) as tmp_out:
+            with rasterio.open(tmp_out, "w", **out_meta) as dst:
+                dst.write(out_image)
     logger.info("[M2] %s -> %s", Path(input_path).name, Path(output_path).name)
     return output_path
 

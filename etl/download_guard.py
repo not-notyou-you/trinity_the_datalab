@@ -18,6 +18,7 @@ from __future__ import annotations
 import logging
 import os
 import shutil
+import threading
 import time
 from pathlib import Path
 from typing import Callable, Iterable
@@ -105,7 +106,9 @@ def find_reusable_file(
 def adopt_file(src: Path, dst: Path) -> str:
     """Hardlink `src` ke `dst` (fallback copy). Mengembalikan 'link' / 'copy'."""
     dst.parent.mkdir(parents=True, exist_ok=True)
-    tmp = dst.with_name(dst.name + ".adopt")
+    # Unik per proses+thread: nama tetap membuat dua pengadopsi berbarengan
+    # saling menghapus dan menimpa berkas sementara yang sama.
+    tmp = dst.with_name(f"{dst.name}.{os.getpid()}.{threading.get_ident()}.adopt")
     tmp.unlink(missing_ok=True)
     try:
         os.link(src, tmp)

@@ -11,7 +11,7 @@
 --
 -- APA YANG BERUBAH
 -- Sebelum ini konfigurasi pemrosesan sebuah dataset bersifat global: satu
--- `required_tiers` untuk semua sensor. Model baru (DOCS/DESIGN.md, bagian
+-- `required_tiers` untuk semua sensor. Model baru (DOCS/ARCHITECTURE.md, bagian
 -- "dataset_source_config") memberi SETIAP satelit definisi pemrosesannya
 -- sendiri -- SENTINEL1 boleh PROCESSED sementara GPM cukup RAW.
 --
@@ -55,9 +55,9 @@ CREATE TABLE IF NOT EXISTS dataset_source_config (
 );
 
 COMMENT ON TABLE dataset_source_config IS
-    'Konfigurasi pemrosesan per-satelit untuk sebuah dataset. Satu baris per (dataset, sumber). ETL membaca tabel ini untuk menentukan sumber mana yang dijalankan dan sampai level apa (DOCS/ETL.md).';
+    'Konfigurasi pemrosesan per-satelit untuk sebuah dataset. Satu baris per (dataset, sumber). ETL membaca tabel ini untuk menentukan sumber mana yang dijalankan dan sampai level apa (DOCS/PIPELINE.md).';
 COMMENT ON COLUMN dataset_source_config.processing_levels IS
-    'Level yang diminta untuk sumber ini: {RAW}, {PROCESSED}, atau {RAW,PROCESSED}. RAW berhenti di BRONZE; PROCESSED lanjut ke SILVER/GOLD. Arti per-satelit ada di DOCS/DESIGN.md.';
+    'Level yang diminta untuk sumber ini: {RAW}, {PROCESSED}, atau {RAW,PROCESSED}. RAW berhenti di BRONZE; PROCESSED lanjut ke SILVER/GOLD. Arti per-satelit ada di DOCS/ARCHITECTURE.md.';
 
 -- Constraint: satu baris konfigurasi per (dataset, sumber). UNIQUE ini juga
 -- yang menopang ON CONFLICT di backfill, jadi harus ada sebelum INSERT.

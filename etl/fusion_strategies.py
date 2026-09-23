@@ -21,7 +21,7 @@ Kuncinya: sebuah strategi sebenarnya menjawab DUA pertanyaan yang berbeda.
 
 HYBRID jadi strategi ketiga yang sah justru karena ia memilih sumbu yang
 berbeda dari keduanya: mengunduh seperti FULL_COVERAGE, merakit seperti
-CO_OCCURRENCE. Itu persis definisi DOCS/ETL.md ("auxiliary harian, S1 jadi
+CO_OCCURRENCE. Itu persis definisi DOCS/PIPELINE.md ("auxiliary harian, S1 jadi
 jangkar") — ia BUKAN "hasilkan kedua strategi sekaligus".
 
 Konsekuensi yang perlu disadari: CO_OCCURRENCE sudah menjadi perilaku sistem

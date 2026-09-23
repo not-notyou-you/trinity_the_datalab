@@ -51,6 +51,8 @@ from pathlib import Path
 import h5py
 import numpy as np
 
+from etl.atomic_write import atomic_path
+
 logger = logging.getLogger(__name__)
 
 MODULE = "MERGE"
@@ -72,6 +74,32 @@ ROW_BLOCK = 512
 
 HDF5_CHUNK_MAX = 256
 MODIS_NODATA_U8 = 255
+
+# Sisi terpanjang PNG preview. Sama dengan MAX_SIDE module10 supaya preview
+# gabungan berdampingan dengan preview per-strip tanpa beda ukuran.
+PREVIEW_MAX_SIDE = 1024
+
+PREVIEW_DIRNAME = "preview"
+
+# Lapisan HDF5 fusion -> PreviewSpec.key di module10. Pemetaan ini yang membuat
+# preview gabungan memakai colormap dan rentang yang SAMA dengan preview
+# per-strip: arti warna adalah bagian dari kontrak data (module10, "Colormap
+# sengaja jadi konstanta modul"), jadi NDVI hijau harus berarti hal yang sama di
+# kedua tempat. Lapisan yang tidak ada di sini (FLOOD_SOURCE, *_AGE_DAYS) bukan
+# besaran fisik yang punya palet baku -- itu dirender grayscale.
+_PREVIEW_SPEC_BY_LAYER: dict[str, str] = {
+    "sentinel1/VV": "s1_vv",
+    "sentinel1/VH": "s1_vh",
+    "modis/FLOOD": "modis_flood",
+    "modis/NDVI": "modis_ndvi",
+    "modis/NDWI": "modis_ndwi",
+    "gpm/rainfall_24h": "gpm_rain_24h",
+    "gpm/rainfall_72h": "gpm_rain_72h",
+    "gpm/rainfall_7d": "gpm_rain_7d",
+    "gpm/rainfall_daily": "gpm_rain_24h",
+}
+
+S1_RGB_FILENAME = "sentinel1_rgb_composite.png"
 
 
 class GridMismatch(ValueError):
@@ -376,6 +404,224 @@ def _nodata_for(dtype: np.dtype):
     return MODIS_NODATA_U8 if dtype == np.uint8 else np.nan
 
 
+# ---------------------------------------------------------------------------
+# Preview PNG
+#
+# Berkas gabungan adalah HDF5 belasan GB: tidak ada yang bisa melihatnya tanpa
+# menulis kode dulu. Padahal pertanyaan pertama setelah penggabungan selesai
+# selalu visual -- apakah stripnya benar-benar bersambung, apakah ada celah di
+# batasnya, apakah separuh petanya kosong. Karena itu penggabungan sekalian
+# menulis PNG.
+#
+# Preview DIRAKIT SAMBIL JALAN, bukan dengan membaca ulang hasilnya. Satu
+# lapisan di grid Jawa penuh berukuran 13 GB; membacanya lagi cuma untuk
+# mengecilkannya akan melipatduakan waktu penggabungan dan I/O-nya. Blok yang
+# sudah ada di memori saat ditulis itu juga yang disubsampel ke akumulator, jadi
+# ongkos preview mendekati nol.
+# ---------------------------------------------------------------------------
+
+def _ceil_div(a: int, b: int) -> int:
+    return -(-a // b)
+
+
+def _preview_step(height: int, width: int) -> int:
+    """Ambil satu piksel tiap berapa piksel supaya sisi terpanjang muat di
+    PREVIEW_MAX_SIDE. Subsampel, bukan rata-rata: merata-ratakan sigma0 linear
+    adalah hal yang sama yang ditolak modul ini di tempat lain, dan untuk
+    gambar seukuran layar bedanya tidak terlihat."""
+    longest = max(height, width)
+    return max(1, _ceil_div(longest, PREVIEW_MAX_SIDE))
+
+
+def preview_dir_for(out_path: Path) -> Path:
+    """Folder PNG milik satu berkas gabungan: `<induk>/preview/<nama tanpa .h5>/`.
+
+    Bersarang di bawah berkasnya, bukan bercampur di satu folder datar, supaya
+    menghapus preview satu tanggal tidak perlu mencocokkan nama berkas.
+    """
+    return out_path.parent / PREVIEW_DIRNAME / out_path.stem
+
+
+def _accumulate_preview(
+    acc: np.ndarray,
+    block: np.ndarray,
+    keep: np.ndarray,
+    row0: int,
+    col0: int,
+    step: int,
+) -> None:
+    """Subsampel satu blok sumber ke akumulator preview.
+
+    Piksel yang diambil dipilih dari koordinat GLOBAL grid gabungan (indeks yang
+    habis dibagi `step`), bukan dari koordinat blok. Itu yang membuat dua strip
+    bersebelahan tetap tersambung di preview: kalau tiap strip memilih piksel
+    mulai dari barisnya sendiri, fase samplingnya berbeda dan batas strip muncul
+    sebagai garis geser yang tidak ada di data.
+    """
+    r_off = (-row0) % step
+    c_off = (-col0) % step
+    sub = block[r_off::step, c_off::step]
+    sub_keep = keep[r_off::step, c_off::step]
+    if sub.size == 0:
+        return
+
+    pr0 = (row0 + r_off) // step
+    pc0 = (col0 + c_off) // step
+    region = acc[pr0:pr0 + sub.shape[0], pc0:pc0 + sub.shape[1]]
+    h, w = region.shape
+    if h == 0 or w == 0:
+        return
+    mask = sub_keep[:h, :w]
+    region[mask] = sub[:h, :w][mask]
+
+
+# Tinggi pita baris saat membaca ulang berkas gabungan. Kelipatan tinggi chunk
+# (256) supaya tiap chunk didekompresi tepat sekali: gzip tidak bisa melayani
+# satu piksel tanpa membuka seluruh chunk-nya, jadi pita yang tidak selaras
+# membuat chunk yang sama dibuka berkali-kali.
+PREVIEW_READ_BLOCK = 2048
+
+
+def previews_from_merged(h5_path: Path, *, out_dir: Path | None = None) -> list[Path]:
+    """Render preview dari berkas gabungan yang SUDAH ada di disk.
+
+    Jalur ini ada untuk dua keadaan: berkas yang digabung sebelum preview
+    diperkenalkan, dan render yang gagal setelah HDF5-nya terlanjur ditulis.
+    Keduanya tidak layak dijawab dengan "gabung ulang" -- itu membaca semua
+    strip sumber dan menulis ulang belasan GB hanya untuk mendapat beberapa PNG.
+
+    Tetap jauh lebih mahal daripada preview yang dirakit saat penggabungan
+    (lihat "Preview PNG"), karena di sini seluruh isi berkas harus
+    didekompresi. Itu harga yang dibayar sekali, bukan alasan memilih jalur ini
+    sebagai default.
+    """
+    h5_path = Path(h5_path)
+    out_dir = out_dir or preview_dir_for(h5_path)
+
+    with h5py.File(h5_path, "r") as f:
+        height = int(f.attrs["height"])
+        width = int(f.attrs["width"])
+        layers = _as_str_list(f.attrs["layers"])
+        date_key = _as_str(f.attrs.get("merged_date", "")) or _date_from_name(h5_path.name)
+        step = _preview_step(height, width)
+
+        accumulators: dict[str, np.ndarray] = {}
+        for name in layers:
+            if name not in f:
+                logger.warning("[%s] preview: lapisan %s tidak ada di berkas", MODULE, name)
+                continue
+            ds = f[name]
+            acc = np.full(
+                (_ceil_div(height, step), _ceil_div(width, step)),
+                np.nan, dtype=np.float32,
+            )
+            for r0 in range(0, height, PREVIEW_READ_BLOCK):
+                r1 = min(r0 + PREVIEW_READ_BLOCK, height)
+                off = (-r0) % step
+                if r0 + off >= r1:
+                    continue
+                sub = ds[r0 + off:r1:step, ::step]
+                keep = sub != MODIS_NODATA_U8 if ds.dtype == np.uint8 else np.isfinite(sub)
+                pr0 = (r0 + off) // step
+                region = acc[pr0:pr0 + sub.shape[0], :sub.shape[1]]
+                h, w = region.shape
+                mask = keep[:h, :w]
+                region[mask] = sub[:h, :w][mask]
+            accumulators[name] = acc
+
+    return write_previews(accumulators, out_dir, date_key=date_key)
+
+
+def _preview_layer(data: np.ndarray, log_db: bool):
+    """Bungkus akumulator jadi `_Layer` module10 supaya bisa dilewatkan ke
+    render yang sama dengan preview per-strip."""
+    from etl import module10_generate_preview as m10
+
+    mask = ~np.isfinite(data)
+    if log_db:
+        data, _ = m10._maybe_to_db(data, mask)
+    h, w = data.shape
+    return m10._Layer(
+        data=data, mask=mask, height=h, width=w, src_height=h, src_width=w,
+    )
+
+
+def write_previews(
+    accumulators: dict[str, np.ndarray],
+    out_dir: Path,
+    *,
+    date_key: str = "",
+) -> list[Path]:
+    """Render PNG satu berkas gabungan dari akumulator tiap lapisan.
+
+    Render-nya menumpang module10: colormap, rentang tetap, dan aturan
+    transparansi NoData diambil dari sana apa adanya. Menyalin ulang logika itu
+    ke sini akan membuat warna preview gabungan pelan-pelan berbeda dari preview
+    per-strip, dan warna yang berbeda arti di dua tempat lebih buruk daripada
+    tidak ada preview sama sekali.
+    """
+    from etl import module10_generate_preview as m10
+
+    specs = {s.key: s for s in m10.PREVIEW_SPECS}
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    written: list[Path] = []
+    entries: list[dict] = []
+    rendered: dict[str, object] = {}
+
+    for name, data in accumulators.items():
+        spec = specs.get(_PREVIEW_SPEC_BY_LAYER.get(name, ""))
+        layer = _preview_layer(data, log_db=bool(spec and spec.log_db))
+        if layer.valid.size == 0:
+            logger.warning("[%s] preview %s dilewati: seluruh piksel NoData", MODULE, name)
+            continue
+        rendered[name] = layer
+
+        png = out_dir / (name.replace("/", "_") + ".png")
+        if spec is not None:
+            m10._render_colored(layer, spec, png)
+        else:
+            m10._render_grayscale(layer, png)
+        written.append(png)
+        entries.append({
+            "layer": name,
+            "file": png.name,
+            "label": spec.label if spec else name,
+            "colormap": (spec.cmap if spec else "gray"),
+            "width": layer.width,
+            "height": layer.height,
+            "statistics": layer.stats,
+        })
+
+    vv, vh = rendered.get("sentinel1/VV"), rendered.get("sentinel1/VH")
+    if vv is not None and vh is not None:
+        png = out_dir / S1_RGB_FILENAME
+        if m10._render_s1_rgb(vv, vh, png) is not None:
+            written.append(png)
+            entries.append({
+                "layer": "sentinel1/rgb_composite",
+                "file": png.name,
+                "label": m10.S1_RGB_LABEL,
+                "colormap": "false-color RGB",
+                "width": vv.width,
+                "height": vv.height,
+                "statistics": {},
+            })
+
+    m10._write_json(out_dir / "preview_metadata.json", {
+        "kind": "merged",
+        "date": date_key,
+        "note": (
+            "Preview berkas gabungan. Disubsampel (bukan dirata-rata) ke sisi "
+            "terpanjang maksimum "
+            f"{PREVIEW_MAX_SIDE} px; untuk analisis pakai HDF5-nya."
+        ),
+        "images": entries,
+    })
+    logger.info("[%s] preview %s: %d PNG", MODULE, date_key or out_dir.name, len(written))
+    return written
+
+
 def _valid_fraction(path: Path, layer: str) -> float:
     """Berapa bagian piksel yang bukan nodata. Dipakai mengurutkan stack di
     daerah tumpang tindih -- yang datanya paling utuh yang menang, bukan yang
@@ -405,12 +651,16 @@ def merge_stacks(
     out_path: Path,
     *,
     progress=None,
+    preview: bool = True,
 ) -> Path:
     """Tempel beberapa stack jadi satu berkas HDF5 di grid gabungan.
 
     Ditulis per blok baris supaya union sebesar Jawa tidak pernah berada di
     RAM sekaligus: satu lapisan float32 di grid Jawa penuh berukuran 13 GB,
     sedangkan mesin yang menjalankan ini punya jauh lebih sedikit.
+
+    `preview=True` sekalian menulis PNG ke `preview_dir_for(out_path)` dari blok
+    yang sudah lewat -- lihat bagian "Preview PNG".
     """
     cand = check_mergeable(stacks)
     if not cand.mergeable:
@@ -429,7 +679,10 @@ def merge_stacks(
     res_x, res_y = stacks[0].res_x, stacks[0].res_y
     west, north = origin
 
-    with h5py.File(out_path, "w") as out:
+    step = _preview_step(height, width) if preview else 0
+    accumulators: dict[str, np.ndarray] = {}
+
+    with atomic_path(out_path) as tmp_out, h5py.File(tmp_out, "w") as out:
         for li, layer in enumerate(layers):
             with h5py.File(stacks[0].path, "r") as probe:
                 dtype = probe[layer].dtype
@@ -448,6 +701,13 @@ def merge_stacks(
                 dst.attrs[key] = value
             dst.attrs["merged_from"] = [s.dataset_name for s in stacks]
 
+            acc = None
+            if step:
+                acc = np.full(
+                    (_ceil_div(height, step), _ceil_div(width, step)),
+                    np.nan, dtype=np.float32,
+                )
+
             for s in order:
                 row0, col0 = offsets[s.dataset_id]
                 with h5py.File(s.path, "r") as src:
@@ -464,8 +724,15 @@ def merge_stacks(
                             keep = np.isfinite(block)
                         target[keep] = block[keep]
                         dst[row0 + r:row0 + r1, col0:col0 + s.width] = target
+                        if acc is not None:
+                            _accumulate_preview(
+                                acc, block, keep, row0 + r, col0, step
+                            )
                 if progress:
                     progress(li, len(layers), s.dataset_name, layer)
+
+            if acc is not None:
+                accumulators[layer] = acc
 
         out.attrs["layers"] = list(layers)
         out.attrs["height"] = height
@@ -498,6 +765,22 @@ def merge_stacks(
         MODULE, stacks[0].date_key, len(stacks), height, width, len(layers),
         out_path.name,
     )
+
+    if accumulators:
+        # Preview adalah artefak turunan. HDF5-nya sudah ditulis dan sah di
+        # titik ini; kegagalan render (matplotlib tidak ada, disk penuh) tidak
+        # boleh membuat pemanggil mengira penggabungannya gagal.
+        try:
+            write_previews(
+                accumulators, preview_dir_for(out_path),
+                date_key=stacks[0].date_key,
+            )
+        except Exception:
+            logger.exception(
+                "[%s] %s: preview gagal dirender, HDF5-nya tetap sah",
+                MODULE, out_path.name,
+            )
+
     return out_path
 
 

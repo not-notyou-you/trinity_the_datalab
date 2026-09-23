@@ -6,6 +6,8 @@ from pathlib import Path
 
 import numpy as np
 import rasterio
+
+from etl.atomic_write import atomic_path
 from scipy.ndimage import uniform_filter
 
 logger = logging.getLogger(__name__)
@@ -44,8 +46,9 @@ def apply_lee_to_tiff(
         meta = src.meta.copy()
         band = src.read(1)
     filtered = lee_filter(band, window_size, looks)
-    with rasterio.open(output_path, "w", **meta) as dst:
-        dst.write(filtered, 1)
+    with atomic_path(output_path) as tmp_out:
+        with rasterio.open(tmp_out, "w", **meta) as dst:
+            dst.write(filtered, 1)
     logger.info("[M3] %s -> %s (window=%d looks=%d)",
                 Path(input_path).name, Path(output_path).name, window_size, looks)
     return output_path

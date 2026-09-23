@@ -174,6 +174,118 @@ def test_download_scene_reuses_zip_without_network(tmp_path, monkeypatch):
     assert result.zip_path.endswith(".zip")
 
 
+class _FakeCdseResponse:
+    """Balasan CDSE tiruan: cukup untuk jalur yang dipakai download_scene."""
+
+    def __init__(self, status_code, headers=None, body=b""):
+        self.status_code = status_code
+        self.headers = headers or {}
+        self._body = body
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            import requests
+            raise requests.exceptions.HTTPError(str(self.status_code), response=self)
+
+    def iter_content(self, chunk_size):
+        yield self._body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        return False
+
+
+def test_download_scene_retries_429_with_backoff_not_max_retries_budget(tmp_path, monkeypatch):
+    """CDSE membalas 429 sebelum akhirnya sukses: harus dijeda (bukan retry
+    instan) dan tidak menghabiskan jatah MAX_RETRIES=3 seperti error jaringan
+    biasa (okt_dec_2025_hybrid 2026-09-23: 12 scene sehat gagal permanen
+    karena 3 worker retry 429 tanpa jeda dalam hitungan detik)."""
+    import requests
+
+    import etl.module1_download as m1
+
+    pid = "S1A_IW_GRDH_TEST_429.SAFE"
+    out_dir = tmp_path / "20_d" / "_work" / pid / "raw" / "sentinel1"
+    out_dir.mkdir(parents=True)
+
+    monkeypatch.setenv("COPERNICUS_USER", "u")
+    monkeypatch.setenv("COPERNICUS_PASSWORD", "p")
+    monkeypatch.setattr(m1, "_get_cdse_token", lambda *a: "tok")
+    monkeypatch.setattr(m1, "_extract_bands", lambda z, o: (o / "vv.tif", o / "vh.tif"))
+    slept = []
+    monkeypatch.setattr(m1.time, "sleep", lambda s: slept.append(s))
+
+    responses = [
+        _FakeCdseResponse(429, headers={"Retry-After": "3"}),
+        _FakeCdseResponse(429, headers={}),  # tanpa Retry-After: backoff eksponensial
+        _FakeCdseResponse(200, body=b"zipbytes"),
+    ]
+    calls = []
+
+    def fake_get(self, url, **kwargs):
+        calls.append(url)
+        return responses[len(calls) - 1]
+
+    monkeypatch.setattr(requests.Session, "get", fake_get)
+
+    result = m1.download_scene(
+        {"product_identifier": pid, "download_url": "https://catalogue.dataspace.copernicus.eu/x",
+         "acquisition_datetime": datetime(2025, 1, 11, tzinfo=timezone.utc)},
+        output_dir=str(out_dir), keep_raw=True,
+    )
+
+    assert len(calls) == 3
+    assert (out_dir / f"{pid}.zip").exists()
+    assert result.zip_path.endswith(".zip")
+    # Retry-After dihormati; sisanya backoff eksponensial -- keduanya dijeda,
+    # tidak nol seperti retry instan yang lama.
+    assert slept == [3.0] or slept[0] == pytest.approx(3.0, abs=0.01)
+    assert len(slept) == 2
+    assert all(s > 0 for s in slept)
+
+
+def test_download_scene_429_does_not_consume_max_retries_budget(tmp_path, monkeypatch):
+    """Setelah MAX_RATE_LIMIT_RETRIES kali 429, harus masih ada jatah untuk
+    error jaringan (MAX_RETRIES) yang mengikuti -- keduanya dihitung
+    terpisah."""
+    import requests
+
+    import etl.module1_download as m1
+
+    pid = "S1A_IW_GRDH_TEST_429_BUDGET.SAFE"
+    out_dir = tmp_path / "21_e" / "_work" / pid / "raw" / "sentinel1"
+    out_dir.mkdir(parents=True)
+
+    monkeypatch.setenv("COPERNICUS_USER", "u")
+    monkeypatch.setenv("COPERNICUS_PASSWORD", "p")
+    monkeypatch.setattr(m1, "_get_cdse_token", lambda *a: "tok")
+    monkeypatch.setattr(m1.time, "sleep", lambda s: None)
+
+    # MAX_RATE_LIMIT_RETRIES balasan 429 berturut-turut lalu satu sukses --
+    # kalau 429 memakan jatah MAX_RETRIES=3 yang sama, ini akan gagal jauh
+    # sebelum sukses.
+    responses = [_FakeCdseResponse(429, headers={"Retry-After": "0"})] * m1.MAX_RATE_LIMIT_RETRIES
+    responses.append(_FakeCdseResponse(200, body=b"zipbytes"))
+    calls = []
+
+    def fake_get(self, url, **kwargs):
+        calls.append(url)
+        return responses[len(calls) - 1]
+
+    monkeypatch.setattr(requests.Session, "get", fake_get)
+    monkeypatch.setattr(m1, "_extract_bands", lambda z, o: (o / "vv.tif", o / "vh.tif"))
+
+    result = m1.download_scene(
+        {"product_identifier": pid, "download_url": "https://catalogue.dataspace.copernicus.eu/x",
+         "acquisition_datetime": datetime(2025, 1, 11, tzinfo=timezone.utc)},
+        output_dir=str(out_dir), keep_raw=True,
+    )
+    assert len(calls) == m1.MAX_RATE_LIMIT_RETRIES + 1
+    assert result.zip_path.endswith(".zip")
+
+
 # --- pemulihan job setelah restart -----------------------------------------
 
 def _job(db_client, dataset_id, status, kind="STANDARD"):

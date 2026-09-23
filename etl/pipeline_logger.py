@@ -232,6 +232,37 @@ class PipelineLogManager:
             rows = sess.scalars(stmt.order_by(order_col).limit(limit).offset(offset)).all()
             return [self._to_dict(r) for r in rows], total
 
+    def completed_aux_dates(
+        self, dataset_id: int, date_keys: list[str]
+    ) -> set[str]:
+        """date_key yang pra-penelusuran aux-nya sudah TUNTAS.
+
+        Dipakai _ingest_aux_days supaya restart server tidak mengunduh dan
+        memproses ulang tanggal yang sudah jadi. Tanpa ini, tiap resume
+        mengulang seluruh rentang aux dari tanggal pertama (~20 menit untuk
+        dataset 3 bulan) sebelum antrean Sentinel-1 sempat jalan, dan karena
+        fase itu tidak menaikkan counter scene, UI tampak diam.
+
+        Syaratnya details.aux_complete, bukan sekadar status COMPLETED:
+        COMPLETED cuma berarti ADA berkas yang ditulis, dan tanggal yang
+        MODIS-nya berhasil tapi GPM-nya gagal juga tercatat COMPLETED.
+        Melewati tanggal seperti itu akan membuat kekurangannya permanen,
+        padahal sebelumnya run berikutnya yang menambalnya."""
+        if not date_keys:
+            return set()
+        with self._db.session() as sess:
+            rows = sess.scalars(
+                select(ProcessingLog.scene_id).where(
+                    ProcessingLog.dataset_id == dataset_id,
+                    ProcessingLog.module == "ORCHESTRATOR",
+                    ProcessingLog.stage == "SCENE_PIPELINE",
+                    ProcessingLog.status == "COMPLETED",
+                    ProcessingLog.details["aux_complete"].astext == "true",
+                    ProcessingLog.scene_id.in_(date_keys),
+                )
+            ).all()
+        return set(rows)
+
     @staticmethod
     def _to_dict(r: ProcessingLog) -> dict:
         return {
@@ -316,6 +347,11 @@ class PipelineLogger:
         details: dict | None = None,
     ) -> int:
         return self._mgr.log_event(dataset_id, scene_id, module, stage, status, message, details)
+
+    def completed_aux_dates(
+        self, dataset_id: int, date_keys: list[str]
+    ) -> set[str]:
+        return self._mgr.completed_aux_dates(dataset_id, date_keys)
 
     @contextmanager
     def stage(

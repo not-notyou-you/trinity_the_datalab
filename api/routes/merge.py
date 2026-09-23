@@ -16,9 +16,11 @@ menebak kandidat mana yang dimaksud: id-nya harus disebut pemanggil.
 from __future__ import annotations
 
 import logging
+import shutil
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import FileResponse
 
 from api.deps import get_db
 from etl import dataset_merge as dm
@@ -55,6 +57,135 @@ def _merged_root() -> Path:
     return fm.DATA_ROOT.parent / MERGED_DIRNAME
 
 
+def _checked_date_key(date_key: str) -> str:
+    """Tolak apa pun yang bukan YYYYMMDD.
+
+    Ini yang membuat `date_key` aman dipakai menyusun path yang DIHAPUS: tanggal
+    delapan digit tidak bisa berisi `..` atau pemisah path, jadi tidak ada
+    bentuk masukan yang bisa menunjuk keluar dari folder merged.
+    """
+    if len(date_key) != 8 or not date_key.isdigit():
+        raise HTTPException(400, "Format tanggal harus YYYYMMDD.")
+    return date_key
+
+
+def _merged_path(date_key: str) -> Path:
+    return _merged_root() / f"merged_{date_key}.h5"
+
+
+def _preview_images(date_key: str) -> list[dict]:
+    """PNG preview milik satu tanggal gabungan, siap ditaruh di <img src>.
+
+    Daftar kosong kalau belum digabung atau render-nya gagal -- keduanya bukan
+    error: HDF5-nya tetap sah tanpa preview, dan UI cuma perlu tahu tidak ada
+    gambar untuk ditampilkan.
+    """
+    preview_dir = dm.preview_dir_for(_merged_path(date_key))
+    if not preview_dir.is_dir():
+        return []
+    return [
+        {
+            "file": p.name,
+            "url": f"/api/merge/preview/{date_key}/{p.name}",
+            "size_bytes": p.stat().st_size,
+        }
+        for p in sorted(preview_dir.glob("*.png"))
+    ]
+
+
+@router.delete("/result/{date_key}", summary="Hapus hasil gabungan satu tanggal")
+async def delete_merge_result(date_key: str, preview_only: bool = False) -> dict:
+    """Hapus berkas gabungan satu tanggal beserta preview-nya.
+
+    Yang dihapus HANYA turunan: berkas di data/merged/. Stack fusion sumber di
+    folder dataset tidak disentuh sama sekali, jadi tanggal ini selalu bisa
+    digabung ulang -- itulah yang membuat penghapusan di sini aman dilakukan
+    untuk mengosongkan disk, tidak seperti menghapus dataset.
+
+    `preview_only=true` menyisakan HDF5-nya dan cuma membuang PNG, untuk
+    memaksa render ulang dari nol.
+    """
+    date_key = _checked_date_key(date_key)
+    out_path = _merged_path(date_key)
+    preview_dir = dm.preview_dir_for(out_path)
+
+    removed: list[str] = []
+    freed = 0
+
+    if preview_dir.is_dir():
+        freed += sum(p.stat().st_size for p in preview_dir.rglob("*") if p.is_file())
+        shutil.rmtree(preview_dir)
+        removed.append(preview_dir.name + "/")
+
+    if not preview_only and out_path.exists():
+        freed += out_path.stat().st_size
+        out_path.unlink()
+        removed.append(out_path.name)
+
+    if not removed:
+        raise HTTPException(404, f"Tidak ada hasil gabungan untuk {date_key}.")
+
+    logger.info("[MERGE] hapus %s: %s (%d byte)", date_key, ", ".join(removed), freed)
+    return {
+        "status": "DELETED",
+        "date": date_key,
+        "removed": removed,
+        "freed_bytes": freed,
+        "sources_untouched": True,
+    }
+
+
+@router.get("/preview/{date_key}", summary="Daftar preview satu tanggal gabungan")
+async def list_merge_previews(date_key: str) -> dict:
+    return {"date": date_key, "images": _preview_images(date_key)}
+
+
+@router.post("/preview/{date_key}/rebuild", summary="Buat preview dari hasil gabungan")
+async def rebuild_merge_preview(date_key: str) -> dict:
+    """Render ulang PNG dari berkas gabungan yang sudah ada.
+
+    Untuk berkas yang digabung sebelum preview ada, atau yang render-nya gagal.
+    Lambat (seluruh isi HDF5 didekompresi), tapi tetap jauh lebih murah
+    daripada menggabung ulang -- dan tidak menyentuh HDF5-nya sama sekali.
+    """
+    out_path = _merged_path(date_key)
+    if not out_path.exists():
+        raise HTTPException(404, f"{out_path.name} belum ada; gabungkan dulu.")
+
+    try:
+        dm.previews_from_merged(out_path)
+    except (OSError, ValueError, KeyError) as exc:
+        logger.exception("[MERGE] preview %s gagal dirender", date_key)
+        raise HTTPException(500, f"Preview gagal dibuat: {exc}")
+
+    return {"date": date_key, "preview_images": _preview_images(date_key)}
+
+
+@router.get(
+    "/preview/{date_key}/{filename}",
+    summary="Satu PNG preview hasil gabungan",
+    response_class=FileResponse,
+)
+async def get_merge_preview(date_key: str, filename: str) -> FileResponse:
+    """Kirim satu PNG dari folder preview tanggal ini.
+
+    Nama berkas dicocokkan ke isi folder, bukan cuma dibersihkan: hanya PNG yang
+    memang ada di sana yang boleh keluar, jadi tidak ada bentuk `filename` apa
+    pun yang bisa menunjuk ke luar folder itu.
+    """
+    preview_dir = dm.preview_dir_for(_merged_path(date_key))
+    match = next(
+        (p for p in preview_dir.glob("*.png") if p.name == filename), None
+    ) if preview_dir.is_dir() else None
+    if match is None:
+        raise HTTPException(404, f"Preview {filename} tidak ada untuk {date_key}.")
+    return FileResponse(
+        match,
+        media_type="image/png",
+        headers={"Cache-Control": "no-cache"},
+    )
+
+
 @router.get("/candidates", summary="Dataset mana yang bisa digabung")
 async def list_merge_candidates(db: DatabaseClient = Depends(get_db)) -> dict:
     """Tanggal-tanggal yang punya stack di lebih dari satu dataset, beserta
@@ -70,13 +201,12 @@ async def list_merge_candidates(db: DatabaseClient = Depends(get_db)) -> dict:
     datasets = _all_datasets(db)
     result = dm.describe_candidates(datasets)
 
-    merged_dir = _merged_root()
     for c in result["candidates"]:
-        out_name = f"merged_{c['date']}.h5"
-        existing = merged_dir / out_name
-        c["output_name"] = out_name
+        existing = _merged_path(c["date"])
+        c["output_name"] = existing.name
         c["already_merged"] = existing.exists()
         c["output_size_bytes"] = existing.stat().st_size if existing.exists() else None
+        c["preview_images"] = _preview_images(c["date"]) if existing.exists() else []
 
     result["explanation"] = (
         "Penggabungan hanya menempel, tidak meresample: strip yang grid-nya "
@@ -133,8 +263,7 @@ async def run_merge(
     if not check.mergeable:
         raise HTTPException(400, check.blocked_reason)
 
-    out_dir = _merged_root()
-    out_path = out_dir / f"merged_{date_key}.h5"
+    out_path = _merged_path(date_key)
     if out_path.exists() and not overwrite:
         raise HTTPException(
             409,
@@ -159,6 +288,7 @@ async def run_merge(
         "output_size_bytes": out_path.stat().st_size,
         "input_size_bytes": check.input_bytes,
         "layers": list(stacks[0].layers),
+        "preview_images": _preview_images(date_key),
         "warnings": check.warnings,
         "sources_untouched": True,
     }

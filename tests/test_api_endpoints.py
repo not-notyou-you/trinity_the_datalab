@@ -412,7 +412,7 @@ class TestGeneratePreviewFlag:
 
     def test_tiers_no_longer_requestable(self, sample_region):
         """`tiers` tidak lagi field user: diturunkan internal dari `sources`
-        (DOCS/PROTOTYPE_CHANGELOG.md). Mengirimnya tidak boleh menentukan
+        (DOCS/DECISIONS.md). Mengirimnya tidak boleh menentukan
         apa pun -- termasuk PREVIEW, yang turunan dan bukan tier lineage."""
         from api.schemas import CreateDatasetRequest
 

@@ -27,7 +27,7 @@ Kegagalan satu produk tidak menjatuhkan produk lain: kalau reflectance hari
 itu tidak tersedia (MOD09A1 maupun MOD09GA) tapi MCDWD ada, hari itu tetap
 menghasilkan FLOOD dan cuma kehilangan NDVI/NDWI.
 
-LEVEL PEMROSESAN (DOCS/ETL.md, "MODIS Pipeline")
+LEVEL PEMROSESAN (DOCS/PIPELINE.md, "MODIS Pipeline")
     RAW        cuma peta banjir MCDWD -> reproject -> crop -> tier BRONZE.
                Reflectance tidak diunduh sama sekali: NDVI/NDWI adalah indeks
                turunan, dan level RAW justru didefinisikan sebagai "tanpa
@@ -47,6 +47,7 @@ import hashlib
 import logging
 import os
 import shutil
+import threading
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -57,6 +58,7 @@ from rasterio.enums import Resampling
 from rasterio.merge import merge
 from rasterio.warp import calculate_default_transform, reproject
 
+from etl.atomic_write import atomic_path
 from etl import download_guard as dg
 from etl import folder_manager as fm
 from etl.pipeline_logger import PipelineLogger
@@ -271,12 +273,33 @@ def _plog_event(
     plog.log_event(dataset_id, scene_id, MODULE, stage, status, message, details or {})
 
 
+_md5_cache: dict[tuple[str, int, int], str] = {}
+_md5_cache_lock = threading.Lock()
+
+
 def _md5(path: Path, chunk: int = 8 * 1024 * 1024) -> str:
+    """MD5 file, dimemo per (path, ukuran, mtime).
+
+    Granule NDVI yang sama dipakai ulang window 8-harian untuk puluhan tanggal,
+    dan tiap cache hit dulunya menghitung ulang MD5 file 70 MB (~4 detik).
+    Satu granule sampai di-hash 51x dalam satu run dataset 31 -- pipeline
+    tampak "diam" di UI padahal cuma sibuk mengulang hash. Kunci memo ikut
+    ukuran+mtime, jadi file yang berubah tetap dihitung ulang."""
+    st = path.stat()
+    key = (str(path.resolve()), st.st_size, st.st_mtime_ns)
+    with _md5_cache_lock:
+        hit = _md5_cache.get(key)
+    if hit is not None:
+        return hit
+
     h = hashlib.md5()
     with open(path, "rb") as f:
         for block in iter(lambda: f.read(chunk), b""):
             h.update(block)
-    return h.hexdigest()
+    digest = h.hexdigest()
+    with _md5_cache_lock:
+        _md5_cache[key] = digest
+    return digest
 
 
 def _discover_tile_files(
@@ -404,7 +427,11 @@ def _download_with_retry(
     if dg.reuse_granule(out_path, "modis", fm.DATA_ROOT, "[M7]"):
         return _md5(out_path)
 
-    tmp_path = out_path.with_suffix(out_path.suffix + ".part")
+    # Nama unik per proses+thread supaya dua worker yang menuju file yang
+    # sama tidak saling tabrak menulis .part yang sama (lihat module8_gpm_download).
+    tmp_path = out_path.with_suffix(
+        f".{os.getpid()}.{threading.get_ident()}{out_path.suffix}.part"
+    )
     last_exc: Exception | None = None
 
     for attempt in range(1, MAX_RETRIES + 1):
@@ -442,7 +469,9 @@ def _download_with_retry(
                     f"ukuran file tidak sesuai: got {downloaded} bytes, expected {expected_size}"
                 )
 
-            tmp_path.rename(out_path)
+            # os.replace: atomic-overwrite di Windows maupun POSIX (Path.rename
+            # gagal FileExistsError di Windows kalau proses lain menang duluan).
+            os.replace(tmp_path, out_path)
             checksum = _md5(out_path)
             logger.info("[M7] downloaded %s (md5=%s...)", out_path.name, checksum[:12])
             _plog_event(
@@ -819,7 +848,12 @@ def _mosaic_and_crop(
         "width": mosaic.shape[2],
         "transform": out_transform,
     })
-    mosaic_path = output_path.with_name(output_path.stem + "_mosaic.tif")
+    # Nama mosaic antara ikut unik per proses+thread: namanya cuma diturunkan
+    # dari output_path, jadi dua penggarap tanggal yang sama akan menulis dan
+    # menghapus berkas antara yang sama persis.
+    mosaic_path = output_path.with_name(
+        f"{output_path.stem}_mosaic.{os.getpid()}.{threading.get_ident()}.tif"
+    )
     with rasterio.open(mosaic_path, "w", **meta) as dst:
         dst.write(mosaic)
 
@@ -832,8 +866,9 @@ def _mosaic_and_crop(
             "width": out_image.shape[2],
             "transform": crop_transform,
         })
-        with rasterio.open(output_path, "w", **crop_meta) as dst:
-            dst.write(out_image)
+        with atomic_path(output_path) as tmp_out:
+            with rasterio.open(tmp_out, "w", **crop_meta) as dst:
+                dst.write(out_image)
 
     mosaic_path.unlink(missing_ok=True)
     return output_path
@@ -871,16 +906,36 @@ def _build_source_mosaic(
     source_checksums: dict[str, str] = {}
     failed_tiles: list[str] = []
     tile_info: list[dict] = []
+    from pyhdf.error import HDF4Error
+
     for item in items:
         try:
             hdf_path = raw_dir / item["file_name"]
-            source_checksums[item["tile"]] = _download_with_retry(
-                item["download_url"], hdf_path,
-                plog=plog, dataset_id=dataset_id, scene_id=scene_label,
-                item_label=f"{band} tile {item['tile']}",
-            )
             tile_tif = raw_dir / f"{Path(item['file_name']).stem}_{band.lower()}.tif"
-            tile_info.append(tile_fn(hdf_path, product_used, tile_tif) or {})
+
+            def _fetch_and_build(label_suffix: str = "") -> dict:
+                source_checksums[item["tile"]] = _download_with_retry(
+                    item["download_url"], hdf_path,
+                    plog=plog, dataset_id=dataset_id, scene_id=scene_label,
+                    item_label=f"{band} tile {item['tile']}{label_suffix}",
+                )
+                return tile_fn(hdf_path, product_used, tile_tif) or {}
+
+            try:
+                info = _fetch_and_build()
+            except (OSError, HDF4Error) as exc:
+                # Granule ada di disk dengan ukuran wajar tapi isinya tidak
+                # terbaca. Cache cuma dipercaya lewat exists()+size, jadi
+                # tanpa ini berkas rusak dipakai ulang selamanya dan tile itu
+                # gagal terus sampai dihapus manual.
+                logger.warning(
+                    "[M7] granule cache rusak, dihapus lalu diunduh ulang: %s (%s)",
+                    hdf_path.name, exc,
+                )
+                hdf_path.unlink(missing_ok=True)
+                info = _fetch_and_build(" (unduh ulang)")
+
+            tile_info.append(info)
             tile_tifs.append(tile_tif)
         except ImportError:
             # Masalah environment, bukan data: tile lain pasti gagal juga.

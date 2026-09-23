@@ -54,7 +54,7 @@ async def create_dataset(
     req: CreateDatasetRequest,
     db: DatabaseClient = Depends(get_db),
 ) -> DatasetCreateResponse:
-    """Buat dataset dari konfigurasi per-satelit (DOCS/API.md "Create Dataset").
+    """Buat dataset dari konfigurasi per-satelit (DOCS/INTERFACE.md "Create Dataset").
 
     `tiers` tidak lagi diterima: diturunkan internal dari `sources`.
     """

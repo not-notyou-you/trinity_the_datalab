@@ -2,7 +2,7 @@
 """
 Orchestrator dataset: menyusun DAG pemrosesan dari konfigurasi per-satelit.
 
-Sejak model per-satelit (DOCS/DESIGN.md: dataset_source_config), pipeline
+Sejak model per-satelit (DOCS/ARCHITECTURE.md: dataset_source_config), pipeline
 sebuah dataset bukan lagi satu rantai tetap. Setiap sumber punya cabangnya
 sendiri, dan level (RAW/PROCESSED) sumber itulah yang menentukan sampai mana
 cabangnya jalan:
@@ -330,7 +330,7 @@ def _run_s1_chain(
     jc.dsmgr.upsert_scene_job_state(jc.job_id, pid, current_stage="CROP", stage_status="COMPLETED")
 
     # Sentinel-1 RAW berhenti di sini: BRONZE (terkalibrasi, ter-crop, tanpa
-    # Lee filter dan tanpa QA) ADALAH artefak RAW-nya (DOCS/ETL.md, "What RAW
+    # Lee filter dan tanpa QA) ADALAH artefak RAW-nya (DOCS/PIPELINE.md, "What RAW
     # means for Sentinel-1"). jc.skip_stages sudah memuat LEE_FILTER/
     # QUALITY_ANALYTICS/GOLD_EXPORT dari SourcePlan.s1_skip_stages(); cabang
     # ini cuma membuat alasannya terbaca di log.
@@ -555,7 +555,7 @@ def _process_scene(jc: _JobContext, scene_meta: dict, dl_result) -> _SceneResult
     #
     # plan diteruskan supaya sumber yang tidak dikonfigurasi tidak diunduh
     # sama sekali, dan sumber RAW-only berhenti di BRONZE.
-    aux_produced = ensure_aux_inputs_for_date(
+    aux_produced, _ = ensure_aux_inputs_for_date(
         jc.db, jc.dataset_id, jc.dataset_name, jc.region_id, jc.bbox_tuple, s1_date,
         plog=jc.plog, plan=jc.plan,
     )
@@ -666,7 +666,7 @@ def _run_fusion_for_date(
 ) -> list[str]:
     """FUSION satu tanggal. Mengembalikan daftar berkas HDF5+JSON yang ditulis
     (kosong kalau fusi memang dilewati dataset ini)."""
-    # Fusi butuh lebih dari satu sumber DAN sebuah strategi (DOCS/ETL.md,
+    # Fusi butuh lebih dari satu sumber DAN sebuah strategi (DOCS/PIPELINE.md,
     # "Fusion Stage"). Dataset satu-sumber tidak punya apa-apa untuk
     # dipasangkan; menjalankannya cuma menghasilkan HDF5 berisi satu grup dan
     # enam lapisan NaN. required_tiers biasanya sudah menutup kasus ini lewat
@@ -1389,8 +1389,10 @@ def _ingest_aux_days(
     jawab membuka `dataset_log_file` lebih dulu.
 
     Idempotent lewat ensure_aux_inputs_for_date: module7/module8 melewati file
-    yang sudah ada, jadi memanggil ulang untuk tanggal yang sudah terunduh
-    aman dan murah.
+    yang sudah ada. Tapi yang dilewati cuma UNDUHANNYA — reproject/crop/COG
+    tetap dijalankan ulang (~4 detik per granule), jadi memanggil ulang satu
+    rentang penuh TIDAK murah. Karena itu tanggal yang sudah pernah selesai
+    dilewati lebih awal lewat plog.completed_aux_dates.
 
     `count_as_scenes=False` untuk jalur S1: di sana unit counter job/dataset
     adalah SCENE S1 (total_scenes = jumlah scene), jadi menghitung hari aux
@@ -1405,17 +1407,37 @@ def _ingest_aux_days(
         if count_as_scenes:
             jc.dsmgr.increment_job_counters(jc.job_id, **kwargs)
 
+    already_done = jc.plog.completed_aux_dates(
+        jc.dataset_id, [d.strftime("%Y%m%d") for d in days]
+    )
+    if already_done:
+        logger.info(
+            "[ORCH] job_id=%d %d/%d tanggal aux sudah selesai di run sebelumnya, dilewati",
+            jc.job_id, len(already_done), len(days),
+        )
+
     for day in days:
         jc.pause_event.wait()
         if jc.cancel_event.is_set():
             break
         date_key = day.strftime("%Y%m%d")
+        if date_key in already_done:
+            # Dihitung ok persis seperti kalau diproses ulang dan berhasil,
+            # supaya akuntansi job tidak berubah oleh optimasi ini.
+            ok_days += 1
+            _count(processed=1)
+            continue
         try:
-            produced = ensure_aux_inputs_for_date(
+            produced, missing_sources = ensure_aux_inputs_for_date(
                 jc.db, jc.dataset_id, jc.dataset_name, jc.region_id,
                 jc.bbox_tuple, day, plog=jc.plog, plan=jc.plan,
             )
             written = sum(len(paths) for paths in produced.values())
+            # `written > 0` saja tidak berarti tanggalnya tuntas: satu sumber
+            # bisa berhasil sementara yang lain tidak menghasilkan apa pun.
+            # Hanya tanggal yang SEMUA sumbernya berhasil yang boleh dilewati
+            # run berikutnya -- kalau tidak, kekurangannya permanen.
+            aux_complete = bool(written) and not missing_sources
             if written:
                 ok_days += 1
                 _count(processed=1)
@@ -1427,6 +1449,8 @@ def _ingest_aux_days(
                 "COMPLETED" if written else "FAILED",
                 f"Aux {date_key}: {written} berkas ditulis",
                 {"date": day.isoformat(), "files_written": written,
+                 "aux_complete": aux_complete,
+                 "missing_sources": sorted(missing_sources),
                  "tiers": {tier: len(paths) for tier, paths in produced.items()}},
             )
         except Exception as exc:
@@ -1448,7 +1472,7 @@ def _run_aux_only(jc: _JobContext, date_from: date, date_to: date) -> None:
 
     FUSION tidak dijalankan di jalur ini: create_fusion_stack memakai raster
     GOLD Sentinel-1 sebagai grid referensi dan melempar tanpa itu. Fusi
-    tanpa-S1 (reproyeksi ke sumber ber-extent terbesar, DOCS/ETL.md) belum
+    tanpa-S1 (reproyeksi ke sumber ber-extent terbesar, DOCS/PIPELINE.md) belum
     diimplementasikan.
     """
     total_days = (date_to - date_from).days + 1
@@ -1550,7 +1574,7 @@ def run_dataset_job(db: DatabaseClient, job_id: int) -> None:
             "(generate_preview=false)", job_id,
         )
     #   3. user mencentang "Buat Preview" tapi tidak memilih satu varian pun.
-    # preview_options KOSONG berarti persis itu (DOCS/DESIGN.md); dibedakan
+    # preview_options KOSONG berarti persis itu (DOCS/ARCHITECTURE.md); dibedakan
     # dari NULL, yang berarti "tidak dinyatakan" dan tetap merender ketiganya.
     # Migrasi 018 mem-backfill NULL jadi ketiga varian, jadi kolomnya sekarang
     # selalu menyatakan pilihan yang sebenarnya.

@@ -54,6 +54,13 @@ const ACTIVE_STATUSES = new Set(['QUEUED','PREPARING','DOWNLOADING','PROCESSING'
 const state = {
   datasets: [], progress: {}, logs: {}, firstLogAt: {}, pollTimer: null, livePollTimer: null,
   openScenes: new Set(), openStructure: new Set(), structureHTML: {}, cardElements: {},
+  // Kartu dataset yang badannya sedang dilipat (hanya kepala/ringkasan yang
+  // terlihat). Kosong = semua terbuka seperti sebelumnya; per-kartu, bertahan
+  // antar-polling sama seperti openScenes/openStructure.
+  collapsedCards: new Set(),
+  // Panel "Gabungkan Dataset": accordion tunggal (bukan per-baris), karena
+  // barisnya berbagi satu konteks (tanggal siap digabung hari ini).
+  mergeCollapsed: false,
   // Galeri preview per dataset: payload /api/datasets/{id}/preview, plus
   // tanggal dan jenis yang sedang dipilih (bertahan saat panel digambar ulang
   // oleh polling).
@@ -693,7 +700,7 @@ loadRegions();
    Sumber dan level pemrosesan dipilih PER satelit: satu kartu per sensor
    dengan kotak centang RAW/PROCESSED-nya sendiri. Model lama (satu daftar tier
    global) dihapus karena arti RAW/PROCESSED berbeda tiap sensor
-   (DOCS/ETL.md) -- "RAW" untuk GPM adalah curah hujan harian, untuk S1 adalah
+   (DOCS/PIPELINE.md) -- "RAW" untuk GPM adalah curah hujan harian, untuk S1 adalah
    citra terkalibrasi -- jadi satu sakelar global tidak pernah bisa berarti
    hal yang sama untuk ketiganya.
    =========================================================================== */
@@ -825,7 +832,7 @@ function enabledSourceKeys() {
 
 // Bentuk payload API: {"sentinel1": {"processing": ["RAW","PROCESSED"]}, ...}.
 // Sumber yang tidak diaktifkan sengaja TIDAK dikirim sebagai key kosong --
-// DOCS/API.md: key yang hilang berarti "tidak diingest", sedangkan key dengan
+// DOCS/INTERFACE.md: key yang hilang berarti "tidak diingest", sedangkan key dengan
 // processing kosong ditolak backend.
 function collectSources() {
   const out = {};
@@ -877,7 +884,7 @@ function syncWizardSources() {
 }
 
 // Strategi fusi wajib kalau >1 sumber dan harus null kalau cuma 1
-// (DOCS/API.md, "Validation"). Pilihan yang terlanjur dibuat dikosongkan saat
+// (DOCS/INTERFACE.md, "Validation"). Pilihan yang terlanjur dibuat dikosongkan saat
 // bagiannya disembunyikan, supaya tidak ada nilai tak terlihat yang ikut
 // terkirim.
 function syncFusionVisibility() {
@@ -1227,7 +1234,7 @@ $id('createForm').addEventListener('submit', async (e) => {
     name: $id('fName').value.trim(),
     description: $id('fDescription').value.trim() || null,
     // Menggantikan tier global + satu processing level: satu objek sumber ->
-    // level pemrosesan (DOCS/API.md, "Create Dataset"). `tiers` diturunkan
+    // level pemrosesan (DOCS/INTERFACE.md, "Create Dataset"). `tiers` diturunkan
     // backend dari sini, jadi tidak lagi dikirim frontend.
     sources: collectSources(),
     fusion_strategy: enabledSourceKeys().length > 1 ? selectedFusionStrategy() : null,
@@ -1378,7 +1385,7 @@ function perSourceStatsHTML(ds) {
 }
 
 // Strategi fusi ditampilkan di kartu karena dialah yang menentukan bentuk
-// output -- berapa berkas HDF5 dan dari tanggal mana (DOCS/ETL.md).
+// output -- berapa berkas HDF5 dan dari tanggal mana (DOCS/PIPELINE.md).
 function fusionLabelHTML(ds) {
   if (!ds.fusion_strategy) return '';
   const extra = ds.fusion_output_only ? ' &middot; hasil fusi saja' : '';
@@ -1396,6 +1403,7 @@ function cardShellHTML(ds) {
   const spinning = ACTIVE_STATUSES.has(ds.status) && ds.status !== 'PAUSED';
   const prog = state.progress[ds.dataset_id];
   const layers = (prog && prog.layers) || [];
+  const collapsed = state.collapsedCards.has(String(ds.dataset_id));
   return (
     '<div class="card-head' + (spinning ? ' spinning' : '') + '">' +
       (layers.length ? '<div class="card-ring' + (spinning ? ' spinning' : '') + '">' + buildRingSVG(layers) + '</div>' : '') +
@@ -1403,34 +1411,39 @@ function cardShellHTML(ds) {
         '<div class="card-title-row">' +
           '<span class="card-name">' + escapeHTML(ds.name) + '</span>' +
           '<span class="badge ' + statusClass + '">' + ds.status + '</span>' +
+          '<button type="button" class="card-collapse-btn' + (collapsed ? ' collapsed' : '') +
+            '" data-action="toggle-body" title="' + (collapsed ? 'Buka panel' : 'Tutup panel') +
+            '" aria-label="' + (collapsed ? 'Buka panel' : 'Tutup panel') + '"><span class="chevron"></span></button>' +
         '</div>' +
         '<div class="card-meta">' + escapeHTML(ds.location_label || '-') + ' &middot; ' + ds.date_start + ' - ' + ds.date_end + '</div>' +
         // Chip per-satelit, bukan per-tier: tier bukan pilihan user dan namanya
         // tidak pernah muncul di layar lain, sementara "S1[R+P]" adalah persis
         // yang user centang di wizard.
         sourceChipsHTML(ds) +
-        perSourceStatsHTML(ds) +
-        fusionLabelHTML(ds) +
-        ringLegendHTML(layers) +
       '</div>' +
     '</div>' +
-    '<div class="card-stats">' +
-      '<div><span class="stat-num">' + ds.total_scenes + '</span><span class="stat-label">scene</span></div>' +
-      '<div><span class="stat-num">' + ds.completed_scenes + '</span><span class="stat-label">selesai</span></div>' +
-      '<div><span class="stat-num">' + ds.failed_scenes + '</span><span class="stat-label">gagal</span></div>' +
-      '<div><span class="stat-num">' + humanBytes(ds.total_size_bytes) + '</span><span class="stat-label">ukuran</span></div>' +
-      '<div><span class="stat-num">' + logDurationText(ds.dataset_id) + '</span><span class="stat-label">durasi</span></div>' +
-    '</div>' +
-    renderLogPanel(ds.dataset_id) +
-    '<div class="card-actions">' +
-      (canPause ? '<button class="btn btn-warn" data-action="pause">Jeda</button>' : '') +
-      (canResume ? '<button class="btn btn-accent" data-action="resume">Lanjutkan</button>' : '') +
-      (canRetry ? '<button class="btn btn-accent" data-action="retry">Coba lagi</button>' : '') +
-      (canCancel ? '<button class="btn btn-danger" data-action="cancel">Batalkan</button>' : '') +
-      (canDownload ? '<a class="btn btn-ghost" href="/api/datasets/' + ds.dataset_id + '/download">Unduh</a>' : '') +
-      '<button class="btn btn-danger" data-action="delete">Hapus</button>' +
-      '<button class="btn btn-ghost" data-action="toggle-scenes">Detail</button>' +
-      (canDownload ? '<button class="btn btn-ghost" data-action="toggle-structure">Struktur</button>' : '') +
+    '<div class="card-body' + (collapsed ? ' hidden' : '') + '">' +
+      perSourceStatsHTML(ds) +
+      fusionLabelHTML(ds) +
+      ringLegendHTML(layers) +
+      '<div class="card-stats">' +
+        '<div><span class="stat-num">' + ds.total_scenes + '</span><span class="stat-label">scene</span></div>' +
+        '<div><span class="stat-num">' + ds.completed_scenes + '</span><span class="stat-label">selesai</span></div>' +
+        '<div><span class="stat-num">' + ds.failed_scenes + '</span><span class="stat-label">gagal</span></div>' +
+        '<div><span class="stat-num">' + humanBytes(ds.total_size_bytes) + '</span><span class="stat-label">ukuran</span></div>' +
+        '<div><span class="stat-num">' + logDurationText(ds.dataset_id) + '</span><span class="stat-label">durasi</span></div>' +
+      '</div>' +
+      renderLogPanel(ds.dataset_id) +
+      '<div class="card-actions">' +
+        (canPause ? '<button class="btn btn-warn" data-action="pause">Jeda</button>' : '') +
+        (canResume ? '<button class="btn btn-accent" data-action="resume">Lanjutkan</button>' : '') +
+        (canRetry ? '<button class="btn btn-accent" data-action="retry">Coba lagi</button>' : '') +
+        (canCancel ? '<button class="btn btn-danger" data-action="cancel">Batalkan</button>' : '') +
+        (canDownload ? '<a class="btn btn-ghost" href="/api/datasets/' + ds.dataset_id + '/download">Unduh</a>' : '') +
+        '<button class="btn btn-danger" data-action="delete">Hapus</button>' +
+        '<button class="btn btn-ghost" data-action="toggle-scenes">Detail</button>' +
+        (canDownload ? '<button class="btn btn-ghost" data-action="toggle-structure">Struktur</button>' : '') +
+      '</div>' +
     '</div>'
   );
 }
@@ -1549,6 +1562,16 @@ async function handleCardAction(action, id) {
     openCancelModal(id);
   } else if (action === 'delete') {
     openDeleteModal(id);
+  } else if (action === 'toggle-body') {
+    const key = String(id);
+    if (state.collapsedCards.has(key)) state.collapsedCards.delete(key);
+    else state.collapsedCards.add(key);
+    const el = state.cardElements[id];
+    if (el) {
+      el._shellHTML = cardShellHTML(state.datasets.find(d => String(d.dataset_id) === key));
+      el.querySelector('.card-shell').innerHTML = el._shellHTML;
+      bindCardShell(el, id);
+    }
   } else if (action === 'toggle-scenes') {
     const box = document.getElementById('scenes-' + id);
     box.classList.toggle('hidden');
@@ -2408,16 +2431,16 @@ async function loadTierFiles(id, tier, source) {
 // (DOCS/DECISIONS.md D16) -- dan pemecahan itu menyisakan N stack terpisah per
 // tanggal, bukan satu. Panel ini yang menutup lingkarannya.
 //
-// Dua aturan yang membentuk UI-nya:
+// Aturan yang membentuk UI-nya:
 //
-// 1. MENAWARKAN, BUKAN MENJALANKAN SENDIRI. Penggabungan menulis berkas besar
-//    dan lama. Yang tahu apakah empat strip itu memang satu pulau yang sama
-//    adalah peneliti, bukan kode. Jadi panel ini hanya muncul dan menunggu;
-//    tidak ada jalur yang menggabungkan tanpa user menekan tombolnya.
+// MENAWARKAN, BUKAN MENJALANKAN SENDIRI. Penggabungan menulis berkas besar
+// dan lama. Yang tahu apakah empat strip itu memang satu pulau yang sama
+// adalah peneliti, bukan kode. Jadi panel ini hanya muncul dan menunggu;
+// tidak ada jalur yang menggabungkan tanpa user menekan tombolnya.
 //
-// 2. YANG TERHALANG TETAP DITAMPILKAN, LENGKAP DENGAN ALASANNYA. Kandidat yang
-//    grid-nya tidak sejajar justru yang paling perlu dilihat -- menyembunyikannya
-//    membuat UI diam soal data yang hampir bisa digabung.
+// Hanya tanggal yang MEMANG BISA digabung yang ditampilkan di sini. Kandidat
+// yang terhalang (grid tidak sejajar, dsb.) disaring keluar -- panel ini
+// adalah daftar aksi yang bisa diambil, bukan laporan status tiap tanggal.
 // ---------------------------------------------------------------------------
 
 async function renderMergePanel() {
@@ -2432,15 +2455,18 @@ async function renderMergePanel() {
     return;
   }
 
-  if (!data.candidates || data.candidates.length === 0) {
+  const mergeableCandidates = (data.candidates || []).filter(c => c.mergeable);
+
+  if (mergeableCandidates.length === 0) {
     // Tidak ada yang bisa digabung adalah keadaan normal (dataset tunggal,
-    // atau strip yang fusion-nya belum jadi) -- jangan ributkan.
+    // strip yang fusion-nya belum jadi, atau semuanya terhalang) -- jangan
+    // ributkan.
     box.classList.add('hidden');
     box.innerHTML = '';
     return;
   }
 
-  const rows = data.candidates.map(c => {
+  const rows = mergeableCandidates.map(c => {
     const names = c.dataset_names.map(escapeHTML).join(' + ');
     const shape = c.output_shape[0] && c.output_shape[1]
       ? c.output_shape[1].toLocaleString('id-ID') + ' x ' +
@@ -2448,15 +2474,24 @@ async function renderMergePanel() {
       : '-';
 
     let action;
-    if (!c.mergeable) {
-      action = '<span class="merge-blocked">Tidak bisa digabung</span>';
-    } else if (c.already_merged) {
+    if (c.already_merged) {
+      // Berkas yang digabung sebelum preview ada tidak punya PNG. Merender
+      // ulang dari HDF5-nya jauh lebih murah daripada menyuruh user menggabung
+      // ulang belasan GB hanya untuk mendapat gambarnya.
+      const needsPreview = !(c.preview_images || []).length;
       action =
         '<span class="merge-done">Sudah digabung · ' +
           humanBytes(c.output_size_bytes || 0) + '</span>' +
+        (needsPreview
+          ? '<button class="btn btn-ghost btn-sm" data-preview-date="' +
+              escapeHTML(c.date) + '">Buat Preview</button>'
+          : '') +
         '<button class="btn btn-ghost btn-sm" data-merge-date="' +
           escapeHTML(c.date) + '" data-merge-ids="' + c.dataset_ids.join(',') +
-          '" data-merge-overwrite="1">Gabung Ulang</button>';
+          '" data-merge-overwrite="1">Gabung Ulang</button>' +
+        '<button class="btn btn-ghost btn-sm btn-danger" data-delete-date="' +
+          escapeHTML(c.date) + '" data-delete-size="' +
+          (c.output_size_bytes || 0) + '">Hapus</button>';
     } else {
       action =
         '<button class="btn btn-accent btn-sm" data-merge-date="' +
@@ -2465,15 +2500,24 @@ async function renderMergePanel() {
     }
 
     const notes = [];
-    if (c.blocked_reason) {
-      notes.push('<p class="merge-reason">' + escapeHTML(c.blocked_reason) + '</p>');
-    }
     (c.warnings || []).forEach(w => {
       notes.push('<p class="merge-warn">' + escapeHTML(w) + '</p>');
     });
 
+    // Preview cuma ada setelah digabung. Thumbnail-nya dibuka di tab baru
+    // dalam ukuran penuh -- di baris panel ini lebarnya cuma beberapa ratus
+    // piksel, terlalu kecil untuk memeriksa sambungan antar-strip.
+    const shots = (c.preview_images || []).map(img =>
+      '<a class="merge-shot" href="' + escapeHTML(img.url) + '" target="_blank" ' +
+        'rel="noopener" title="' + escapeHTML(img.file) + '">' +
+        '<img src="' + escapeHTML(img.url) + '" loading="lazy" ' +
+          'alt="' + escapeHTML(img.file) + '">' +
+        '<span>' + escapeHTML(img.file.replace(/\.png$/, '')) + '</span>' +
+      '</a>'
+    ).join('');
+
     return (
-      '<div class="merge-row' + (c.mergeable ? '' : ' is-blocked') + '">' +
+      '<div class="merge-row">' +
         '<div class="merge-row-main">' +
           '<div class="merge-date">' + escapeHTML(formatDateKey(c.date)) + '</div>' +
           '<div class="merge-sources">' + names + '</div>' +
@@ -2486,18 +2530,25 @@ async function renderMergePanel() {
         '</div>' +
         '<div class="merge-row-action">' + action + '</div>' +
         (notes.length ? '<div class="merge-notes">' + notes.join('') + '</div>' : '') +
+        (shots ? '<div class="merge-shots">' + shots + '</div>' : '') +
       '</div>'
     );
   }).join('');
 
+  const collapsed = state.mergeCollapsed;
   const html =
     '<div class="merge-head">' +
       '<h4>Gabungkan Dataset</h4>' +
-      '<span class="merge-sub">' + data.mergeable_count + ' dari ' +
-        data.candidate_count + ' tanggal siap digabung</span>' +
+      '<span class="merge-sub">' + mergeableCandidates.length +
+        ' tanggal siap digabung</span>' +
+      '<button type="button" class="card-collapse-btn' + (collapsed ? ' collapsed' : '') +
+        '" data-action="toggle-merge" title="' + (collapsed ? 'Buka panel' : 'Tutup panel') +
+        '" aria-label="' + (collapsed ? 'Buka panel' : 'Tutup panel') + '"><span class="chevron"></span></button>' +
     '</div>' +
-    '<p class="merge-note">' + escapeHTML(data.explanation) + '</p>' +
-    '<div class="merge-rows">' + rows + '</div>';
+    '<div class="merge-body' + (collapsed ? ' hidden' : '') + '">' +
+      '<p class="merge-note">' + escapeHTML(data.explanation) + '</p>' +
+      '<div class="merge-rows">' + rows + '</div>' +
+    '</div>';
 
   if (box._html !== html) {
     box._html = html;
@@ -2516,6 +2567,70 @@ function bindMergePanel(box) {
   box.querySelectorAll('[data-merge-date]').forEach(btn => {
     btn.addEventListener('click', () => runMerge(btn));
   });
+  box.querySelectorAll('[data-preview-date]').forEach(btn => {
+    btn.addEventListener('click', () => buildMergePreview(btn));
+  });
+  box.querySelectorAll('[data-delete-date]').forEach(btn => {
+    btn.addEventListener('click', () => deleteMergeResult(btn));
+  });
+  const toggle = box.querySelector('[data-action="toggle-merge"]');
+  if (toggle) toggle.addEventListener('click', () => {
+    state.mergeCollapsed = !state.mergeCollapsed;
+    box._html = null;
+    renderMergePanel();
+  });
+}
+
+async function deleteMergeResult(btn) {
+  const date = btn.dataset.deleteDate;
+  const size = Number(btn.dataset.deleteSize) || 0;
+
+  // Selalu dikonfirmasi: berkasnya berukuran giga dan penghapusannya tidak bisa
+  // dibatalkan. Yang hilang cuma turunan -- stack sumbernya utuh, jadi tanggal
+  // ini bisa digabung ulang -- dan kalimatnya mengatakan itu supaya user tidak
+  // mengira sedang membuang hasil pemrosesan.
+  if (!window.confirm(
+      'Hapus hasil gabungan ' + formatDateKey(date) + ' (' + humanBytes(size) +
+      ') beserta preview-nya?\n\n' +
+      'Stack fusion sumbernya tidak dihapus, jadi tanggal ini bisa digabung ulang.')) {
+    return;
+  }
+
+  const original = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Menghapus...';
+  try {
+    const result = await api('/api/merge/result/' + encodeURIComponent(date),
+                             { method: 'DELETE' });
+    showToast(result.removed.join(', ') + ' dihapus · ' +
+              humanBytes(result.freed_bytes) + ' dibebaskan', 'success');
+    box_refreshMerge();
+  } catch (err) {
+    showToast(err.message, 'error');
+    btn.disabled = false;
+    btn.textContent = original;
+  }
+}
+
+async function buildMergePreview(btn) {
+  const date = btn.dataset.previewDate;
+  const original = btn.textContent;
+  btn.disabled = true;
+  // Seluruh isi HDF5 didekompresi, jadi ini menit-menitan untuk AOI sebesar
+  // Jawa. Tombolnya mengatakan itu, supaya tidak dikira menggantung.
+  btn.textContent = 'Merender... (beberapa menit)';
+  try {
+    const result = await api(
+      '/api/merge/preview/' + encodeURIComponent(date) + '/rebuild',
+      { method: 'POST' });
+    showToast(result.preview_images.length + ' gambar dibuat untuk ' +
+              formatDateKey(date), 'success');
+    box_refreshMerge();
+  } catch (err) {
+    showToast(err.message, 'error');
+    btn.disabled = false;
+    btn.textContent = original;
+  }
 }
 
 async function runMerge(btn) {

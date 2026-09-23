@@ -3,7 +3,7 @@
 Rencana pemrosesan per-satelit — terjemahan `dataset_source_config` menjadi
 keputusan konkret yang dipakai pipeline.
 
-Model per-satelit (DOCS/DESIGN.md, DOCS/ETL.md) menyatakan setiap sumber punya
+Model per-satelit (DOCS/ARCHITECTURE.md, DOCS/PIPELINE.md) menyatakan setiap sumber punya
 definisi RAW/PROCESSED-nya sendiri:
 
     SENTINEL1  RAW        calibrate + reproject + crop            -> ALIGNED
@@ -40,7 +40,7 @@ SOURCE_ORDER: tuple[str, ...] = (SENTINEL1, MODIS, GPM)
 
 # Tahap Sentinel-1 yang jalan di level apa pun. DOWNLOAD/CALIBRATE/CROP tidak
 # bisa dilewati: nilai DN mentah tanpa LUT sigma-nought tidak punya arti fisik,
-# jadi "RAW" untuk SAR tetap berarti terkalibrasi (DOCS/ETL.md).
+# jadi "RAW" untuk SAR tetap berarti terkalibrasi (DOCS/PIPELINE.md).
 S1_BASE_STAGES: tuple[str, ...] = ("DOWNLOAD", "CALIBRATE", "CROP")
 # Tahap yang hanya jalan kalau PROCESSED diminta.
 S1_PROCESSED_STAGES: tuple[str, ...] = ("LEE_FILTER", "QUALITY_ANALYTICS", "GOLD_EXPORT")
@@ -143,7 +143,7 @@ class SourcePlan:
         """Tier yang dibaca fusion/preview untuk sumber ini pada run itu.
 
         PROCESSED berakhir di COG (analysis-ready), RAW berhenti di ALIGNED
-        (DOCS/ETL.md, "Which input tier does fusion use?").
+        (DOCS/PIPELINE.md, "Which input tier does fusion use?").
         """
         return tn.COG if self.level_for_run(run_level) == PROCESSED else tn.ALIGNED
 
@@ -187,7 +187,7 @@ class SourcePlan:
         Sebuah band bisa punya DUA target ketika sumbernya dikonfigurasi
         RAW+PROCESSED: FLOOD (atau rainfall 24h) adalah deliverable RAW di
         ALIGNED sekaligus lapisan pertama jalur PROCESSED di tier rank 2
-        (INDICES untuk MODIS, ACCUMULATED untuk GPM), dan DOCS/ETL.md
+        (INDICES untuk MODIS, ACCUMULATED untuk GPM), dan DOCS/PIPELINE.md
         menyatakan kedua artefak hidup berdampingan di disk.
         """
         if self.source_name == MODIS:
@@ -308,7 +308,7 @@ class ProcessingPlan:
 
     def fusion_eligible(self, fusion_strategy: str | None) -> bool:
         """Fusi jalan hanya kalau >1 sumber dikonfigurasi DAN ada strategi
-        (DOCS/ETL.md, "Fusion Stage")."""
+        (DOCS/PIPELINE.md, "Fusion Stage")."""
         return self.source_count > 1 and bool(fusion_strategy)
 
     def summary(self) -> dict[str, list[str]]:

@@ -166,13 +166,26 @@ class TestLayerWriter:
     """Lapisan ditulis satu per satu supaya stack seukuran AOI tidak perlu
     ditampung seluruhnya di memori."""
 
+    @staticmethod
+    def _finalize(writer):
+        """Stack baru terbit di path finalnya lewat finalize(); close() saja
+        adalah jalur batal, dan sengaja TIDAK menerbitkan apa pun."""
+        from datetime import datetime, timezone
+
+        now = datetime(2025, 6, 1, tzinfo=timezone.utc)
+        writer.finalize(
+            acquisition_datetime=now, processing_datetime=now,
+            aoi_bbox=(106.0, -6.5, 107.0, -6.0),
+            processing_level="PROCESSED", source_levels={"sentinel1": "PROCESSED"},
+        )
+
     def test_layers_are_compressed_and_shuffled(self, tmp_path):
         import h5py
 
         writer = m9._FusionH5Layers(tmp_path / "stack.h5", (64, 64))
         writer.add("sentinel1/VV", np.zeros((64, 64), dtype="float32"))
         writer.add("modis/FLOOD", np.zeros((64, 64), dtype="uint8"))
-        writer.close()
+        self._finalize(writer)
 
         with h5py.File(tmp_path / "stack.h5", "r") as f:
             vv = f["sentinel1/VV"]
@@ -190,3 +203,22 @@ class TestLayerWriter:
         writer.close()
 
         assert writer.names == ["sentinel1/VV", "sentinel1/VH", "gpm/rainfall_24h"]
+
+    def test_abandoned_stack_never_appears_at_its_final_path(self, tmp_path):
+        # Konsumen menilai "berkas ada" sebagai "berkas beres", jadi stack yang
+        # ditinggalkan di tengah jalan tidak boleh menempati path finalnya.
+        final = tmp_path / "stack.h5"
+        writer = m9._FusionH5Layers(final, (8, 8))
+        writer.add("sentinel1/VV", np.zeros((8, 8), dtype="float32"))
+        writer.close()
+
+        assert not final.exists()
+
+    def test_finalize_publishes_and_leaves_no_partial_behind(self, tmp_path):
+        final = tmp_path / "stack.h5"
+        writer = m9._FusionH5Layers(final, (8, 8))
+        writer.add("sentinel1/VV", np.zeros((8, 8), dtype="float32"))
+        self._finalize(writer)
+
+        assert final.exists()
+        assert list(tmp_path.glob("*.partial")) == []

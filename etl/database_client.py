@@ -197,7 +197,7 @@ class LiveSourceNameEnum(str, PyEnum):
 class ProcessingLevelEnum(str, PyEnum):
     """Level pemrosesan yang diminta user untuk SATU sumber.
 
-    Artinya berbeda per satelit (DOCS/DESIGN.md, tabel "What RAW vs
+    Artinya berbeda per satelit (DOCS/ARCHITECTURE.md, tabel "What RAW vs
     PROCESSED means per satellite"): untuk S1 RAW = kalibrasi + crop tanpa
     Lee filter, untuk GPM RAW = curah hujan harian tanpa akumulasi. Yang
     sama di semua sumber: RAW berhenti di BRONZE, PROCESSED lanjut ke
@@ -240,7 +240,7 @@ SOURCE_NAME_ORDER: tuple[str, ...] = (
 )
 
 # API memakai key huruf kecil ("sentinel1"), database memakai huruf besar
-# ("SENTINEL1") -- lihat DOCS/API.md bagian "Create Dataset". Pemetaan ada di
+# ("SENTINEL1") -- lihat DOCS/INTERFACE.md bagian "Create Dataset". Pemetaan ada di
 # satu tempat supaya tidak ada .upper()/.lower() yang tersebar.
 API_KEY_TO_SOURCE_NAME: dict[str, str] = {name.lower(): name for name in SOURCE_NAME_ORDER}
 SOURCE_NAME_TO_API_KEY: dict[str, str] = {name: name.lower() for name in SOURCE_NAME_ORDER}
@@ -359,7 +359,7 @@ def derive_required_tiers(
 ) -> list[str]:
     """Turunkan `datasets.required_tiers` dari konfigurasi per-sumber.
 
-    `required_tiers` bukan lagi input user (DOCS/PROTOTYPE_CHANGELOG.md:
+    `required_tiers` bukan lagi input user (DOCS/DECISIONS.md:
     "`tiers` is no longer user-facing -- derived internally"), tapi kolomnya
     NOT NULL dan masih dipakai orchestrator untuk memutuskan tahap mana yang
     dilewati. Fungsi ini yang menjembatani keduanya.
@@ -420,7 +420,7 @@ def _validate_fusion_output_only(value, fusion_strategy: "str | None") -> bool:
 def _validate_fusion_strategy(value, source_count: int) -> "str | None":
     """Validasi fusion_strategy terhadap jumlah sumber yang dikonfigurasi.
 
-    Aturannya (DOCS/API.md, bagian Validation) tidak bisa jadi CHECK
+    Aturannya (DOCS/INTERFACE.md, bagian Validation) tidak bisa jadi CHECK
     constraint: jumlah sumber ada di tabel lain, dan CHECK tidak boleh
     membaca tabel lain. Jadi di sinilah aturan itu ditegakkan.
 
@@ -908,7 +908,7 @@ class Dataset(Base):
     bbox_wkt = Column(Text, nullable=False)
     date_start = Column(Date, nullable=False)
     date_end = Column(Date, nullable=False)
-    # Diturunkan dari source_configs, bukan diisi user (DOCS/DESIGN.md).
+    # Diturunkan dari source_configs, bukan diisi user (DOCS/ARCHITECTURE.md).
     required_tiers = Column(ARRAY(String), nullable=False)
     # NULL = dataset satu sumber, tidak ada yang perlu difusikan. Aturan
     # "harus NULL kalau sumbernya cuma 1" tidak bisa jadi CHECK (jumlah sumber
@@ -983,7 +983,7 @@ class DatasetSourceConfig(Base):
     """Konfigurasi pemrosesan per-satelit untuk sebuah dataset.
 
     Satu baris per (dataset, sumber). ETL membaca tabel ini untuk menentukan
-    sumber mana yang dijalankan dan sampai level apa (DOCS/ETL.md). Constraint
+    sumber mana yang dijalankan dan sampai level apa (DOCS/PIPELINE.md). Constraint
     di __table_args__ sengaja dicerminkan dari migrasi 017 supaya database uji
     yang dibuat lewat Base.metadata.create_all() menegakkan aturan yang sama
     dengan produksi -- tanpa itu, tes tidak akan pernah melihat kegagalan CHECK
@@ -1028,7 +1028,7 @@ class DatasetSourceConfig(Base):
 
     @property
     def api_key(self) -> str:
-        """Nama sumber dalam ejaan API ("sentinel1"), lihat DOCS/API.md."""
+        """Nama sumber dalam ejaan API ("sentinel1"), lihat DOCS/INTERFACE.md."""
         return SOURCE_NAME_TO_API_KEY.get(self.source_name, self.source_name.lower())
 
     def has_level(self, level: str) -> bool:
@@ -1457,7 +1457,7 @@ class DatabaseClient:
 
     def get_last_dataset_config(self) -> dict:
         """Konfigurasi dataset terakhir yang dibuat, untuk tombol "Pakai Config
-        Sebelumnya" (DOCS/DECISIONS.md D13, DOCS/API.md GET
+        Sebelumnya" (DOCS/DECISIONS.md D13, DOCS/INTERFACE.md GET
         /api/datasets/last-config).
 
         Sengaja TIDAK mengembalikan `name` -- itu keputusan produk: user harus
@@ -1518,7 +1518,7 @@ class FusionProduct(Base):
     __table_args__ = (
         # processing_level ikut kunci unik: dataset yang meminta sebuah sumber
         # RAW **dan** PROCESSED menghasilkan DUA stack untuk tanggal yang sama
-        # (DOCS/ETL.md, "Which input tier does fusion use?"). Dengan kunci lama
+        # (DOCS/PIPELINE.md, "Which input tier does fusion use?"). Dengan kunci lama
         # (feature_date, region_id) stack kedua akan menimpa yang pertama dan
         # ablation study-nya kehilangan salah satu sisi perbandingan.
         #

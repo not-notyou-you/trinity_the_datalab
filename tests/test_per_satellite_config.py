@@ -757,7 +757,7 @@ class TestBothLevelsProduceTwoStacks:
 # ---------------------------------------------------------------------------
 class TestSingleSourceDisablesFusion:
     """modis[PROCESSED] saja: tidak ada yang bisa dipasangkan, jadi tidak ada
-    HDF5 sama sekali (DOCS/ETL.md, "Fusion Stage")."""
+    HDF5 sama sekali (DOCS/PIPELINE.md, "Fusion Stage")."""
 
     @pytest.fixture
     def ran(self, db_client, job_factory, stub_rasters, monkeypatch):

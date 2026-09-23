@@ -11,7 +11,7 @@ granule mentahnya di-cache di _granule_cache/gpm/. Cache-nya flat (bukan per-tan
 karena satu granule harian ikut dipakai window 72h/7d tanggal-tanggal
 berikutnya — lihat folder_manager.get_granule_cache_dir.
 
-LEVEL PEMROSESAN (DOCS/ETL.md, "GPM IMERG Pipeline")
+LEVEL PEMROSESAN (DOCS/PIPELINE.md, "GPM IMERG Pipeline")
     RAW        cuma curah hujan hari itu (window 24h = 1 granule) -> BRONZE.
                Hari-hari sebelumnya TIDAK diunduh: yang membuat sebuah window
                "akumulasi" justru granule tetangga itu, dan level RAW
@@ -140,12 +140,32 @@ def _plog_event(
     plog.log_event(dataset_id, scene_id, MODULE, stage, status, message, details or {})
 
 
+_md5_cache: dict[tuple[str, int, int], str] = {}
+_md5_cache_lock = threading.Lock()
+
+
 def _md5(path: Path, chunk: int = 8 * 1024 * 1024) -> str:
+    """MD5 file, dimemo per (path, ukuran, mtime).
+
+    Satu granule harian dipakai ulang window 72h/7d tanggal-tanggal berikutnya,
+    jadi tiap cache hit dulunya menghitung ulang MD5 granule yang sama
+    berkali-kali dalam satu run. Kunci memo ikut ukuran+mtime, jadi file yang
+    berubah tetap dihitung ulang."""
+    st = path.stat()
+    key = (str(path.resolve()), st.st_size, st.st_mtime_ns)
+    with _md5_cache_lock:
+        hit = _md5_cache.get(key)
+    if hit is not None:
+        return hit
+
     h = hashlib.md5()
     with open(path, "rb") as f:
         for block in iter(lambda: f.read(chunk), b""):
             h.update(block)
-    return h.hexdigest()
+    digest = h.hexdigest()
+    with _md5_cache_lock:
+        _md5_cache[key] = digest
+    return digest
 
 
 class _GranuleNotFound(Exception):
@@ -261,7 +281,15 @@ def _download_with_retry(
     if dg.reuse_granule(out_path, "gpm", fm.DATA_ROOT, "[M8]"):
         return _md5(out_path)
 
-    tmp_path = out_path.with_suffix(out_path.suffix + ".part")
+    # Nama unik per proses+thread: granule cache dipakai bersama antar tanggal
+    # (lihat docstring modul), jadi lebih dari satu worker/proses bisa menuju
+    # granule yang sama secara bersamaan. Nama .part deterministik dulunya
+    # membuat dua penulis saling tabrak (PermissionError WinError 32) dan
+    # os.rename gagal FileExistsError (WinError 183) begitu salah satu
+    # menang duluan -- lihat dataset 31/32 di logs/.
+    tmp_path = out_path.with_suffix(
+        f".{os.getpid()}.{threading.get_ident()}{out_path.suffix}.part"
+    )
     last_exc: Exception | None = None
 
     for attempt in range(1, MAX_RETRIES + 1):
@@ -299,7 +327,10 @@ def _download_with_retry(
                     f"ukuran file tidak sesuai: got {downloaded} bytes, expected {expected_size}"
                 )
 
-            tmp_path.rename(out_path)
+            # os.replace, bukan Path.rename: atomic-overwrite di Windows
+            # maupun POSIX. Path.rename di Windows gagal FileExistsError
+            # kalau proses lain sudah menang duluan menulis out_path.
+            os.replace(tmp_path, out_path)
             checksum = _md5(out_path)
             logger.info("[M8] downloaded %s (md5=%s...)", out_path.name, checksum[:12])
             _plog_event(
@@ -450,7 +481,26 @@ def _fetch_daily_precip(
                 "[M8] %s: %s -> pakai %s",
                 date.date().isoformat(), "; ".join(not_found_reasons), filename,
             )
-        data, transform, crs = _read_daily_precip(nc4_path)
+        try:
+            data, transform, crs = _read_daily_precip(nc4_path)
+        except OSError as exc:
+            # Granule ada di disk dan ukurannya wajar, tapi isinya rusak
+            # (mis. "inflate() failed" dari blok terkompresi yang cacat).
+            # Cache dipercaya hanya lewat exists()+size, jadi tanpa ini
+            # berkas rusak akan dipakai ulang selamanya dan tanggal itu
+            # gagal terus sampai seseorang menghapusnya manual -- persis
+            # yang terjadi pada dataset 32 tanggal 2025-09-25.
+            logger.warning(
+                "[M8] granule cache rusak, dihapus lalu diunduh ulang: %s (%s)",
+                nc4_path.name, exc,
+            )
+            nc4_path.unlink(missing_ok=True)
+            checksum = _download_with_retry(
+                url, nc4_path,
+                plog=plog, dataset_id=dataset_id, scene_id=scene_id,
+                item_label=f"{window_name} day {date.date().isoformat()} ({run}, unduh ulang)",
+            )
+            data, transform, crs = _read_daily_precip(nc4_path)
         return data, transform, crs, checksum, run
 
     raise RuntimeError(

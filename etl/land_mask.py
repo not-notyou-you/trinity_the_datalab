@@ -40,6 +40,8 @@ from pathlib import Path
 import numpy as np
 from rasterio.transform import Affine
 
+from etl.atomic_write import atomic_path
+
 logger = logging.getLogger(__name__)
 
 MODULE = "LAND_MASK"
@@ -379,9 +381,10 @@ def write_cog(
         "zlevel": 6,
         "BIGTIFF": "IF_SAFER",
     }
-    with rasterio.open(path, "w", **profile) as dst:
-        dst.write(data, 1)
-        dst.update_tags(**{k: str(v) for k, v in (tags or {}).items()})
-        dst.set_band_description(1, description)
-        dst.build_overviews([2, 4, 8, 16, 32], rasterio.enums.Resampling.average)
+    with atomic_path(path) as tmp_out:
+        with rasterio.open(tmp_out, "w", **profile) as dst:
+            dst.write(data, 1)
+            dst.update_tags(**{k: str(v) for k, v in (tags or {}).items()})
+            dst.set_band_description(1, description)
+            dst.build_overviews([2, 4, 8, 16, 32], rasterio.enums.Resampling.average)
     return path

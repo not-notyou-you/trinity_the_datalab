@@ -86,7 +86,7 @@ SOURCES: tuple[str, ...] = ("sentinel1", "modis", "gpm")
 
 # Tier fusion dan preview sengaja dipetakan ke tuple kosong: keduanya
 # lintas-source.
-# bronze dipakai SEMUA source sejak model per-satelit (DOCS/ETL.md): dia tempat
+# bronze dipakai SEMUA source sejak model per-satelit (DOCS/PIPELINE.md): dia tempat
 # artefak level RAW tiap sumber berhenti — S1 hasil crop AOI, MODIS peta banjir
 # tanpa indeks turunan, GPM curah hujan harian tanpa window akumulasi.
 TIER_SOURCES: dict[str, tuple[str, ...]] = {

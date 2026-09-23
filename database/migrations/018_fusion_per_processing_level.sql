@@ -9,7 +9,7 @@
 -- hanya mengenal satu jalur pemrosesan.
 --
 -- Model per-satelit membolehkan sebuah sumber diminta RAW **dan** PROCESSED
--- sekaligus. DOCS/ETL.md ("Which input tier does fusion use?") menyatakan
+-- sekaligus. DOCS/PIPELINE.md ("Which input tier does fusion use?") menyatakan
 -- konfigurasi itu menghasilkan DUA fusion run untuk tanggal yang sama: satu
 -- dari BRONZE, satu dari GOLD. Dengan kunci lama, baris kedua bertabrakan
 -- dengan yang pertama dan ETL menimpanya -- persis membuang sisi pembanding

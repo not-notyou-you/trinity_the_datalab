@@ -3,7 +3,7 @@
 API konfigurasi per-satelit: POST /api/datasets dengan objek `sources`,
 dan GET /api/datasets/last-config.
 
-Yang diuji di sini adalah kontrak HTTP-nya (DOCS/API.md bagian "Create
+Yang diuji di sini adalah kontrak HTTP-nya (DOCS/INTERFACE.md bagian "Create
 Dataset" dan "Get Last Configuration"). Aturan normalisasi sources-nya
 sendiri diuji di tests/test_source_config.py.
 

@@ -6,7 +6,7 @@ lapisan jaringan/raster yang di-stub (CDSE, LAADS, GES DISC, kalibrasi, crop,
 Lee filter, ekspor COG). Semua keputusan percabangan, penulisan berkas, dan
 registrasi `data_products` berjalan apa adanya — itulah yang diuji.
 
-Skenario (sesuai DOCS/ETL.md "Pipeline Branching Logic"):
+Skenario (sesuai DOCS/PIPELINE.md "Pipeline Branching Logic"):
     sentinel1[RAW]              -> BRONZE saja, tidak ada SILVER/GOLD
     sentinel1[RAW,PROCESSED]    -> BRONZE (RAW) + SILVER/GOLD (PROCESSED)
     modis[PROCESSED]            -> FLOOD + NDVI + NDWI
