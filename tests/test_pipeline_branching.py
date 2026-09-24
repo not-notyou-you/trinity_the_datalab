@@ -277,6 +277,138 @@ class TestSentinel1Branching:
         scratch = fm.get_dataset_root(dataset_id, name) / fm.SCRATCH_DIRNAME
         assert not scratch.exists(), "_work/ seharusnya sudah disapu"
 
+    def test_failed_scene_keeps_scratch_then_sweeps_clean_after_retry(
+        self, db_client, job_factory, monkeypatch,
+    ):
+        """_sweep_scratch tidak boleh membuang .part scene yang gagal --
+        itu satu-satunya jejak resume yang dipunyai retry berikutnya (lihat
+        docstring _sweep_scratch). Begitu scene itu akhirnya berhasil di run
+        berikutnya, sapuan penuh berlaku lagi: tidak ada residu permanen."""
+        pid_ok, pid_fail = f"{PID}_OK", f"{PID}_FAIL"
+
+        def fake_discover(bbox_wkt, date_from, date_to, max_results=200):
+            return [
+                {"product_identifier": pid_ok, "size_mb": 1.0, "cloud_cover": 0},
+                {"product_identifier": pid_fail, "size_mb": 1.0, "cloud_cover": 0},
+            ]
+
+        # scene_key dibawa lewat nama berkas persis seperti modul asli, supaya
+        # satu stub melayani beberapa scene sekaligus (bukan di-hardcode PID).
+        def _stem(path: str, suffix: str) -> str:
+            return Path(path).name.rsplit(suffix, 1)[0]
+
+        should_fail = {"value": True}  # dipakai untuk mensimulasikan retry sukses
+
+        def fake_download(scene_meta, output_dir, keep_raw=True, progress_cb=None, reuse_root=None):
+            key = scene_meta["product_identifier"]
+            out = Path(output_dir)
+            if key == pid_fail and should_fail["value"]:
+                # Jejak resume: sebagian file sudah tertulis sebelum koneksi
+                # putus, persis .part di module1_download yang sebenarnya.
+                _touch(out / f"{key}.SAFE.zip.part", b"partial-bytes")
+                raise ConnectionError("simulasi koneksi putus di tengah unduhan")
+            return DownloadResult(
+                product_identifier=key,
+                zip_path=_touch(out / f"{key}.SAFE.zip"),
+                vv_tif_path=_touch(out / f"{key}_vv.tif"),
+                vh_tif_path=_touch(out / f"{key}_vh.tif"),
+                file_size_mb=1.0,
+                checksum_md5="0" * 32,
+                acquisition_datetime=ACQ,
+                orbit_direction="ASCENDING",
+                orbit_number=1,
+                relative_orbit=1,
+                cloud_cover=0.0,
+                incidence_near=30.0,
+                incidence_far=45.0,
+                download_url="https://example.invalid/scene",
+            )
+
+        def fake_calibrate(zip_path, vv, vh, out_dir):
+            key = _stem(vv, "_vv.tif")
+            d = Path(out_dir)
+            return _touch(d / f"{key}_cal_vv.tif"), _touch(d / f"{key}_cal_vh.tif")
+
+        def fake_crop(vv, vh, out_dir, bbox):
+            key = _stem(vv, "_cal_vv.tif")
+            d = Path(out_dir)
+            return (_touch(d / f"{key}_VV_crop.tif"), _touch(d / f"{key}_VH_crop.tif"))
+
+        def fake_lee(vv, vh, out_dir, window_size=7, looks=1):
+            key = _stem(vv, "_VV_crop.tif")
+            d = Path(out_dir)
+            return (_touch(d / f"{key}_VV_lee.tif"), _touch(d / f"{key}_VH_lee.tif"))
+
+        def fake_gold(dataset_id, dataset_name, source, scene_key, silver_files):
+            d = fm.ensure_scene_dir(dataset_id, dataset_name, "cog", source, scene_key)
+            return {band: _touch(d / f"{source}_{scene_key}_{band}.tif")
+                    for band in silver_files}
+
+        @dataclass
+        class _Metrics:
+            total_pixels: int = 100
+            valid_pixels: int = 100
+            nodata_pixels: int = 0
+            quality_score: float = 90.0
+            backscatter_mean_db: float = -12.0
+            backscatter_std_db: float = 2.0
+            backscatter_min_db: float = -30.0
+            backscatter_max_db: float = 0.0
+            radiometric_consistency: bool = True
+            speckle_index: float = 0.2
+            quality_flag: str = "PASS"
+
+        monkeypatch.setattr(m5, "discover_scenes", fake_discover)
+        monkeypatch.setattr(m5, "download_scene", fake_download)
+        monkeypatch.setattr(m5, "calibrate_run", fake_calibrate)
+        monkeypatch.setattr(m5, "crop_run", fake_crop)
+        monkeypatch.setattr(m5, "lee_run", fake_lee)
+        monkeypatch.setattr(m5, "export_scene_to_gold", fake_gold)
+        monkeypatch.setattr(m5, "compute_band_metrics",
+                             lambda path, band, min_quality_score=60.0: _Metrics())
+        monkeypatch.setattr(m5, "create_fusion_stack",
+                             lambda *a, **kw: pytest.fail("FUSION seharusnya tidak jalan"))
+
+        dataset_id, name, job_id = job_factory({"sentinel1": ["RAW", "PROCESSED"]})
+        scratch_root = fm.get_dataset_root(dataset_id, name) / fm.SCRATCH_DIRNAME
+
+        # --- run 1: pid_fail gagal di tengah unduhan ------------------------
+        m5.run_dataset_job(db_client, job_id)
+
+        with db_client.session() as sess:
+            job = sess.get(DatasetJob, job_id)
+            assert job.status == "FAILED", "job dengan scene gagal harus FAILED"
+            assert job.failed_count == 1
+
+        # scene yang sukses tetap lengkap seperti biasa, tidak ikut tertahan
+        # oleh scene lain yang gagal.
+        assert len(files_in(dataset_id, name, "cog", "sentinel1", pid_ok)) == 2
+
+        fail_scratch = scratch_root / fm.scratch_slug(pid_fail)
+        assert fail_scratch.is_dir(), "_work/ pid_fail harus tetap ada untuk resume"
+        assert (fail_scratch / "raw" / "sentinel1" / f"{pid_fail}.SAFE.zip.part").exists(), \
+            ".part yang sudah terunduh sebagian harus tetap ada, bukan dihapus sapuan"
+
+        # --- run 2: retry, pid_fail kali ini berhasil -----------------------
+        should_fail["value"] = False
+        with db_client.session() as sess:
+            job = sess.get(DatasetJob, job_id)
+            job.status = "QUEUED"
+            job.started_at = None
+            job.completed_at = None
+
+        m5.run_dataset_job(db_client, job_id)
+
+        with db_client.session() as sess:
+            job = sess.get(DatasetJob, job_id)
+            assert job.status == "COMPLETED"
+
+        assert len(files_in(dataset_id, name, "cog", "sentinel1", pid_fail)) == 2
+        assert not scratch_root.exists(), (
+            "setelah semua scene akhirnya berhasil, _work/ harus tersapu bersih "
+            "tanpa residu folder scene yang tadinya gagal"
+        )
+
     def test_processed_only_tags_every_tier_processed(
         self, db_client, job_factory, stub_sentinel1
     ):

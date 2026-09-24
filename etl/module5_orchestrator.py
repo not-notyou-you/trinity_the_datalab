@@ -136,6 +136,12 @@ class _JobContext:
     # tanpa itu, tanggal yang tertutup dua frame akan difinalisasi dua kali
     # dan yang kedua menimpa yang pertama.
     expected_pids_by_date: dict[str, set[str]] = field(default_factory=dict)
+    # product_identifier scene yang gagal di run ini (diisi _record_worker_failure,
+    # dibaca _sweep_scratch): scratch scene ini TIDAK disapu di akhir run supaya
+    # .part yang sudah terunduh sebagian bisa di-resume oleh retry berikutnya,
+    # bukan diunduh ulang dari nol.
+    failed_scene_keys: set[str] = field(default_factory=set)
+    _failed_scene_keys_lock: threading.Lock = field(default_factory=threading.Lock)
 
     @property
     def s1_plan(self) -> SourcePlan:
@@ -921,13 +927,27 @@ _FUSION_ONLY_DISPOSABLE: tuple[str, ...] = (
 
 
 def _sweep_scratch(jc: _JobContext) -> int:
-    """Buang seluruh _work/ di akhir job.
+    """Buang _work/ di akhir job -- KECUALI folder scene yang gagal run ini.
 
     Sejak relayout, _work/ bukan cuma scratch kalibrasi: tier antara yang
     tidak punya laci (RAW = ZIP SAFE, SILVER = Lee pre-COG) juga mendarat di
     sana. Tanpa sapuan ini, "artefak antara dibuang setelah selesai" -- dasar
     keputusan menghilangkan laci ketiga -- tidak pernah benar-benar terjadi,
     dan ZIP SAFE ~1,6 GB per scene menumpuk diam-diam.
+
+    Scene yang gagal (jc.failed_scene_keys, diisi _record_worker_failure)
+    DIKECUALIKAN dari sapuan: folder scratch-nya menyimpan .zip.part yang
+    sudah separuh terunduh, dan menghapusnya membuat retry berikutnya mulai
+    dari nol walau resume sebenarnya mungkin (M1 mengecek ukuran .part yang
+    ada). Sebelum pengecualian ini, retry SELALU mengunduh ulang dari awal
+    karena sapuan ini sudah menghapus .part-nya duluan di akhir run yang
+    gagal -- dampaknya sama seperti server menolak resume, tapi penyebabnya
+    kode kita sendiri.
+
+    Scene yang akhirnya berhasil di run manapun otomatis tersapu di run
+    berikutnya (tidak lagi masuk failed_scene_keys begitu sukses), jadi tidak
+    ada residu permanen: begitu dataset selesai tanpa scene gagal, sapuan
+    run terakhir itu penuh seperti sebelumnya -- tidak ada pengecualian.
 
     Dijalankan untuk SEMUA job, bukan hanya fusion_output_only: isinya memang
     scratch menurut definisinya sendiri.
@@ -938,20 +958,45 @@ def _sweep_scratch(jc: _JobContext) -> int:
     if not scratch_root.is_dir():
         return 0
 
+    with jc._failed_scene_keys_lock:
+        protected_slugs = {fm.scratch_slug(key) for key in jc.failed_scene_keys}
+
     # Lewat prefix extended-length: berkas di _work/ bisa melewati MAX_PATH
     # Windows, dan rmtree biasa gagal WinError 3 lalu meninggalkan ZIP ~1,6 GB.
     long_root = fm.long_path(scratch_root)
-    deleted = sum(1 for p in long_root.rglob("*") if p.is_file())
-    try:
-        shutil.rmtree(long_root)
-    except OSError as exc:
-        logger.error("[ORCH] gagal menyapu %s: %s", scratch_root, exc)
-        return 0
+    deleted = 0
+    kept_dirs: list[str] = []
+    for entry in long_root.iterdir():
+        if entry.name in protected_slugs:
+            kept_dirs.append(entry.name)
+            continue
+        entry_files = [entry] if entry.is_file() else [p for p in entry.rglob("*") if p.is_file()]
+        try:
+            if entry.is_dir():
+                shutil.rmtree(entry)
+            else:
+                entry.unlink()
+        except OSError as exc:
+            logger.error("[ORCH] gagal menyapu %s: %s", entry, exc)
+            continue
+        deleted += len(entry_files)
+
+    if not kept_dirs:
+        # Tidak ada yang dipertahankan: _work/ itu sendiri ikut dibuang
+        # persis seperti sapuan penuh yang lama, bukan cuma dikosongkan.
+        try:
+            long_root.rmdir()
+        except OSError as exc:
+            logger.error("[ORCH] gagal membuang %s: %s", scratch_root, exc)
 
     if deleted:
         logger.info(
-            "[ORCH] job_id=%d _work/ disapu: %d berkas antara dihapus",
-            jc.job_id, deleted,
+            "[ORCH] job_id=%d _work/ disapu: %d berkas antara dihapus", jc.job_id, deleted,
+        )
+    if kept_dirs:
+        logger.info(
+            "[ORCH] job_id=%d _work/: %d folder scene gagal dipertahankan untuk resume: %s",
+            jc.job_id, len(kept_dirs), sorted(kept_dirs),
         )
     return deleted
 
@@ -1056,6 +1101,8 @@ def _record_worker_failure(
     dataset_scene_jobs.last_error, so neither the log file nor /logs ever
     showed why a stage failed. Never raises: logging must not mask the
     original error."""
+    with jc._failed_scene_keys_lock:
+        jc.failed_scene_keys.add(pid)
     try:
         jc.plog.log_event(
             jc.dataset_id, pid, "ORCHESTRATOR", stage, "FAILED",
@@ -1078,7 +1125,7 @@ class _JobCancelled(Exception):
 # (26_JAWA: 1,6 GB = 5,5 menit per scene walau jalur 84 Mbps), dan
 # mengizinkan maksimal 4 unduhan paralel per akun. 3 menyisakan satu slot
 # untuk sesi lain (browser, job kedua). 1 = perilaku lama (berurutan).
-S1_PARALLEL_DOWNLOADS = max(1, min(4, int(os.getenv("S1_PARALLEL_DOWNLOADS", "3"))))
+S1_PARALLEL_DOWNLOADS = max(1, min(4, int(os.getenv("S1_PARALLEL_DOWNLOADS", "2"))))
 
 
 def _download_worker(jc: _JobContext, scenes: list[dict], download_queue: Queue) -> None:

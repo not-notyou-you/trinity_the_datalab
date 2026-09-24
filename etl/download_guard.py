@@ -25,9 +25,13 @@ from typing import Callable, Iterable
 
 logger = logging.getLogger(__name__)
 
-# Timeout (connect, read) untuk requests: read 120 s cukup untuk server lambat,
-# tapi tidak lagi 300-600 s per jeda.
-REQUEST_TIMEOUT = (30, 120)
+# Timeout (connect, read) untuk requests. Read 60 s: transfer sehat kirim chunk
+# tiap beberapa detik (lihat StallGuard di bawah untuk laju rata-rata), jadi
+# jeda sepanjang ini nyaris pasti koneksi yang sudah mati -- bukan server yang
+# lambat. Diturunkan dari 120 s supaya koneksi yang benar-benar berhenti total
+# (nol byte, StallGuard tidak pernah terpanggil) ketahuan dalam puluhan detik,
+# bukan dua menit, sebelum retry/resume mengambil alih.
+REQUEST_TIMEOUT = (30, 60)
 # Chunk kecil supaya StallGuard dan callback progress sering diperiksa.
 CHUNK_SIZE = 1024 * 1024
 
@@ -47,11 +51,15 @@ class StallGuard:
         self.min_bps = (
             min_bytes_per_sec
             if min_bytes_per_sec is not None
-            else float(os.getenv("DOWNLOAD_MIN_KBPS", "50")) * 1024
+            else float(os.getenv("DOWNLOAD_MIN_KBPS", "100")) * 1024
         )
         self.window_s = (
             window_s if window_s is not None
-            else float(os.getenv("DOWNLOAD_STALL_WINDOW_S", "180"))
+            # Scene S1 sehat (~2 GB) yang berhasil di log konsisten mengalir
+            # di kisaran MB/s dan selesai dalam 130-600 s total. 60 s cukup
+            # untuk meredam variasi laju sesaat tanpa menahan koneksi yang
+            # sudah merayap/mati selama 3 menit penuh seperti ambang lama.
+            else float(os.getenv("DOWNLOAD_STALL_WINDOW_S", "60"))
         )
         self._clock = clock
         self._window_start = clock()
