@@ -25,13 +25,11 @@ from typing import Callable, Iterable
 
 logger = logging.getLogger(__name__)
 
-# Timeout (connect, read) untuk requests. Read 60 s: transfer sehat kirim chunk
-# tiap beberapa detik (lihat StallGuard di bawah untuk laju rata-rata), jadi
-# jeda sepanjang ini nyaris pasti koneksi yang sudah mati -- bukan server yang
-# lambat. Diturunkan dari 120 s supaya koneksi yang benar-benar berhenti total
-# (nol byte, StallGuard tidak pernah terpanggil) ketahuan dalam puluhan detik,
-# bukan dua menit, sebelum retry/resume mengambil alih.
-REQUEST_TIMEOUT = (30, 60)
+# Timeout (connect, read) untuk requests. 75 s: titik tengah antara 120 s lama
+# (terlalu lambat mendeteksi koneksi mati) dan 60 s yang sempat dicoba
+# (terlalu ketat begitu S1_PARALLEL_DOWNLOADS naik lagi ke 3 -- tiga transfer
+# berbagi bandwidth yang sama, jadi laju per-koneksi yang sehat pun turun).
+REQUEST_TIMEOUT = (30, 75)
 # Chunk kecil supaya StallGuard dan callback progress sering diperiksa.
 CHUNK_SIZE = 1024 * 1024
 
@@ -51,15 +49,21 @@ class StallGuard:
         self.min_bps = (
             min_bytes_per_sec
             if min_bytes_per_sec is not None
-            else float(os.getenv("DOWNLOAD_MIN_KBPS", "100")) * 1024
+            # 75 KB/s, bukan 100: dengan S1_PARALLEL_DOWNLOADS=3 tiga transfer
+            # berbagi bandwidth yang sama, jadi laju per-koneksi yang SEHAT pun
+            # ikut turun dibanding satu koneksi sendirian. Ambang 100 KB/s pas
+            # di 2 paralel sempat memicu retry pada koneksi yang sebenarnya
+            # cuma melambat karena berbagi jalur, bukan macet.
+            else float(os.getenv("DOWNLOAD_MIN_KBPS", "75")) * 1024
         )
         self.window_s = (
             window_s if window_s is not None
             # Scene S1 sehat (~2 GB) yang berhasil di log konsisten mengalir
-            # di kisaran MB/s dan selesai dalam 130-600 s total. 60 s cukup
-            # untuk meredam variasi laju sesaat tanpa menahan koneksi yang
-            # sudah merayap/mati selama 3 menit penuh seperti ambang lama.
-            else float(os.getenv("DOWNLOAD_STALL_WINDOW_S", "60"))
+            # di kisaran MB/s dan selesai dalam 130-600 s total. 90 s -- titik
+            # tengah antara 180 s lama (macet 3 menit sebelum ketahuan) dan
+            # 60 s yang sempat dicoba (terlalu ketat begitu paralelisme naik
+            # lagi ke 3 dan laju per-koneksi wajar ikut turun).
+            else float(os.getenv("DOWNLOAD_STALL_WINDOW_S", "90"))
         )
         self._clock = clock
         self._window_start = clock()

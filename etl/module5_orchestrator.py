@@ -1125,7 +1125,14 @@ class _JobCancelled(Exception):
 # (26_JAWA: 1,6 GB = 5,5 menit per scene walau jalur 84 Mbps), dan
 # mengizinkan maksimal 4 unduhan paralel per akun. 3 menyisakan satu slot
 # untuk sesi lain (browser, job kedua). 1 = perilaku lama (berurutan).
-S1_PARALLEL_DOWNLOADS = max(1, min(4, int(os.getenv("S1_PARALLEL_DOWNLOADS", "2"))))
+#
+# Sempat diturunkan ke 2 untuk mengurangi kegagalan koneksi CDSE, tapi itu
+# memangkas throughput ~33% untuk masalah yang sekarang sudah ditangani dari
+# sisi lain: StallGuard mendeteksi macet jauh lebih cepat (lihat
+# download_guard.py) dan _sweep_scratch tidak lagi membuang .part scene yang
+# gagal, jadi retry bisa resume alih-alih mulai dari nol. Dengan kegagalan
+# jadi jauh lebih murah untuk dipulihkan, throughput dikembalikan ke 3.
+S1_PARALLEL_DOWNLOADS = max(1, min(4, int(os.getenv("S1_PARALLEL_DOWNLOADS", "3"))))
 
 
 def _download_worker(jc: _JobContext, scenes: list[dict], download_queue: Queue) -> None:
