@@ -104,7 +104,8 @@ def stub_sentinel1(monkeypatch, tmp_path):
     def fake_discover(bbox_wkt, date_from, date_to, max_results=200):
         return [{"product_identifier": PID, "size_mb": 1.0, "cloud_cover": 0}]
 
-    def fake_download(scene_meta, output_dir, keep_raw=True, progress_cb=None, reuse_root=None):
+    def fake_download(scene_meta, output_dir, keep_raw=True, progress_cb=None, reuse_root=None,
+                      cancel_event=None):
         out = Path(output_dir)
         return DownloadResult(
             product_identifier=PID,
@@ -299,7 +300,8 @@ class TestSentinel1Branching:
 
         should_fail = {"value": True}  # dipakai untuk mensimulasikan retry sukses
 
-        def fake_download(scene_meta, output_dir, keep_raw=True, progress_cb=None, reuse_root=None):
+        def fake_download(scene_meta, output_dir, keep_raw=True, progress_cb=None, reuse_root=None,
+                      cancel_event=None):
             key = scene_meta["product_identifier"]
             out = Path(output_dir)
             if key == pid_fail and should_fail["value"]:
@@ -578,7 +580,7 @@ def stub_two_frames(monkeypatch, stub_sentinel1, stub_aux):
                 for pid in pids]
 
     def fake_download(scene_meta, output_dir, keep_raw=True, progress_cb=None,
-                      reuse_root=None):
+                      reuse_root=None, cancel_event=None):
         pid = scene_meta["product_identifier"]
         out = Path(output_dir)
         return DownloadResult(

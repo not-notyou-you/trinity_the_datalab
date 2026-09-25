@@ -29,6 +29,13 @@ seaborn==0.13.2
 # gagal di tahap PREVIEW. Dipin ke versi yang terpasang & teruji di venv
 # ini -- pin yang lebih rendah akan men-downgrade instalasi yang sudah jalan.
 Pillow==12.3.0
+# reportlab: penyusunan PDF laporan dataset (etl/report_generator.py,
+# GET /api/datasets/{id}/report). Dipilih atas weasyprint karena pure-Python
+# -- tidak butuh GTK/Pango yang menyulitkan instalasi di Windows.
+reportlab==5.0.1
+# pypdf: dipakai HANYA di tests/test_report_generation.py untuk membaca balik
+# teks PDF yang dihasilkan reportlab dan memverifikasi section-nya ada.
+pypdf==6.19.0
 python-dotenv==1.0.1
 tenacity==9.0.0
 psutil==6.1.0

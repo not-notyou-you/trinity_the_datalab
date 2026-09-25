@@ -165,6 +165,8 @@ class PipelineLogManager:
         message: str,
         details: dict | None = None,
     ) -> int:
+        from etl import download_guard as dg
+        dg.note_activity(dataset_id)  # detak kemajuan untuk loading bar
         try:
             with self._db.session() as sess:
                 row = ProcessingLog(

@@ -134,6 +134,9 @@ class HttpMethodEnum(str, PyEnum):
 class DatasetKindEnum(str, PyEnum):
     STANDARD = "STANDARD"
     LIVE = "LIVE"
+    # Satu Daerah Live (migrasi 025). Diproses pipeline biasa; aturan
+    # bisnisnya (retensi, forecast) ada di live_areas.
+    LIVE_AREA = "LIVE_AREA"
 
 
 class DatasetStatusEnum(str, PyEnum):
@@ -1163,6 +1166,81 @@ class LiveDatasetSource(Base):
 
     def __repr__(self) -> str:
         return f"<LiveDatasetSource id={self.id} source={self.source_name} enabled={self.enabled}>"
+
+
+class LiveArea(Base):
+    """Daerah Live (migrasi 025, LIVE_MONITORING.md). Datanya diproses lewat
+    satu baris `datasets` berjenis LIVE_AREA; baris ini memegang retensi dan
+    forecast, dan tetap ada (deleted_at terisi) setelah daerahnya dihapus."""
+
+    __tablename__ = "live_areas"
+    __table_args__ = (
+        CheckConstraint("retention BETWEEN 1 AND 12", name="chk_live_area_retention"),
+    )
+    area_id = Column(Integer, primary_key=True, autoincrement=True)
+    dataset_id = Column(Integer, ForeignKey("datasets.dataset_id", ondelete="SET NULL"))
+    name = Column(String(255), nullable=False)
+    region_id = Column(Integer, ForeignKey("regions_of_interest.region_id", ondelete="SET NULL"))
+    location_label = Column(String(255))
+    bbox_wkt = Column(Text, nullable=False)
+    retention = Column(SmallInteger, nullable=False, default=6)
+    enabled = Column(Boolean, nullable=False, default=True)
+    status = Column(String(20), nullable=False, default="BACKFILLING")
+    status_message = Column(Text)
+    last_checked_at = Column(DateTime(timezone=True))
+    forecast = Column(JSONB, nullable=False, default={})
+    forecast_updated_at = Column(DateTime(timezone=True))
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=text("NOW()"))
+    updated_at = Column(DateTime(timezone=True), nullable=False, server_default=text("NOW()"))
+    deleted_at = Column(DateTime(timezone=True))
+
+    def __repr__(self) -> str:
+        return f"<LiveArea id={self.area_id} name={self.name} retention={self.retention}>"
+
+
+class LiveScene(Base):
+    """Satu scene (tanggal akuisisi S1) sebuah Daerah Live. Baris ini adalah
+    log: tidak pernah dihapus, hanya ditandai deleted_at saat file-nya kena
+    retensi. Sengaja tanpa FK supaya hidup lebih lama dari dataset/daerahnya."""
+
+    __tablename__ = "live_scenes"
+    __table_args__ = (
+        UniqueConstraint("area_id", "scene_date", name="uq_live_scene_area_date"),
+    )
+    live_scene_id = Column(BigInteger, primary_key=True, autoincrement=True)
+    area_id = Column(Integer, nullable=False)
+    dataset_id = Column(Integer)
+    scene_date = Column(Date, nullable=False)
+    s1_product_ids = Column(ARRAY(Text), nullable=False, default=list)
+    status = Column(String(20), nullable=False, default="PROCESSING")
+    source_status = Column(JSONB, nullable=False, default={})
+    metrics = Column(JSONB, nullable=False, default={})
+    interpretations = Column(JSONB, nullable=False, default={})
+    area_status = Column(JSONB, nullable=False, default={})
+    previews = Column(JSONB, nullable=False, default={})
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=text("NOW()"))
+    updated_at = Column(DateTime(timezone=True), nullable=False, server_default=text("NOW()"))
+    deleted_at = Column(DateTime(timezone=True))
+    delete_reason = Column(Text)
+    deleted_files = Column(JSONB, nullable=False, default=list)
+    freed_bytes = Column(BigInteger, nullable=False, default=0)
+
+    def __repr__(self) -> str:
+        return f"<LiveScene area={self.area_id} date={self.scene_date} status={self.status}>"
+
+
+class LiveEvent(Base):
+    """Log langkah siklus Live Monitoring. Disimpan selamanya."""
+
+    __tablename__ = "live_events"
+    event_id = Column(BigInteger, primary_key=True, autoincrement=True)
+    area_id = Column(Integer, nullable=False)
+    scene_date = Column(Date)
+    step = Column(String(40), nullable=False)
+    status = Column(String(20), nullable=False)
+    message = Column(Text, nullable=False)
+    details = Column(JSONB, nullable=False, default={})
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=text("NOW()"))
 
 
 class NasaScene(Base):

@@ -10,7 +10,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
-<link rel="stylesheet" href="style.css?v=durasi1">
+<link rel="stylesheet" href="style.css?v=live-monitor1">
 </head>
 <body>
 
@@ -234,49 +234,21 @@
     <div class="card-list" id="datasetList"></div>
   </section>
 
+  <!-- Live Monitoring (LIVE_MONITORING.md): dropdown Daerah Live -> satu kartu
+       berisi 8 preview + kalimat kondisi, daftar tanggal, dan 3 grafik tren.
+       Semua isi kartu dirender app.js dari GET /api/live/areas/{id}/card. -->
   <section class="view hidden" id="view-live">
-    <div class="live-grid">
-      <div class="panel">
-        <p class="panel-title">Status Live</p>
-        <div class="live-toggle-row">
-          <div>
-            <div style="font-weight:600" id="liveStatusText">-</div>
-            <div style="font-size:12px; color:var(--text-dim)">Pemantauan 24/7</div>
-          </div>
-          <label class="switch">
-            <input type="checkbox" id="liveToggle">
-            <span class="switch-track"></span>
-          </label>
+    <div class="lm-wrap">
+      <div class="panel lm-top">
+        <div class="lm-select-row">
+          <label class="lm-label" for="lmAreaSelect">Daerah Live</label>
+          <select id="lmAreaSelect"></select>
+          <button type="button" class="btn btn-primary" id="lmAddBtn">+ Tambah Daerah</button>
         </div>
-        <div class="live-meta-row"><span>Ukuran saat ini</span><span id="liveSize">-</span></div>
-        <div class="live-meta-row"><span>Terakhir dicek</span><span id="liveChecked">-</span></div>
-        <div style="display:flex; gap:8px; margin-top:18px; flex-wrap:wrap;">
-          <a class="btn btn-accent" id="liveDownload" href="#">Unduh Terbaru</a>
-          <button class="btn btn-danger" id="liveClearBtn">Kosongkan</button>
-        </div>
-
-        <p class="panel-title" style="margin-top:26px">Sumber Data</p>
-        <div id="sourceList"></div>
-
-        <p class="panel-title" style="margin-top:26px">Isi Data Lampau (Backfill)</p>
-        <form id="backfillForm">
-          <div class="field-row">
-            <div class="field">
-              <label for="bfStart">Dari tanggal</label>
-              <input type="date" id="bfStart" required>
-            </div>
-            <div class="field">
-              <label for="bfEnd">Sampai tanggal</label>
-              <input type="date" id="bfEnd" required>
-            </div>
-          </div>
-          <button type="submit" class="btn btn-primary btn-block">Mulai Backfill</button>
-        </form>
+        <div class="lm-area-meta" id="lmAreaMeta"></div>
       </div>
-
-      <div class="panel">
-        <p class="panel-title">Scene Terbaru</p>
-        <div id="liveScenes"></div>
+      <div class="panel lm-card" id="lmCard">
+        <div class="empty-small">Memuat...</div>
       </div>
     </div>
   </section>
@@ -366,14 +338,48 @@
   </div>
 </div>
 
-<div class="modal-overlay hidden" id="clearModal">
+<div class="modal-overlay hidden" id="lmAddModal">
   <div class="modal">
-    <h3>Kosongkan dataset live?</h3>
-    <p>Semua data yang sudah terkumpul di dataset live akan dihapus. Pemantauan tetap berjalan seperti biasa setelahnya.</p>
-    <div class="modal-actions">
-      <button class="btn btn-ghost" id="clearCancel">Batal</button>
-      <button class="btn btn-danger" id="clearConfirm">Ya, Kosongkan</button>
+    <h3>Tambah Daerah Live</h3>
+    <p class="lm-modal-hint">Pilih lokasi tersimpan (sama dengan lokasi di Buat Dataset). Sistem akan otomatis
+      mengunduh scene Sentinel-1 terakhir beserta MODIS &amp; GPM yang cocok, lalu memperbaruinya sendiri.</p>
+    <div class="field">
+      <label for="lmRegion">Lokasi</label>
+      <select id="lmRegion"></select>
+      <button type="button" class="lm-link" id="lmNewLocation">Lokasi belum ada? Tambah lokasi baru</button>
     </div>
+    <div class="field">
+      <label for="lmName">Nama daerah (opsional)</label>
+      <input type="text" id="lmName" maxlength="200" placeholder="mis. Padang">
+    </div>
+    <div class="field">
+      <label for="lmRetention">Jumlah scene disimpan (1&ndash;12)</label>
+      <input type="number" id="lmRetention" min="1" max="12" value="6">
+      <p class="lm-modal-hint">Satu scene = satu lintasan Sentinel-1 (~6&ndash;12 hari sekali). Scene lebih lama dihapus otomatis.</p>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="lmAddCancel">Batal</button>
+      <button class="btn btn-primary" id="lmAddConfirm">Simpan &amp; Mulai</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay hidden" id="lmConfirmModal">
+  <div class="modal">
+    <h3 id="lmConfirmTitle">Yakin?</h3>
+    <p id="lmConfirmText"></p>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="lmConfirmCancel">Batal</button>
+      <button class="btn btn-danger" id="lmConfirmOk">Ya, lanjutkan</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay hidden" id="lmImageModal">
+  <div class="modal modal-wide lm-image-modal">
+    <img id="lmImageFull" alt="">
+    <p id="lmImageCaption"></p>
+    <div class="modal-actions"><button class="btn btn-ghost" id="lmImageClose">Tutup</button></div>
   </div>
 </div>
 
@@ -381,6 +387,6 @@
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="icons.js"></script>
-<script src="app.js?v=merge-preview3"></script>
+<script src="app.js?v=live-monitor1"></script>
 </body>
 </html>

@@ -51,6 +51,7 @@ from etl.dataset_manager import (
     get_cancel_event,
     get_pause_event,
 )
+from etl import download_guard as dg
 from etl import folder_manager as fm
 from etl.lineage_tracker import LineageTracker
 from etl.metadata_manager import MetadataManager
@@ -95,7 +96,15 @@ from etl import tier_names as tn
 logger = logging.getLogger(__name__)
 
 _MAX_CONCURRENT_SCENE_PIPELINES = int(os.getenv("PIPELINE_MAX_CONCURRENT_SCENES", "2"))
-_pipeline_semaphore = threading.Semaphore(_MAX_CONCURRENT_SCENE_PIPELINES)
+# Berprioritas: slot pemrosesan yang kosong diberikan ke job Dataset Saya
+# lebih dulu, job Live (LIVE_INGEST) baru mendapatkannya kalau tidak ada job
+# biasa yang menunggu.
+_pipeline_semaphore = dg.PrioritySemaphore(_MAX_CONCURRENT_SCENE_PIPELINES)
+
+# Job siklus Daerah Live (etl/live_cycle.py). Tidak mendesak -- revisit S1
+# 6-12 hari, dicek tiap 6 jam -- jadi mengalah ke Dataset Saya: prioritas
+# rendah di semua slot, dan hanya satu unduhan S1 sekaligus.
+LIVE_JOB_TYPE = "LIVE_INGEST"
 
 
 @dataclass
@@ -154,6 +163,9 @@ class _JobContext:
     # Set once run_dataset_job enters its dataset_log_file(...) block; worker
     # threads enrol themselves with it so their records reach the .txt file.
     log_path: Path | None = None
+    # True untuk job Live: thread worker masuk kelas prioritas rendah
+    # download_guard dan pool unduhan S1-nya dibatasi satu.
+    low_priority: bool = False
 
 
 def _now() -> datetime:
@@ -1141,6 +1153,8 @@ def _download_worker(jc: _JobContext, scenes: list[dict], download_queue: Queue)
     stop = threading.Event()  # cancel: scene yang belum mulai tidak diambil
 
     def _pool_init() -> None:
+        dg.set_low_priority(jc.low_priority)
+        dg.set_context(jc.dataset_id)
         if jc.log_path:
             adopt_dataset_log_scope(jc.log_path)
 
@@ -1159,7 +1173,7 @@ def _download_worker(jc: _JobContext, scenes: list[dict], download_queue: Queue)
             )
 
     with ThreadPoolExecutor(
-        max_workers=S1_PARALLEL_DOWNLOADS,
+        max_workers=1 if jc.low_priority else S1_PARALLEL_DOWNLOADS,
         thread_name_prefix="_download_worker",
         initializer=_pool_init,
     ) as pool:
@@ -1210,7 +1224,7 @@ def _download_one(jc: _JobContext, scene_meta: dict, download_queue: Queue) -> b
         ) as st:
             result = download_scene(
                 scene_meta, output_dir=str(raw_dir), keep_raw=True, progress_cb=_download_progress,
-                reuse_root=fm.DATA_ROOT,
+                reuse_root=fm.DATA_ROOT, cancel_event=jc.cancel_event,
             )
             st.output(
                 output_vv=result.vv_tif_path, output_vh=result.vh_tif_path,
@@ -1235,6 +1249,56 @@ def _download_one(jc: _JobContext, scene_meta: dict, download_queue: Queue) -> b
     return True
 
 
+def _reconcile_date_members(
+    jc: _JobContext, date_key: str, members: list[_SceneResult]
+) -> list[_SceneResult]:
+    """Gabungkan `members` (yang lewat antrean RUN INI) dengan frame tanggal
+    ini yang sudah selesai diproses di run/resume SEBELUMNYA tapi tidak
+    pernah masuk `pending` run ini.
+
+    Inilah mekanisme yang menghasilkan `fusion_20250111_hybrid_processed.h5`
+    cuma memuat satu dari dua frame S1: kalau frame A sudah CLEANUP/COMPLETED
+    di run sebelumnya (mis. tanggalnya sempat di-drain parsial karena frame B
+    waktu itu gagal unduh), `_download_one` melewatkan frame A begitu job
+    di-resume (`scene_is_done` True -> tidak pernah masuk `download_queue`
+    lagi) -- jadi `pending` run BARU ini tidak pernah tahu frame A pernah
+    ada. Begitu frame B akhirnya berhasil dan sendirian sampai ke drain, ia
+    MENIMPA stack lama dengan hanya dirinya sendiri, bukan digabung dengan
+    frame A yang sebenarnya masih valid di disk.
+
+    Memakai jalur baca yang sama dengan `etl/refusion.py` (disk COG + DB
+    SceneJobState lintas job), bukan menuruti `pending` di memori, jadi
+    hasilnya lengkap tidak peduli di run mana tiap frame terakhir selesai.
+    Untuk run normal (tidak ada resume/retry) ini no-op murni: setiap pid
+    yang muncul di sini juga sudah ada di `members`.
+    """
+    from etl.refusion import scene_results_for_date
+
+    try:
+        on_disk = scene_results_for_date(jc.db, jc.job_id, jc, date_key)
+    except Exception:
+        logger.exception(
+            "[ORCH] rekonsiliasi anggota tanggal=%s job_id=%d gagal, "
+            "pakai antrean run ini apa adanya",
+            date_key, jc.job_id,
+        )
+        return members
+
+    by_pid = {m.pid: m for m in members}
+    tambahan = [extra for extra in on_disk if extra.pid not in by_pid]
+    if tambahan:
+        logger.warning(
+            "[ORCH] tanggal=%s job_id=%d: %d frame dari run sebelumnya "
+            "digabung kembali sebelum finalize (%s) -- tanpa ini stack akan "
+            "menimpa dirinya sendiri jadi cuma satu frame",
+            date_key, jc.job_id, len(tambahan),
+            ", ".join(sorted(e.pid for e in tambahan)),
+        )
+    for extra in tambahan:
+        by_pid[extra.pid] = extra
+    return sorted(by_pid.values(), key=lambda m: m.pid)
+
+
 def _flush_date(
     jc: _JobContext, date_key: str, members: list[_SceneResult], cleanup_queue: Queue
 ) -> None:
@@ -1244,9 +1308,18 @@ def _flush_date(
     fusion_output_only, _cleanup_scene_tiers menghapus gold/, dan mengantrenya
     lebih dulu berarti raster yang mau dirender/difusikan bisa lenyap di
     tengah jalan.
+
+    FUSION dijalankan di atas anggota yang DIREKONSILIASI
+    (`_reconcile_date_members`), bukan `members` mentah: kalau tidak, frame
+    yang sudah beres di run sebelumnya tapi tidak lewat antrean run ini akan
+    hilang dari stack. Akuntansi cleanup di bawah tetap memakai `members`
+    mentah -- frame tambahan itu sudah dibersihkan tuntas di run yang
+    memprosesnya, mengulanginya di sini cuma kerja dua kali untuk sesuatu
+    yang sudah tidak ada.
     """
+    finalize_members = _reconcile_date_members(jc, date_key, members)
     try:
-        _finalize_date(jc, members)
+        _finalize_date(jc, finalize_members)
     except Exception as exc:
         # Tanggal gagal difinalisasi tidak boleh menahan cleanup scene-nya:
         # berkas tier sumbernya sudah ada di disk dan tetap harus dibereskan
@@ -1279,6 +1352,9 @@ def _flush_date(
 
 
 def _pipeline_worker(jc: _JobContext, download_queue: Queue, cleanup_queue: Queue) -> None:
+    # MODIS/GPM per scene diunduh dari thread ini (ensure_aux_inputs_for_date).
+    dg.set_low_priority(jc.low_priority)
+    dg.set_context(jc.dataset_id)
     if jc.log_path:
         adopt_dataset_log_scope(jc.log_path)
     # Scene yang sudah diproses tapi tanggalnya belum lengkap. Semuanya hidup
@@ -1294,7 +1370,7 @@ def _pipeline_worker(jc: _JobContext, download_queue: Queue, cleanup_queue: Queu
             break
         scene_meta, dl_result = item
         pid = scene_meta["product_identifier"]
-        _pipeline_semaphore.acquire()
+        _pipeline_semaphore.acquire(low=jc.low_priority)
         t0 = time.monotonic()
         try:
             result = _process_scene(jc, scene_meta, dl_result)
@@ -1337,7 +1413,28 @@ def _pipeline_worker(jc: _JobContext, download_queue: Queue, cleanup_queue: Queu
             )
     else:
         for date_key in sorted(pending):
-            _flush_date(jc, date_key, pending[date_key], cleanup_queue)
+            members = pending[date_key]
+            expected = jc.expected_pids_by_date.get(date_key)
+            got = {m.pid for m in members}
+            if expected and got < expected:
+                # Antrean run ini habis sebelum semua frame tanggal ini
+                # sampai sini (unduhan/scene lain gagal duluan, atau sudah
+                # selesai di run sebelumnya dan dilewati _download_one).
+                # _flush_date merekonsiliasi dengan disk+DB sebelum finalize
+                # (_reconcile_date_members) jadi frame yang sudah beres di
+                # run lain tetap ikut -- tapi kalau reknosiliasinya sendiri
+                # tidak menemukan penggantinya, tanggal ini akan tetap
+                # finalize PARSIAL. Diteriakkan di sini SEBELUM rekonsiliasi
+                # supaya kekurangan versi mentahnya (antrean run ini saja)
+                # tetap kelihatan di log.
+                logger.warning(
+                    "[ORCH] job_id=%d tanggal=%s: %d/%d frame di antrean run "
+                    "ini (hilang dari run ini: %s) -- mencoba rekonsiliasi "
+                    "dari disk sebelum finalize",
+                    jc.job_id, date_key, len(got), len(expected),
+                    sorted(expected - got),
+                )
+            _flush_date(jc, date_key, members, cleanup_queue)
     cleanup_queue.put(None)
 
 
@@ -1562,6 +1659,22 @@ def _run_aux_only(jc: _JobContext, date_from: date, date_to: date) -> None:
 def run_dataset_job(db: DatabaseClient, job_id: int) -> None:
     with db.session() as sess:
         job = sess.get(DatasetJob, job_id)
+        low = job is not None and job.job_type == LIVE_JOB_TYPE
+        ds_id = job.dataset_id if job is not None else None
+    # Thread pemanggil ikut prioritas dan konteks jeda-nya: pra-lintasan
+    # MODIS/GPM berjalan di sini, bukan di worker.
+    prev_ctx = dg.current_context()
+    dg.set_context(ds_id)
+    try:
+        with dg.low_priority(low):
+            _run_dataset_job(db, job_id)
+    finally:
+        dg.set_context(prev_ctx)
+
+
+def _run_dataset_job(db: DatabaseClient, job_id: int) -> None:
+    with db.session() as sess:
+        job = sess.get(DatasetJob, job_id)
         if job is None:
             logger.error("[ORCH] job_id=%d tidak ditemukan", job_id)
             return
@@ -1656,6 +1769,7 @@ def run_dataset_job(db: DatabaseClient, job_id: int) -> None:
         # Diisi setelah discovery: rencananya butuh tanggal scene S1 yang nyata.
         fusion_plan=None,
         preview_options=dataset.get("preview_options"),
+        low_priority=dg.is_low_priority(),
     )
 
     dsmgr.set_job_status(job_id, "PREPARING", started_at=_now())

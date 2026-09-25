@@ -629,6 +629,9 @@ document.getElementById('alSave').addEventListener('click', async () => {
     await loadRegions({ highlightId: created.region_id });
     selectRegion(created.region_id);
     showToast('Lokasi "' + created.name + '" ditambahkan', 'success');
+    // Dibuka dari form Tambah Daerah Live: kembali ke form itu dengan lokasi
+    // baru terpilih.
+    if (state.lmReopenAdd) { state.lmReopenAdd = false; openLmAddModal(created.region_id); }
   } catch (err) {
     setAddLocError(err.message);
     setLocTab('manual');
@@ -1416,6 +1419,7 @@ function cardShellHTML(ds) {
             '" aria-label="' + (collapsed ? 'Buka panel' : 'Tutup panel') + '"><span class="chevron"></span></button>' +
         '</div>' +
         '<div class="card-meta">' + escapeHTML(ds.location_label || '-') + ' &middot; ' + ds.date_start + ' - ' + ds.date_end + '</div>' +
+        datasetProgressHTML(ds, prog) +
         // Chip per-satelit, bukan per-tier: tier bukan pilihan user dan namanya
         // tidak pernah muncul di layar lain, sementara "S1[R+P]" adalah persis
         // yang user centang di wizard.
@@ -1440,6 +1444,7 @@ function cardShellHTML(ds) {
         (canRetry ? '<button class="btn btn-accent" data-action="retry">Coba lagi</button>' : '') +
         (canCancel ? '<button class="btn btn-danger" data-action="cancel">Batalkan</button>' : '') +
         (canDownload ? '<a class="btn btn-ghost" href="/api/datasets/' + ds.dataset_id + '/download">Unduh</a>' : '') +
+        (canDownload ? '<a class="btn btn-ghost" href="/api/datasets/' + ds.dataset_id + '/report" target="_blank">Laporan</a>' : '') +
         '<button class="btn btn-danger" data-action="delete">Hapus</button>' +
         '<button class="btn btn-ghost" data-action="toggle-scenes">Detail</button>' +
         (canDownload ? '<button class="btn btn-ghost" data-action="toggle-structure">Struktur</button>' : '') +
@@ -1697,76 +1702,486 @@ document.getElementById('cancelModalConfirm').addEventListener('click', async ()
   finally { btn.disabled = false; btn.textContent = 'Ya, Batalkan'; }
 });
 
+// ---------------------------------------------------------------------------
+// Live Monitoring (LIVE_MONITORING.md). Semua angka & kalimat dihitung server
+// (etl/live_*.py); di sini hanya dirender. Kartu: 8 preview (2-3-3) + kalimat
+// kondisi, daftar tanggal tersimpan, 3 grafik tren + perkiraan.
+// ---------------------------------------------------------------------------
+
+const LM = { areas: [], areaId: null, date: null, card: null };
+const LM_ROWS = [
+  ['s1_vv', 's1_vh'],
+  ['modis_flood', 'modis_ndvi', 'modis_ndwi'],
+  ['gpm_rain_24h', 'gpm_rain_72h', 'gpm_rain_7d'],
+];
+const LM_ROW_TITLES = ['Sentinel-1 (radar)', 'MODIS (optik) di atas Sentinel-1 VH', 'GPM (curah hujan) di atas Sentinel-1 VH'];
+const LM_KEY_LABEL = {
+  s1_vv: 'Sentinel-1 VV', s1_vh: 'Sentinel-1 VH', modis_flood: 'MODIS Peta Banjir',
+  modis_ndvi: 'MODIS NDVI', modis_ndwi: 'MODIS Indeks Air (NDWI)',
+  gpm_rain_24h: 'GPM Hujan 24 jam', gpm_rain_72h: 'GPM Hujan 72 jam', gpm_rain_7d: 'GPM Hujan 7 hari',
+};
+const LM_STATUS_TEXT = {
+  BACKFILLING: 'Mengisi scene awal', RUNNING: 'Memeriksa scene baru', ACTIVE: 'Aktif',
+  WAITING: 'Menunggu giliran',
+  ERROR: 'Bermasalah', DELETED: 'Dihapus',
+};
+
+function lmLevelClass(level) {
+  return level === 2 ? 'lv-high' : level === 1 ? 'lv-warn' : level === 0 ? 'lv-ok' : 'lv-na';
+}
+function lmDate(iso, long) {
+  if (!iso) return '-';
+  const d = new Date(iso + 'T00:00:00');
+  return long ? d.toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric' })
+              : d.toLocaleDateString('id-ID', { day: '2-digit', month: '2-digit' });
+}
+function lmNum(v, nd) {
+  if (v == null || !isFinite(v)) return '-';
+  return Number(v).toLocaleString('id-ID', { maximumFractionDigits: nd == null ? 1 : nd, minimumFractionDigits: 0 });
+}
+
 async function loadLive() {
   try {
-    const live = await api('/api/live');
-    renderLive(live);
+    LM.areas = await api('/api/live/areas');
   } catch (err) {
-    document.getElementById('sourceList').innerHTML = '<div class="empty-small">' + escapeHTML(err.message) + '</div>';
+    document.getElementById('lmCard').innerHTML = '<div class="empty-small">' + escapeHTML(err.message) + '</div>';
+    return;
   }
+  const sel = document.getElementById('lmAreaSelect');
+  if (!LM.areas.some(a => a.area_id === LM.areaId)) { LM.areaId = LM.areas.length ? LM.areas[0].area_id : null; LM.date = null; }
+  sel.innerHTML = LM.areas.length
+    ? LM.areas.map(a => '<option value="' + a.area_id + '"' + (a.area_id === LM.areaId ? ' selected' : '') + '>' +
+        escapeHTML(a.name) + (a.latest_scene_date ? ' · ' + lmDate(a.latest_scene_date, true) : '') + '</option>').join('')
+    : '<option value="">Belum ada daerah</option>';
+  sel.disabled = !LM.areas.length;
+  renderLmMeta();
+  await loadLmCard();
 }
-function startLivePolling() { stopLivePolling(); state.livePollTimer = setInterval(loadLive, 5000); }
+
+// Bar untuk kartu Dataset Saya: hanya selama job aktif. QUEUED menampilkan
+// posisi antrean (MAX_ACTIVE_JOBS di server), bukan persen.
+function datasetProgressHTML(ds, prog) {
+  if (!ACTIVE_STATUSES.has(ds.status) || ds.status === 'DELETING') return '';
+  const tp = timingParts(prog && prog.timing);
+  if (ds.status === 'QUEUED') {
+    const pos = prog && prog.queue_position;
+    return progressBarHTML((pos ? 'Menunggu antrean (posisi ' + pos + ')' : 'Menunggu dimulai') + tp.suffix, null, { waiting: true });
+  }
+  if (ds.status === 'PAUSED') return progressBarHTML('Dijeda', prog ? prog.progress_percent : null, { waiting: true });
+  const w = prog && prog.waiting;
+  const obstacle = {
+    waiting: !!w || !!(prog && prog.timing && prog.timing.stalled),
+    notes: [{ text: waitNoteText(w), kind: 'warn' }, { text: tp.note, kind: 'warn' }],
+  };
+  const alerts = authAlertHTML(prog && prog.alerts);
+  if (ds.status === 'PREPARING' || !prog || !prog.total_scenes) return progressBarHTML('Menyiapkan…' + tp.suffix, null, obstacle) + alerts;
+  const total = prog.total_scenes;
+  const failed = Math.min(total, prog.failed_count || 0);
+  const ok = Math.min(total - failed, prog.processed_count || 0);
+  const label = (ds.status === 'DOWNLOADING' ? 'Mengunduh' : 'Memproses') + ' · ' + sceneCountText(ok, failed, total) + tp.suffix;
+  return progressBarHTML(label, prog.progress_percent, { ...obstacle, failPct: failed / total * 100 }) + alerts;
+}
+
+// Loading bar. percent null/undefined = indeterminate (tahap tanpa ukuran).
+// "45 dtk" / "12 mnt" / "1 j 5 mnt"
+function fmtDuration(s) {
+  if (s === null || s === undefined) return '';
+  if (s < 60) return Math.max(0, Math.round(s)) + ' dtk';
+  const m = Math.floor(s / 60);
+  if (m < 60) return m + ' mnt';
+  return Math.floor(m / 60) + ' j' + (m % 60 ? ' ' + (m % 60) + ' mnt' : '');
+}
+
+// Durasi ditempel ke label, dan catatan "tidak ada kemajuan" kalau server
+// menilai run ini diam lebih lama dari PROGRESS_STALL_AFTER_S.
+function timingParts(t) {
+  if (!t) return { suffix: '', note: '' };
+  const suffix = t.elapsed_s !== null && t.elapsed_s !== undefined ? ' · ' + fmtDuration(t.elapsed_s) : '';
+  let note = '';
+  if (t.stalled && t.last_activity_at) {
+    const at = new Date(t.last_activity_at * 1000).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' });
+    note = 'Tidak ada kemajuan sejak ' + at + ' (' + fmtDuration(t.idle_s) + ') — cek log atau batalkan & ulangi';
+  }
+  return { suffix, note };
+}
+
+// opts: waiting (bar amber), failPct (segmen merah, bagian dari percent),
+// notes: [{text, kind: 'warn' | 'error'}] baris keterangan di bawah bar.
+function progressBarHTML(label, percent, opts) {
+  const o = opts || {};
+  const known = typeof percent === 'number' && isFinite(percent);
+  const pct = known ? Math.max(0, Math.min(100, Math.round(percent))) : null;
+  const failW = known ? Math.max(0, Math.min(pct, Math.round(o.failPct || 0))) : 0;
+  const fill = known
+    ? '<div class="pbar-fill" style="width:' + (pct - failW) + '%"></div>' +
+      (failW ? '<div class="pbar-fail" style="width:' + failW + '%"></div>' : '')
+    : '<div class="pbar-fill"></div>';
+  return '<div class="pbar' + (known ? '' : ' indeterminate') + (o.waiting ? ' waiting' : '') + '"' +
+      ' role="progressbar" aria-label="' + escapeHTML(label) + '"' +
+      (known ? ' aria-valuemin="0" aria-valuemax="100" aria-valuenow="' + pct + '"' : '') + '>' +
+    '<div class="pbar-row"><span>' + escapeHTML(label) + '</span>' +
+      (known ? '<span class="pbar-pct">' + pct + '%</span>' : '') + '</div>' +
+    '<div class="pbar-track">' + fill + '</div>' +
+    (o.notes || []).filter(n => n && n.text).map(n =>
+      '<div class="pbar-note ' + (n.kind || 'warn') + '">' + escapeHTML(n.text) + '</div>').join('') +
+  '</div>';
+}
+
+// "Menunggu server CDSE (Sentinel-1): dibatasi server (429) · ±45 dtk · percobaan 2/8"
+function waitNoteText(w) {
+  if (!w) return '';
+  return 'Menunggu server ' + w.source_label + ': ' + w.reason +
+    ' · ±' + w.remaining_s + ' dtk' +
+    (w.attempt ? ' · percobaan ' + w.attempt + (w.max_attempts ? '/' + w.max_attempts : '') : '');
+}
+
+// Token NASA ditolak: bukan hambatan sementara, pengguna harus bertindak.
+function authAlertHTML(alerts) {
+  if (!alerts || !alerts.length) return '';
+  return '<div class="pbar-alert" role="alert"><strong>Token NASA tidak valid atau kedaluwarsa.</strong> ' +
+    'MODIS/GPM tidak bisa diunduh (' + alerts.map(x => escapeHTML(x.source)).join(', ') + '). ' +
+    'Perbarui <code>NASA_EARTHDATA_TOKEN</code> di .env lalu jalankan ulang server.</div>';
+}
+
+// "2 selesai · 1 gagal / 4 scene"
+function sceneCountText(ok, failed, total) {
+  return ok + ' selesai' + (failed ? ' · ' + failed + ' gagal' : '') + ' / ' + total + ' scene';
+}
+
+// Ringkasan siklus terakhir (beberapa menit setelah selesai).
+function lmResultHTML(r) {
+  const at = r.at ? new Date(r.at).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }) : '';
+  return '<div class="pbar-result ' + escapeHTML(r.level || 'ok') + '" role="status">' +
+    escapeHTML(r.text) + (at ? ' <span class="pbar-result-at">· ' + at + '</span>' : '') + '</div>';
+}
+
+function lmProgressHTML(a, withAlerts) {
+  const p = a && a.progress;
+  let html = '';
+  if (p) {
+    const tp = timingParts(p.timing);
+    const label = (p.total ? p.phase + ' · ' + sceneCountText(p.ok, p.failed, p.total) : p.phase) + tp.suffix;
+    const w = p.waiting;
+    html = progressBarHTML(label, p.percent, {
+      waiting: a.status === 'WAITING' || !!w || !!(p.timing && p.timing.stalled),
+      failPct: p.total ? p.failed / p.total * 100 : 0,
+      notes: [{ text: waitNoteText(w), kind: 'warn' }, { text: tp.note, kind: 'warn' }],
+    });
+  } else if (a && a.last_result && withAlerts !== false) {
+    html = lmResultHTML(a.last_result);
+  }
+  // Peringatan token cukup sekali, di baris meta; kartu kosong hanya bar-nya.
+  return html + (withAlerts === false ? '' : authAlertHTML(a && a.alerts));
+}
+
+function lmArea() { return LM.areas.find(a => a.area_id === LM.areaId) || null; }
+
+function renderLmMeta() {
+  const box = document.getElementById('lmAreaMeta');
+  const a = lmArea();
+  if (!a) { box.innerHTML = ''; return; }
+  const opts = Array.from({ length: 12 }, (_, i) => i + 1)
+    .map(n => '<option value="' + n + '"' + (n === a.retention ? ' selected' : '') + '>' + n + '</option>').join('');
+  box.innerHTML =
+    '<span class="lm-pill ' + (a.status === 'ERROR' ? 'lv-high' : a.running ? 'lv-warn' : 'lv-ok') + '">' +
+      escapeHTML(a.running ? (LM_STATUS_TEXT[a.status] || 'Memproses') + '…' : (LM_STATUS_TEXT[a.status] || a.status)) + '</span>' +
+    '<span class="lm-meta-item">' + a.scene_count + '/' + a.retention + ' scene</span>' +
+    '<span class="lm-meta-item">' + humanBytes(a.total_size_bytes) + '</span>' +
+    '<span class="lm-meta-item">dicek ' + (a.last_checked_at ? new Date(a.last_checked_at).toLocaleString('id-ID') : 'belum') + '</span>' +
+    (a.status_message ? '<span class="lm-meta-item lm-meta-msg">' + escapeHTML(a.status_message) + '</span>' : '') +
+    '<span class="lm-meta-actions">' +
+      '<label class="lm-ret">Simpan <select id="lmRetSelect">' + opts + '</select> scene</label>' +
+      '<button type="button" class="btn btn-ghost btn-sm" id="lmCheckBtn"' + (a.running ? ' disabled' : '') + '>Cek sekarang</button>' +
+      '<button type="button" class="btn btn-danger btn-sm" id="lmDeleteBtn">Hapus daerah</button>' +
+    '</span>' +
+    lmProgressHTML(a);
+  document.getElementById('lmRetSelect').addEventListener('change', e => lmChangeRetention(a, parseInt(e.target.value, 10), e.target));
+  document.getElementById('lmCheckBtn').addEventListener('click', lmCheckNow);
+  document.getElementById('lmDeleteBtn').addEventListener('click', () => lmConfirm(
+    'Hapus daerah "' + a.name + '"?',
+    'Semua citra dan preview daerah ini dihapus permanen (' + humanBytes(a.total_size_bytes) + '). Log dan angka ringkas tetap disimpan untuk audit.',
+    async () => {
+      const r = await api('/api/live/areas/' + a.area_id, { method: 'DELETE' });
+      showToast('Daerah dihapus, ' + humanBytes(r.freed_bytes) + ' dibebaskan', 'success');
+      LM.areaId = null; await loadLive();
+    }));
+}
+
+async function lmChangeRetention(a, n, selectEl) {
+  const apply = async () => {
+    await api('/api/live/areas/' + a.area_id, { method: 'PATCH', body: JSON.stringify({ retention: n }) });
+    showToast('Retensi diubah ke ' + n + ' scene', 'success');
+    await loadLive();
+  };
+  if (n < a.scene_count) {
+    selectEl.value = a.retention;
+    lmConfirm('Turunkan retensi ke ' + n + '?',
+      (a.scene_count - n) + ' scene paling lama akan dihapus permanen sekarang juga. Log-nya tetap disimpan.', apply);
+    return;
+  }
+  try { await apply(); } catch (err) { showToast(err.message, 'error'); }
+}
+
+async function lmCheckNow() {
+  try {
+    const r = await api('/api/live/areas/' + LM.areaId + '/check', { method: 'POST' });
+    showToast(r.message, 'success'); await loadLive();
+  } catch (err) { showToast(err.message, 'error'); }
+}
+
+async function loadLmCard() {
+  const box = document.getElementById('lmCard');
+  const a = lmArea();
+  if (!a) {
+    box.innerHTML = '<div class="lm-empty"><p>Belum ada Daerah Live.</p>' +
+      '<p class="lm-dim">Tambahkan daerah untuk memantau genangan &amp; hujan secara otomatis.</p></div>';
+    return;
+  }
+  try {
+    LM.card = await api('/api/live/areas/' + a.area_id + '/card' + (LM.date ? '?date=' + LM.date : ''));
+  } catch (err) { box.innerHTML = '<div class="empty-small">' + escapeHTML(err.message) + '</div>'; return; }
+  renderLmCard();
+}
+
+function renderLmCard() {
+  const box = document.getElementById('lmCard');
+  const { area, scene, dates, forecast } = LM.card;
+  if (!scene) {
+    box.innerHTML = '<div class="lm-empty"><p>' + escapeHTML(area.name) + ' sedang disiapkan.</p>' +
+      '<p class="lm-dim">' + (area.running
+        ? 'Sistem sedang mengunduh dan memproses scene Sentinel-1 terbaru. Proses awal bisa memakan waktu 15–60 menit per scene.'
+        : escapeHTML(area.status_message || 'Belum ada scene Sentinel-1 yang berhasil diproses.')) + '</p>' +
+      lmProgressHTML(lmArea() || area, false) + '</div>';
+    return;
+  }
+  const latest = dates.length ? dates[0].date : scene.date;
+  const st = scene.area_status || {};
+  let html =
+    '<header class="lm-head">' +
+      '<h2>' + escapeHTML(area.name.toUpperCase()) + ' <span class="lm-dim">· scene terbaru: ' + lmDate(latest, true) + '</span></h2>' +
+      '<p class="lm-status ' + lmLevelClass(st.level) + '">' + escapeHTML(st.text || '-') + '</p>' +
+      (scene.date !== latest ? '<p class="lm-dim">Menampilkan scene ' + lmDate(scene.date, true) + '</p>' : '') +
+    '</header>';
+
+  LM_ROWS.forEach((row, i) => {
+    html += '<h3 class="lm-row-title">' + LM_ROW_TITLES[i] + '</h3><div class="lm-row lm-row-' + row.length + '">' +
+      row.map(k => lmTile(k, scene)).join('') + '</div>';
+  });
+
+  html += '<h3 class="lm-row-title">Tanggal tersimpan</h3><div class="lm-dates">' +
+    dates.map(d => '<button type="button" class="lm-date' + (d.date === scene.date ? ' active' : '') + '" data-date="' + d.date + '">' +
+      '<i class="' + lmLevelClass(d.level) + '"></i>' + lmDate(d.date) + '<small>' + new Date(d.date + 'T00:00:00').getFullYear() + '</small></button>').join('') +
+    '</div>';
+
+  const series = (forecast && forecast.series) || {};
+  html += '<h3 class="lm-row-title">Tren &amp; perkiraan</h3><div class="lm-charts">' +
+    [['sentinel1', 'Sentinel-1'], ['modis', 'MODIS'], ['gpm', 'GPM']].map(([k, t]) =>
+      '<figure class="lm-chart"><figcaption>' + t + ' — ' + escapeHTML(series[k] ? series[k].label + ' (' + series[k].unit + ')' : '') +
+      '</figcaption>' + (series[k] ? lmChartSVG(series[k], scene.date) : '<div class="empty-small">Belum ada data</div>') + '</figure>').join('') +
+    '</div><p class="lm-dim lm-fc-note">Garis putus-putus dan pita = <b>perkiraan</b> (' + lmFcMethod(forecast) + '), bukan data pengamatan.</p>';
+  box.innerHTML = html;
+
+  box.querySelectorAll('.lm-date').forEach(b => b.addEventListener('click', () => { LM.date = b.dataset.date; loadLmCard(); }));
+  box.querySelectorAll('.lm-tile img').forEach(img => img.addEventListener('click', () => {
+    document.getElementById('lmImageFull').src = img.src;
+    document.getElementById('lmImageCaption').textContent = img.dataset.caption;
+    document.getElementById('lmImageModal').classList.remove('hidden');
+  }));
+  box.querySelectorAll('.lm-retry').forEach(b => b.addEventListener('click', async () => {
+    try { const r = await api('/api/live/areas/' + area.area_id + '/scenes/' + scene.date + '/retry', { method: 'POST' });
+      if (r && r.started === false) showToast(r.message || 'Siklus daerah ini sedang berjalan');
+      else showToast('Mencoba ulang MODIS/GPM untuk ' + lmDate(scene.date, true), 'success'); }
+    catch (err) { showToast(err.message, 'error'); }
+  }));
+  lmBindChartHover(box);
+}
+
+function lmFcMethod(fc) {
+  const m = fc && fc.series && fc.series.sentinel1 && fc.series.sentinel1.forecast.method;
+  return { holt: 'Holt exponential smoothing', ses: 'exponential smoothing sederhana', persistence: 'nilai terakhir — data belum cukup' }[m] || 'exponential smoothing';
+}
+
+function lmTile(key, scene) {
+  const p = scene.previews[key];
+  const it = (scene.interpretations || {})[key] || {};
+  const src = key.startsWith('modis') ? 'modis' : key.startsWith('gpm') ? 'gpm' : 'sentinel1';
+  const failed = (scene.source_status[src] || {}).status === 'FAILED';
+  const nearest = p && p.source_date && p.source_date !== scene.date;
+  const sentence = it.text
+    ? escapeHTML(it.text).replace(escapeHTML(it.category), '<b class="' + lmLevelClass(it.level) + '">' + escapeHTML(it.category) + '</b>')
+    : '';
+  return '<div class="lm-tile">' +
+    (p ? '<img loading="lazy" src="' + p.url + '" alt="' + escapeHTML(LM_KEY_LABEL[key]) + '" data-caption="' + escapeHTML(LM_KEY_LABEL[key] + ' — ' + lmDate(scene.date, true)) + '">'
+       : '<div class="lm-noimg">tidak tersedia</div>') +
+    '<div class="lm-tile-head"><span>' + LM_KEY_LABEL[key] + '</span>' +
+      (nearest ? '<span class="lm-badge" title="Data sumber dari tanggal terdekat">terdekat ' + lmDate(p.source_date) + '</span>' : '') + '</div>' +
+    (p ? lmLegend(p.legend) : '') +
+    '<p class="lm-sentence">' + sentence + '</p>' +
+    (failed && src !== 'sentinel1' ? '<button type="button" class="lm-link lm-retry">Coba unduh ulang</button>' : '') +
+  '</div>';
+}
+
+function lmLegend(lg) {
+  if (!lg) return '';
+  if (lg.type === 'categorical') {
+    return '<div class="lm-legend lm-legend-cat">' + lg.categories.map(c =>
+      '<span><i style="background:' + c.color + '"></i>' + escapeHTML(c.label) + '</span>').join('') + '</div>';
+  }
+  const unit = lg.units && lg.units !== 'indeks' ? ' ' + lg.units : '';
+  return '<div class="lm-legend"><span>' + lmNum(lg.min, 2) + '</span>' +
+    '<i class="lm-ramp" style="background:linear-gradient(90deg,' + lg.stops.join(',') + ')"></i>' +
+    '<span>' + lmNum(lg.max, 2) + unit + '</span></div>';
+}
+
+// Grafik SVG satu deret: aktual (garis/batang) + perkiraan (putus-putus + pita)
+// + garis ambang (GPM) + penanda scene terpilih. Hover: tooltip per titik.
+function lmChartSVG(s, selected) {
+  const W = 560, H = 190, L = 44, R = 12, T = 12, B = 26;
+  const act = s.actual.filter(p => p.value != null);
+  const fc = (s.forecast && s.forecast.points) || [];
+  if (!act.length) return '<div class="empty-small">Belum ada data</div>';
+  const t = d => new Date(d + 'T00:00:00').getTime();
+  const xsAll = act.map(p => t(p.date)).concat(fc.map(p => t(p.date)));
+  let x0 = Math.min(...xsAll), x1 = Math.max(...xsAll);
+  if (x1 === x0) { x0 -= 6 * 864e5; x1 += 6 * 864e5; }
+  const thr = s.thresholds || {};
+  const ys = act.map(p => p.value).concat(fc.flatMap(p => [p.lo, p.hi])).concat(Object.values(thr));
+  let y0 = Math.min(...ys), y1 = Math.max(...ys);
+  if (s.chart === 'bar') y0 = 0;
+  const pad = (y1 - y0) * 0.08 || 1; if (s.chart !== 'bar') y0 -= pad; y1 += pad;
+  const X = v => L + (v - x0) / (x1 - x0) * (W - L - R);
+  const Y = v => T + (1 - (v - y0) / (y1 - y0)) * (H - T - B);
+  let g = '';
+  for (let i = 0; i <= 3; i++) {
+    const v = y0 + (y1 - y0) * i / 3;
+    g += '<line class="lm-grid" x1="' + L + '" x2="' + (W - R) + '" y1="' + Y(v) + '" y2="' + Y(v) + '"/>' +
+      '<text class="lm-axis" x="' + (L - 6) + '" y="' + (Y(v) + 3) + '" text-anchor="end">' + lmNum(v, Math.abs(y1 - y0) < 5 ? 1 : 0) + '</text>';
+  }
+  const ticks = act.concat(fc.length ? [fc[fc.length - 1]] : []);
+  const step = Math.max(1, Math.ceil(ticks.length / 6));
+  ticks.forEach((p, i) => { if (i % step === 0 || i === ticks.length - 1)
+    g += '<text class="lm-axis" x="' + X(t(p.date)) + '" y="' + (H - 8) + '" text-anchor="middle">' + lmDate(p.date) + '</text>'; });
+  if (selected && act.some(p => p.date === selected))
+    g += '<line class="lm-sel" x1="' + X(t(selected)) + '" x2="' + X(t(selected)) + '" y1="' + T + '" y2="' + (H - B) + '"/>';
+  Object.entries(thr).forEach(([name, v]) => {
+    const cls = name === 'tinggi' ? 'lv-high' : 'lv-warn';
+    g += '<line class="lm-thr ' + cls + '" x1="' + L + '" x2="' + (W - R) + '" y1="' + Y(v) + '" y2="' + Y(v) + '"/>' +
+      '<text class="lm-thr-label" x="' + (L + 4) + '" y="' + (Y(v) - 4) + '">ambang ' + name + ' ' + lmNum(v, 0) + '</text>';
+  });
+  const last = act[act.length - 1];
+  if (fc.length) {
+    const band = [[X(t(last.date)), Y(last.value)]].concat(fc.map(p => [X(t(p.date)), Y(p.hi)]))
+      .concat(fc.slice().reverse().map(p => [X(t(p.date)), Y(p.lo)]));
+    g += '<polygon class="lm-band" points="' + band.map(q => q.join(',')).join(' ') + '"/>';
+    g += '<polyline class="lm-fc" points="' + [[X(t(last.date)), Y(last.value)]].concat(fc.map(p => [X(t(p.date)), Y(p.mean)])).map(q => q.join(',')).join(' ') + '"/>';
+    const lp = fc[fc.length - 1];
+    g += '<text class="lm-fc-label" x="' + (W - R - 2) + '" y="' + (T + 10) + '" text-anchor="end">perkiraan' +
+      (s.forecast.note ? ' (' + s.forecast.note + ')' : '') + ' →</text>';
+  }
+  const unit = ' ' + s.unit;
+  if (s.chart === 'bar') {
+    const bw = Math.max(6, Math.min(22, (W - L - R) / (xsAll.length * 2.2)));
+    act.forEach(p => { const y = Y(p.value), yb = Y(0);
+      g += '<rect class="lm-bar' + (p.date === selected ? ' sel' : '') + '" x="' + (X(t(p.date)) - bw / 2) + '" y="' + y + '" width="' + bw + '" height="' + Math.max(1, yb - y) + '" rx="3"/>'; });
+    fc.forEach(p => { const y = Y(p.mean), yb = Y(0);
+      g += '<rect class="lm-bar-fc" x="' + (X(t(p.date)) - bw / 2) + '" y="' + y + '" width="' + bw + '" height="' + Math.max(1, yb - y) + '" rx="3"/>'; });
+  } else {
+    g += '<polyline class="lm-line" points="' + act.map(p => X(t(p.date)) + ',' + Y(p.value)).join(' ') + '"/>';
+    act.forEach(p => { g += '<circle class="lm-dot' + (p.date === selected ? ' sel' : '') + '" cx="' + X(t(p.date)) + '" cy="' + Y(p.value) + '" r="4"/>'; });
+  }
+  // Area hover per titik, lebih besar dari marknya.
+  const pts = act.map(p => ({ d: p.date, v: p.value, kind: 'aktual' }))
+    .concat(fc.map(p => ({ d: p.date, v: p.mean, lo: p.lo, hi: p.hi, kind: 'perkiraan' })));
+  pts.forEach(p => {
+    const tip = lmDate(p.d, true) + ' — ' + p.kind + ': ' + lmNum(p.v) + unit +
+      (p.kind === 'perkiraan' ? ' (rentang ' + lmNum(p.lo) + '–' + lmNum(p.hi) + ')' : '');
+    g += '<circle class="lm-hit" cx="' + X(t(p.d)) + '" cy="' + Y(p.v) + '" r="14" data-tip="' + escapeHTML(tip) + '"/>';
+  });
+  return '<div class="lm-chart-box"><svg viewBox="0 0 ' + W + ' ' + H + '" role="img" aria-label="' + escapeHTML(s.label) + '">' + g + '</svg><div class="lm-tip hidden"></div></div>';
+}
+
+function lmBindChartHover(root) {
+  root.querySelectorAll('.lm-chart-box').forEach(box => {
+    const tip = box.querySelector('.lm-tip');
+    box.querySelectorAll('.lm-hit').forEach(h => {
+      h.addEventListener('mouseenter', () => {
+        const r = box.getBoundingClientRect(), c = h.getBoundingClientRect();
+        tip.textContent = h.dataset.tip; tip.classList.remove('hidden');
+        tip.style.left = Math.min(r.width - 200, Math.max(0, c.left - r.left - 80)) + 'px';
+        tip.style.top = Math.max(0, c.top - r.top - 36) + 'px';
+      });
+      h.addEventListener('mouseleave', () => tip.classList.add('hidden'));
+    });
+  });
+}
+
+function startLivePolling() {
+  stopLivePolling();
+  // Dimuat ulang hanya saat ada daerah yang sedang diproses: preview yang
+  // sudah jadi tidak perlu diambil ulang terus-menerus.
+  state.livePollTimer = setInterval(() => { if (LM.areas.some(a => a.running || a.status === 'BACKFILLING' || a.status === 'WAITING')) loadLive(); }, 10000);
+}
 function stopLivePolling() { if (state.livePollTimer) clearInterval(state.livePollTimer); state.livePollTimer = null; }
 
-function renderLive(live) {
-  document.getElementById('liveToggle').checked = live.enabled;
-  document.getElementById('liveStatusText').textContent = live.status;
-  document.getElementById('liveSize').textContent = humanBytes(live.total_size_bytes);
-  document.getElementById('liveChecked').textContent = live.last_checked_at ? new Date(live.last_checked_at).toLocaleString('id-ID') : 'Belum pernah';
-  document.getElementById('liveDownload').href = '/api/datasets/' + live.dataset_id + '/download';
-  const src = document.getElementById('sourceList');
-  src.innerHTML = live.sources.map(s =>
-    '<div class="source-row">' +
-      '<span class="dot ' + (s.enabled ? 'ok' : 'muted') + '"></span>' +
-      '<span class="source-name">' + s.source_name + '</span>' +
-      '<span class="source-meta">cek: ' + (s.last_check ? new Date(s.last_check).toLocaleString('id-ID') : '-') + '</span>' +
-      '<span class="source-meta">ambil: ' + (s.last_ingest ? new Date(s.last_ingest).toLocaleString('id-ID') : '-') + '</span>' +
-    '</div>'
-  ).join('');
-  loadLiveScenes();
+let lmConfirmAction = null;
+function lmConfirm(title, text, action) {
+  document.getElementById('lmConfirmTitle').textContent = title;
+  document.getElementById('lmConfirmText').textContent = text;
+  lmConfirmAction = action;
+  document.getElementById('lmConfirmModal').classList.remove('hidden');
 }
-
-async function loadLiveScenes() {
-  try {
-    const scenes = await api('/api/live/scenes?limit=20');
-    const box = document.getElementById('liveScenes');
-    if (scenes.length === 0) { box.innerHTML = '<div class="empty-small">Belum ada data</div>'; return; }
-    box.innerHTML = '<table class="scene-table"><thead><tr><th>Tanggal</th><th>Tier</th><th>Ukuran</th></tr></thead><tbody>' +
-      scenes.map(s => '<tr><td>' + new Date(s.scene_date).toLocaleString('id-ID') + '</td><td><span class="chip" style="--chip-color:#35D0C0">' + tierLabel(s.tier) + '</span></td><td>' + s.size_mb.toFixed(1) + ' MB</td></tr>').join('') +
-      '</tbody></table>';
-  } catch (e) {}
-}
-
-document.getElementById('liveToggle').addEventListener('change', async (e) => {
-  try { await api('/api/live/toggle', { method: 'POST', body: JSON.stringify({ enabled: e.target.checked }) }); showToast(e.target.checked ? 'Live diaktifkan' : 'Live dinonaktifkan', 'success'); }
-  catch (err) { showToast(err.message, 'error'); e.target.checked = !e.target.checked; }
-});
-
-document.getElementById('liveClearBtn').addEventListener('click', () => document.getElementById('clearModal').classList.remove('hidden'));
-document.getElementById('clearCancel').addEventListener('click', () => document.getElementById('clearModal').classList.add('hidden'));
-document.getElementById('clearConfirm').addEventListener('click', async () => {
-  try { const r = await api('/api/live/clear', { method: 'POST' }); showToast('Dikosongkan: ' + r.deleted_count + ' file', 'success'); loadLive(); }
+document.getElementById('lmConfirmCancel').addEventListener('click', () => document.getElementById('lmConfirmModal').classList.add('hidden'));
+document.getElementById('lmConfirmOk').addEventListener('click', async () => {
+  const btn = document.getElementById('lmConfirmOk');
+  btn.disabled = true;
+  try { if (lmConfirmAction) await lmConfirmAction(); }
   catch (err) { showToast(err.message, 'error'); }
-  document.getElementById('clearModal').classList.add('hidden');
+  finally { btn.disabled = false; document.getElementById('lmConfirmModal').classList.add('hidden'); }
+});
+document.getElementById('lmImageClose').addEventListener('click', () => document.getElementById('lmImageModal').classList.add('hidden'));
+
+document.getElementById('lmAreaSelect').addEventListener('change', e => {
+  LM.areaId = parseInt(e.target.value, 10) || null; LM.date = null; renderLmMeta(); loadLmCard();
 });
 
-document.getElementById('backfillForm').addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const ds = document.getElementById('bfStart').value;
-  const de = document.getElementById('bfEnd').value;
-  if (!ds || !de) { showToast('Isi kedua tanggal', 'error'); return; }
+function openLmAddModal(regionId) {
+  const sel = document.getElementById('lmRegion');
+  sel.innerHTML = (state.regions || []).map(r => '<option value="' + r.region_id + '"' + (r.region_id === regionId ? ' selected' : '') + '>' + escapeHTML(r.name) + '</option>').join('');
+  document.getElementById('lmAddModal').classList.remove('hidden');
+}
+document.getElementById('lmAddBtn').addEventListener('click', async () => {
+  if (!state.regions || !state.regions.length) { try { await loadRegions(); } catch (e) {} }
+  openLmAddModal();
+});
+document.getElementById('lmAddCancel').addEventListener('click', () => document.getElementById('lmAddModal').classList.add('hidden'));
+document.getElementById('lmNewLocation').addEventListener('click', () => {
+  document.getElementById('lmAddModal').classList.add('hidden');
+  state.lmReopenAdd = true;
+  openAddLocationModal();
+});
+document.getElementById('lmAddConfirm').addEventListener('click', async () => {
+  const btn = document.getElementById('lmAddConfirm');
+  const retention = parseInt(document.getElementById('lmRetention').value, 10);
+  if (!(retention >= 1 && retention <= 12)) { showToast('Jumlah scene harus 1–12', 'error'); return; }
+  btn.disabled = true;
   try {
-    const r = await api('/api/live/backfill', { method: 'POST', body: JSON.stringify({ date_start: ds, date_end: de }) });
-    showToast('Backfill dimulai (job ' + r.job_id + ')', 'success');
-    e.target.reset();
+    const a = await api('/api/live/areas', { method: 'POST', body: JSON.stringify({
+      region_id: parseInt(document.getElementById('lmRegion').value, 10),
+      name: document.getElementById('lmName').value.trim() || null, retention }) });
+    document.getElementById('lmAddModal').classList.add('hidden');
+    document.getElementById('lmName').value = '';
+    showToast('Daerah "' + a.name + '" ditambahkan, pengisian awal dimulai', 'success');
+    LM.areaId = a.area_id; LM.date = null;
+    await loadLive();
   } catch (err) { showToast(err.message, 'error'); }
+  finally { btn.disabled = false; }
 });
 
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
     document.getElementById('deleteModal').classList.add('hidden');
     document.getElementById('cancelModal').classList.add('hidden');
-    document.getElementById('clearModal').classList.add('hidden');
+    ['lmAddModal', 'lmConfirmModal', 'lmImageModal'].forEach(id => document.getElementById(id).classList.add('hidden'));
   }
 });
 

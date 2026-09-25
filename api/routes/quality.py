@@ -170,6 +170,14 @@ async def get_dataset_quality_by_source(
     if DatasetManager(db).get_dataset(dataset_id) is None:
         raise HTTPException(404, f"Dataset {dataset_id} tidak ditemukan")
 
+    sources = compute_quality_by_source(db, dataset_id)
+    return DatasetQualityBySourceResponse(dataset_id=dataset_id, sources=sources)
+
+
+def compute_quality_by_source(db: DatabaseClient, dataset_id: int) -> list[SourceQualityItem]:
+    """Logika inti di balik `/dataset/{id}/by-source`, dipisah dari route
+    supaya bisa dipakai ulang tanpa FastAPI (mis. etl/report_generator.py),
+    tanpa menduplikasi query-nya."""
     sources: list[SourceQualityItem] = []
 
     with db.session() as sess:
@@ -245,7 +253,7 @@ async def get_dataset_quality_by_source(
                 bands=bands,
             ))
 
-    return DatasetQualityBySourceResponse(dataset_id=dataset_id, sources=sources)
+    return sources
 
 
 def _flag_for(score: float) -> str:

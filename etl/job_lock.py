@@ -68,14 +68,22 @@ class JobLock:
     kalau prosesnya mati duluan, OS yang melepas.
     """
 
-    def __init__(self, job_id: int, lock_dir: Path) -> None:
-        self._job_id = job_id
-        self._path = lock_dir / f"job-{job_id}.lock"
+    def __init__(self, key: str, lock_dir: Path) -> None:
+        self._key = key
+        self._path = lock_dir / f"{key}.lock"
         self._fd: int | None = None
 
     @classmethod
     def acquire(cls, job_id: int, lock_dir: Path) -> "JobLock | None":
-        lock = cls(job_id, lock_dir)
+        return cls.acquire_key(f"job-{job_id}", lock_dir)
+
+    @classmethod
+    def acquire_key(cls, key: str, lock_dir: Path) -> "JobLock | None":
+        """Sama seperti `acquire()`, tapi untuk pemanggil yang bukan job
+        dataset biasa -- kuncinya string bebas (mis. "live-area-{id}"), bukan
+        job_id. Nama filenya persis `key`, dan pemanggil bertanggung jawab
+        memilih awalan yang tidak pernah bertabrakan dengan "job-{job_id}"."""
+        lock = cls(key, lock_dir)
         try:
             lock_dir.mkdir(parents=True, exist_ok=True)
             fd = os.open(lock._path, os.O_RDWR | os.O_CREAT, 0o644)
@@ -84,8 +92,8 @@ class JobLock:
             # disk penuh atau folder read-only bukan alasan menghentikan
             # pipeline, dan race-nya cuma terjadi saat ada dua proses.
             logger.warning(
-                "[JOBLOCK] job_id=%d tidak bisa membuka berkas lock, lanjut tanpa lock",
-                job_id, exc_info=True,
+                "[JOBLOCK] key=%s tidak bisa membuka berkas lock, lanjut tanpa lock",
+                key, exc_info=True,
             )
             return lock
 
@@ -114,4 +122,4 @@ class JobLock:
         self._fd = None
 
     def __repr__(self) -> str:
-        return f"<JobLock job_id={self._job_id} held={self._fd is not None}>"
+        return f"<JobLock key={self._key} held={self._fd is not None}>"

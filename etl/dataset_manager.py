@@ -1,6 +1,7 @@
 # etl/dataset_manager.py
 from __future__ import annotations
 import logging
+import os
 import threading
 from datetime import date, datetime, timezone
 from sqlalchemy import func, select, update
@@ -54,6 +55,16 @@ STAGE_TIER_INDEX = {
 
 _active_threads: dict[str, threading.Thread] = {}
 _threads_lock = threading.Lock()
+
+# Antrean job Dataset Saya. Dulu setiap job langsung mendapat thread sendiri:
+# lima dataset = 15 unduhan S1 sekaligus, dan status QUEUED cuma label. Kini
+# paling banyak MAX_ACTIVE_JOBS job berjalan; sisanya benar-benar menunggu di
+# _pending (FIFO) dan dimulai begitu satu job selesai. Job Daerah Live tidak
+# lewat sini (live_cycle memanggil run_dataset_job langsung, diserialkan
+# _CYCLE_LOCK) dan tidak memakan slot ini.
+MAX_ACTIVE_JOBS = max(1, int(os.getenv("MAX_ACTIVE_JOBS", "2")))
+_running_jobs: set[int] = set()
+_pending_jobs: list[int] = []
 
 _pause_events: dict[int, threading.Event] = {}
 _cancel_events: dict[int, threading.Event] = {}
@@ -111,6 +122,40 @@ def release_job_events(job_id: int) -> None:
     with _events_lock:
         _pause_events.pop(job_id, None)
         _cancel_events.pop(job_id, None)
+
+
+_ACTIVE_JOB_STATUSES = frozenset({"QUEUED", "PREPARING", "DOWNLOADING", "PROCESSING"})
+
+
+def _obstacles(dataset_id: int, job_status: str) -> dict:
+    """Hambatan yang sedang terjadi untuk loading bar: jeda menunggu server
+    (download_guard.current_wait) dan token NASA yang ditolak. Keduanya hanya
+    relevan selama job masih aktif."""
+    from etl import download_guard as dg
+
+    if job_status not in _ACTIVE_JOB_STATUSES:
+        return {"waiting": None, "alerts": []}
+    return {
+        "waiting": dg.current_wait(dataset_id),
+        "alerts": [{"source": s, "message": m} for s, m in dg.active_auth_failures().items()],
+    }
+
+
+def _job_timing(dataset_id: int, job: dict) -> dict | None:
+    """Durasi run yang sedang berjalan (sejak dimulai/dilanjutkan) atau lama
+    mengantre. None kalau job sudah selesai."""
+    from etl import download_guard as dg
+
+    status = job["status"]
+    if status == "QUEUED":
+        start = job.get("resumed_at") or job.get("created_at")
+        t = dg.timing(None, start.timestamp() if start else None)
+        t["stalled"] = False  # mengantre bukan macet
+        return t
+    if status not in _ACTIVE_JOB_STATUSES:
+        return None
+    start = max((x for x in (job.get("started_at"), job.get("resumed_at")) if x), default=None)
+    return dg.timing(dataset_id, start.timestamp() if start else None)
 
 
 def _normalize_tiers(tiers: list[str]) -> list[str]:
@@ -287,6 +332,12 @@ class DatasetManager:
                 stmt = stmt.where(Dataset.status != "DELETED")
             if dataset_kind:
                 stmt = stmt.where(Dataset.dataset_kind == dataset_kind)
+            else:
+                # Dataset milik Daerah Live dikelola halaman Live
+                # (etl/live_monitor.py), bukan "Dataset Saya": retensinya
+                # sendiri yang menghapus scene, jadi tombol hapus/pause di
+                # kartu dataset biasa tidak boleh menyentuhnya.
+                stmt = stmt.where(Dataset.dataset_kind != "LIVE_AREA")
             total = sess.scalar(select(func.count()).select_from(stmt.subquery()))
             rows = sess.scalars(
                 stmt.order_by(Dataset.created_at.desc()).limit(limit).offset(offset)
@@ -437,6 +488,11 @@ class DatasetManager:
             "progress_percent": min(progress_percent, 100),
             "paused": job_dict["status"] == "PAUSED",
             "pause_reason": job_dict["pause_reason"],
+            # Posisi di antrean MAX_ACTIVE_JOBS (1 = berikutnya), None kalau
+            # job tidak sedang mengantre.
+            "queue_position": self.queue_position(job_dict["job_id"]),
+            **_obstacles(dataset_id, job_dict["status"]),
+            "timing": _job_timing(dataset_id, job_dict),
             "scenes": scenes,
             "layers": layers,
         }
@@ -694,6 +750,9 @@ class DatasetManager:
                     dataset is None
                     or dataset.deleted_at is not None
                     or dataset.dataset_kind == "LIVE"
+                    # Job Daerah Live dilanjutkan LiveMonitor.recover(): selain
+                    # run_dataset_job, siklusnya masih perlu metrik/preview.
+                    or dataset.dataset_kind == "LIVE_AREA"
                     or dataset.status == "DELETING"
                 ):
                     continue
@@ -704,7 +763,8 @@ class DatasetManager:
                 job.resume_count = (job.resume_count or 0) + 1
                 dataset.status = "QUEUED"
                 to_resume.append(job.job_id)
-        for job_id in to_resume:
+        # Terlama dulu: antreannya FIFO, dan query di atas urut terbaru dulu.
+        for job_id in reversed(to_resume):
             logger.warning("[DATASET] job_id=%d terputus oleh restart, dilanjutkan", job_id)
             self._spawn_job_runner(job_id)
         return to_resume
@@ -1037,9 +1097,69 @@ class DatasetManager:
                 dataset.total_size_bytes = total_size_bytes
 
     def _spawn_job_runner(self, job_id: int) -> None:
+        """Jalankan job kalau ada slot kosong, kalau tidak antrekan (FIFO).
+        Job yang diantrekan tetap QUEUED di database sampai dimulai."""
+        with _threads_lock:
+            if job_id in _running_jobs or job_id in _pending_jobs:
+                return
+            if len(_running_jobs) >= MAX_ACTIVE_JOBS:
+                _pending_jobs.append(job_id)
+                position = len(_pending_jobs)
+                queued = True
+            else:
+                _running_jobs.add(job_id)
+                queued = False
+        if queued:
+            logger.info(
+                "[DATASET] job_id=%d diantrekan (posisi %d, %d job aktif)",
+                job_id, position, MAX_ACTIVE_JOBS,
+            )
+            return
+        if not self._start_job_thread(job_id):
+            self._job_slot_done(job_id)
+
+    def _job_slot_done(self, job_id: int) -> None:
+        """Lepas slot job_id lalu mulai job antrean berikutnya yang masih
+        QUEUED. Job antrean yang sudah dibatalkan/dihapus dibuang."""
+        with _threads_lock:
+            _running_jobs.discard(job_id)
+        while True:
+            with _threads_lock:
+                if len(_running_jobs) >= MAX_ACTIVE_JOBS or not _pending_jobs:
+                    return
+                nxt = _pending_jobs.pop(0)
+                _running_jobs.add(nxt)
+            if self._job_still_queued(nxt) and self._start_job_thread(nxt):
+                continue
+            with _threads_lock:
+                _running_jobs.discard(nxt)
+
+    def _job_still_queued(self, job_id: int) -> bool:
+        try:
+            with self._db.session() as sess:
+                job = sess.get(DatasetJob, job_id)
+                if job is None or job.status != "QUEUED":
+                    return False
+                dataset = sess.get(Dataset, job.dataset_id)
+                return dataset is not None and dataset.deleted_at is None                     and dataset.status != "DELETING"
+        except Exception:
+            logger.exception("[DATASET] gagal membaca status job_id=%d dari antrean", job_id)
+            return False
+
+    def queue_position(self, job_id: int) -> int | None:
+        """Posisi 1-based job di antrean, None kalau tidak mengantre."""
+        with _threads_lock:
+            try:
+                return _pending_jobs.index(job_id) + 1
+            except ValueError:
+                return None
+
+    def _start_job_thread(self, job_id: int) -> bool:
+        """Mulai thread job. False kalau tidak jadi dimulai (slot harus
+        dilepas pemanggil)."""
         key = f"job-{job_id}"
         if _is_thread_alive(key):
-            return
+            return True
         # _is_thread_alive cuma melihat proses ini. Saat `uvicorn --reload`
         # menjalankan proses baru sementara yang lama belum selesai menutup,
         # recover_interrupted_jobs() di proses baru akan me-resume job yang
@@ -1052,7 +1172,7 @@ class DatasetManager:
                 "[DATASET] job_id=%d sedang dikerjakan proses lain, tidak dijalankan lagi",
                 job_id,
             )
-            return
+            return False
         get_pause_event(job_id).set()
         try:
             from etl.module5_orchestrator import run_dataset_job
@@ -1066,7 +1186,7 @@ class DatasetManager:
                     dataset = sess.get(Dataset, job.dataset_id)
                     if dataset:
                         dataset.status = "FAILED"
-            return
+            return False
 
         def _runner() -> None:
             try:
@@ -1076,10 +1196,12 @@ class DatasetManager:
             finally:
                 release_job_events(job_id)
                 lock.release()
+                self._job_slot_done(job_id)
 
         t = threading.Thread(target=_runner, daemon=True)
         _register_thread(key, t)
         t.start()
+        return True
 
     def _spawn_deletion_runner(self, dataset_id: int, job_id: int | None = None) -> None:
         key = f"delete-{dataset_id}"

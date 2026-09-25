@@ -210,3 +210,73 @@ class TestAudit:
 
         audit = m9.audit_dataset_grids(db, DATASET_ID, "Audit Test")
         assert audit["mismatched"] == []
+
+
+class TestAuditCoverage:
+    """audit_dataset_coverage: membuat mosaik yang kehilangan frame TERLIHAT.
+
+    Grid dipaku jadi shape selalu penuh -- bug frame hilang (S1_mosaic yang
+    cuma dapat satu dari dua frame karena job_id-scoping di refusion.py, atau
+    drain live-pipeline yang force-finalize tanggal belum lengkap) tidak
+    kelihatan dari shape. Cuma kelihatan dari valid_fraction yang jauh lebih
+    rendah dari tanggal lain di dataset yang sama -- persis
+    fusion_20250111_hybrid_processed.h5 (0.358) vs fusion_20250228 (0.999).
+    """
+
+    def _write_stack(self, root, name, valid_fraction):
+        import h5py
+
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with h5py.File(path, "w") as h:
+            grp = h.create_group("sentinel1/VV")
+            grp.attrs["valid_fraction"] = valid_fraction
+        return path
+
+    def test_clean_dataset_reports_nothing_dropped(self, tmp_path, db, monkeypatch):
+        from etl import folder_manager as fm
+
+        monkeypatch.setattr(fm, "DATA_ROOT", tmp_path / "datasets")
+        root = fm.get_dataset_root(DATASET_ID, "Audit Test")
+        self._write_stack(root, "fusion/a.h5", 0.999)
+        self._write_stack(root, "fusion/b.h5", 0.996)
+
+        audit = m9.audit_dataset_coverage(db, DATASET_ID, "Audit Test")
+        assert audit["dropped"] == []
+        assert len(audit["clean"]) == 2
+
+    def test_single_frame_mosaic_is_reported(self, tmp_path, db, monkeypatch):
+        """Bentuk persis insiden dataset 35: satu tanggal cuma 0.358 di
+        tengah tanggal-tanggal lain yang 0.999."""
+        from etl import folder_manager as fm
+
+        monkeypatch.setattr(fm, "DATA_ROOT", tmp_path / "datasets")
+        root = fm.get_dataset_root(DATASET_ID, "Audit Test")
+        self._write_stack(root, "fusion/20250228_ok.h5", 0.999)
+        self._write_stack(root, "fusion/20250111_terpotong.h5", 0.358)
+
+        audit = m9.audit_dataset_coverage(db, DATASET_ID, "Audit Test")
+        assert len(audit["dropped"]) == 1
+        assert audit["dropped"][0]["file"] == "20250111_terpotong.h5"
+        assert audit["baseline"] == pytest.approx(0.999)
+
+    def test_no_stacks_means_nothing_to_audit(self, tmp_path, db, monkeypatch):
+        from etl import folder_manager as fm
+
+        monkeypatch.setattr(fm, "DATA_ROOT", tmp_path / "datasets")
+        audit = m9.audit_dataset_coverage(db, DATASET_ID, "Audit Test")
+        assert audit["baseline"] is None
+        assert audit["dropped"] == []
+
+    def test_corrupt_h5_does_not_break_the_audit(self, tmp_path, db, monkeypatch):
+        from etl import folder_manager as fm
+
+        monkeypatch.setattr(fm, "DATA_ROOT", tmp_path / "datasets")
+        root = fm.get_dataset_root(DATASET_ID, "Audit Test")
+        root.mkdir(parents=True, exist_ok=True)
+        (root / "rusak.h5").write_bytes(b"bukan hdf5 sama sekali")
+        self._write_stack(root, "fusion/ok.h5", 0.999)
+
+        audit = m9.audit_dataset_coverage(db, DATASET_ID, "Audit Test")
+        assert audit["dropped"] == []
+        assert len(audit["clean"]) == 1

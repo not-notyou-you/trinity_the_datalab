@@ -209,9 +209,30 @@ def _list_month_granules(run: str, year: int, month: int) -> frozenset[str]:
         if hit and now - hit[0] < _LISTING_TTL_S:
             return hit[1]
 
-    resp = requests.get(
-        f"{_run_base_url(run)}/{year}/{month:02d}/", headers=_auth_headers(), timeout=60
-    )
+    url = f"{_run_base_url(run)}/{year}/{month:02d}/"
+    # Dulu satu request tanpa retry: satu 5xx/timeout GES DISC membuat
+    # tanggal itu jatuh ke nama tebakan (yang 404 sejak ganti minor versi).
+    for attempt in range(1, MAX_RETRIES + 1):
+        retry_after = None
+        try:
+            resp = requests.get(url, headers=_auth_headers(), timeout=60)
+        except requests.RequestException:
+            if attempt == MAX_RETRIES:
+                raise
+        else:
+            dg.raise_for_nasa_auth(resp, "GESDISC", url)
+            if resp.status_code < 500 and resp.status_code != 429:
+                break
+            if attempt == MAX_RETRIES:
+                break  # raise_for_status di bawah
+            retry_after = getattr(resp, "headers", {}).get("Retry-After")
+        logger.warning("[M8] listing %s gagal (attempt %d/%d), coba lagi",
+                       url, attempt, MAX_RETRIES)
+        dg.backoff_wait(
+                dg.GESDISC, attempt,
+                "server membatasi (429/503)" if retry_after else "gagal, dicoba ulang",
+                retry_after=retry_after, max_attempts=MAX_RETRIES,
+            )
     if resp.status_code == 404:
         names: frozenset[str] = frozenset()
     else:
@@ -294,15 +315,20 @@ def _download_with_retry(
 
     for attempt in range(1, MAX_RETRIES + 1):
         attempt_started = time.monotonic()
+        retry_after = None
         _plog_event(
             plog, dataset_id, scene_id, "DOWNLOAD", "RUNNING",
             f"{item_label}: downloading (attempt {attempt}/{MAX_RETRIES})",
             {"item": item_label, "attempt": attempt, "max_retries": MAX_RETRIES, "url": url},
         )
         try:
-            with requests.get(
+            with dg.source_slot(dg.GESDISC), requests.get(
                 url, headers=_auth_headers(), stream=True, timeout=dg.REQUEST_TIMEOUT
             ) as r:
+                # 401/403: token Earthdata bersama semua job -- gagal cepat.
+                dg.raise_for_nasa_auth(r, "GESDISC", url)
+                if r.status_code in dg.THROTTLE_STATUSES:
+                    retry_after = r.headers.get("Retry-After")
                 r.raise_for_status()
                 expected_size = int(r.headers.get("Content-Length", 0))
                 downloaded = 0
@@ -331,6 +357,7 @@ def _download_with_retry(
             # maupun POSIX. Path.rename di Windows gagal FileExistsError
             # kalau proses lain sudah menang duluan menulis out_path.
             os.replace(tmp_path, out_path)
+            dg.clear_auth_failure("GESDISC")
             checksum = _md5(out_path)
             logger.info("[M8] downloaded %s (md5=%s...)", out_path.name, checksum[:12])
             _plog_event(
@@ -354,7 +381,8 @@ def _download_with_retry(
                 attempt, MAX_RETRIES, out_path.name, exc,
             )
             tmp_path.unlink(missing_ok=True)
-            is_final = not_found or attempt == MAX_RETRIES
+            auth_failed = isinstance(exc, dg.NasaAuthError)
+            is_final = auth_failed or not_found or attempt == MAX_RETRIES
             _plog_event(
                 plog, dataset_id, scene_id, "DOWNLOAD", "FAILED" if is_final else "RUNNING",
                 f"{item_label}: attempt {attempt}/{MAX_RETRIES} failed ({exc})",
@@ -368,8 +396,15 @@ def _download_with_retry(
                 # granule genuinely doesn't exist for this run/date yet (e.g. Final
                 # Run not published) — retrying the same URL won't help.
                 raise _GranuleNotFound(str(exc)) from exc
+            if auth_failed:
+                raise
             if attempt < MAX_RETRIES:
-                time.sleep(2 ** attempt)
+                # Retry-After (429/503, dibatasi) atau backoff + jitter.
+                dg.backoff_wait(
+                dg.GESDISC, attempt,
+                "server membatasi (429/503)" if retry_after else "gagal, dicoba ulang",
+                retry_after=retry_after, max_attempts=MAX_RETRIES,
+            )
 
     raise RuntimeError(f"gagal download {url} setelah {MAX_RETRIES} percobaan: {last_exc}")
 

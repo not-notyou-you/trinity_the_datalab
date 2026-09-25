@@ -241,3 +241,74 @@ class TestOneFinalizationPerDate:
         jc = _make_jc()
         m5._finalize_date(jc, [])
         assert stubbed["render"] == []
+
+
+class TestReconcileStragglerFrame:
+    """Insiden fusion_20250111_hybrid_processed.h5: frame A CLEANUP di run
+    sebelumnya (tanggalnya sempat di-drain parsial karena frame B waktu itu
+    gagal unduh); job di-resume, frame B akhirnya berhasil tapi
+    `_download_one` melewatkan frame A (sudah `scene_is_done`) sehingga
+    `pending` run baru cuma berisi frame B sendirian. Tanpa rekonsiliasi,
+    drain menimpa stack dengan hanya frame B -- inilah yang diuji di sini
+    tidak boleh terjadi lagi."""
+
+    def test_frame_from_previous_run_is_merged_back_in(self, stubbed, monkeypatch):
+        import queue
+
+        from etl import refusion as rf
+
+        jc = _make_jc()
+        # Antrean RUN INI cuma membawa frame B (frame A sudah selesai & di-
+        # skip _download_one di run sebelumnya).
+        straggler_only = [_member(PID_B, scene_id=12)]
+
+        def fake_scene_results_for_date(db, job_id, jc_arg, date_key):
+            # Disk+DB (etl.refusion) masih ingat frame A dari run sebelumnya.
+            return [_member(PID_A, scene_id=11)]
+
+        monkeypatch.setattr(rf, "scene_results_for_date", fake_scene_results_for_date)
+
+        m5._flush_date(jc, "20240305", straggler_only, queue.Queue())
+
+        assert stubbed["mosaic"] == [("20240305", "PROCESSED", 2)], (
+            "frame A dari run sebelumnya tidak ikut mosaik -- stack akan "
+            "menimpa dirinya sendiri jadi cuma satu frame"
+        )
+
+    def test_reconcile_is_noop_when_nothing_missing(self, stubbed, monkeypatch):
+        """Run normal, tanpa resume/retry: rekonsiliasi tidak boleh mengubah
+        apa pun -- disk+DB melihat persis anggota yang sama."""
+        import queue
+
+        from etl import refusion as rf
+
+        jc = _make_jc()
+        members = [_member(PID_A, scene_id=11), _member(PID_B, scene_id=12)]
+        monkeypatch.setattr(
+            rf, "scene_results_for_date",
+            lambda db, job_id, jc_arg, date_key: list(members),
+        )
+
+        m5._flush_date(jc, "20240305", members, queue.Queue())
+
+        assert stubbed["mosaic"] == [("20240305", "PROCESSED", 2)]
+
+    def test_reconcile_failure_falls_back_to_live_members(self, stubbed, monkeypatch):
+        """Kalau rekonsiliasi sendiri gagal (mis. DB tidak terjangkau),
+        finalize tetap jalan dengan apa yang ada di antrean run ini --
+        tidak boleh menjatuhkan seluruh finalisasi tanggal."""
+        import queue
+
+        from etl import refusion as rf
+
+        jc = _make_jc()
+        members = [_member(PID_A, scene_id=11)]
+
+        def boom(*_args, **_kwargs):
+            raise RuntimeError("db tidak terjangkau")
+
+        monkeypatch.setattr(rf, "scene_results_for_date", boom)
+
+        m5._flush_date(jc, "20240305", members, queue.Queue())
+
+        assert stubbed["mosaic"] == [("20240305", "PROCESSED", 1)]

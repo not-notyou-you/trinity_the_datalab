@@ -19,7 +19,6 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
-import random
 import shutil
 import threading
 import time
@@ -76,42 +75,89 @@ _RANGE_UNSUPPORTED = frozenset({400, 405, 501})
 MAX_RATE_LIMIT_RETRIES = 8
 
 
-def _retry_sleep(attempt: int, retry_after: str | None = None) -> None:
-    """Jeda sebelum percobaan ulang. Pakai Retry-After dari server kalau ada;
-    kalau tidak, backoff eksponensial + jitter supaya beberapa worker yang
-    gagal berbarengan tidak menembak ulang di detik yang sama persis."""
-    if retry_after is not None:
-        try:
-            delay = max(1.0, float(retry_after))
-        except ValueError:
-            delay = 15.0
-    else:
-        delay = min(60.0, 2.0 ** attempt) + random.uniform(0, 1.0)
-    logger.info("[M1] Menunggu %.1f s sebelum mencoba lagi...", delay)
-    time.sleep(delay)
+def _retry_sleep(
+    attempt: int,
+    retry_after: str | None = None,
+    cancel_event: threading.Event | None = None,
+    reason: str = "koneksi terputus",
+    max_attempts: int | None = None,
+) -> None:
+    """Jeda sebelum percobaan ulang (lihat download_guard.backoff_wait):
+    Retry-After dibatasi dg.MAX_RETRY_AFTER_S, tidurnya berhenti begitu job
+    dibatalkan, dan jedanya tampil di loading bar UI."""
+    logger.info("[M1] Menunggu sebelum mencoba lagi (%s, attempt %d)...", reason, attempt)
+    dg.backoff_wait(dg.CDSE, attempt, reason, retry_after=retry_after,
+                    max_attempts=max_attempts, cancel_event=cancel_event)
 
 
-def _get_cdse_token(user: str, password: str) -> str:
+# Token CDSE dipakai bersama semua thread unduhan. Dulu tiap scene login
+# sendiri (password grant): job 100 scene = 100 login, dan 9 worker yang kena
+# 401 berbarengan login 9 kali. Sekarang satu token per proses, diperbarui
+# sekali saat mendekati kedaluwarsa atau saat server menolaknya.
+_TOKEN_LOCK = threading.Lock()
+_token_cache: dict = {"token": None, "expires_at": 0.0}
+# Diperbarui sekian detik sebelum expires_in supaya request yang baru mulai
+# tidak membawa token yang habis di tengah jalan.
+_TOKEN_EARLY_REFRESH_S = 60
+_TOKEN_MAX_ATTEMPTS = 4
+
+
+def _get_cdse_token(user: str, password: str, stale: str | None = None) -> str:
+    """Token CDSE dari cache bersama. `stale` = token yang baru saja dijawab
+    401: kalau cache masih berisi token itu, login ulang; kalau thread lain
+    sudah memperbaruinya, token baru itu yang dipakai (tanpa login lagi)."""
+    with _TOKEN_LOCK:
+        tok = _token_cache["token"]
+        if tok and tok != stale and time.monotonic() < _token_cache["expires_at"]:
+            return tok
+        tok, expires_in = _fetch_cdse_token(user, password)
+        _token_cache["token"] = tok
+        _token_cache["expires_at"] = time.monotonic() + max(
+            30.0, float(expires_in) - _TOKEN_EARLY_REFRESH_S
+        )
+        return tok
+
+
+def _fetch_cdse_token(user: str, password: str) -> tuple[str, float]:
+    """Login password grant. 429/5xx dan error jaringan dicoba ulang dengan
+    backoff; penolakan kredensial (4xx lain) langsung gagal."""
     import requests
 
-    r = requests.post(
-        "https://identity.dataspace.copernicus.eu/auth/realms/CDSE"
-        "/protocol/openid-connect/token",
-        data={
-            "client_id": "cdse-public",
-            "username": user,
-            "password": password,
-            "grant_type": "password",
-        },
-        timeout=30,
-    )
-    if r.status_code != 200:
-        raise RuntimeError(
-            f"CDSE auth gagal ({r.status_code}): {r.text[:300]}\n"
-            "Pastikan email dan password di .env sudah benar.\n"
-            "Daftar: https://dataspace.copernicus.eu"
-        )
-    return r.json()["access_token"]
+    last = ""
+    for attempt in range(1, _TOKEN_MAX_ATTEMPTS + 1):
+        retry_after = None
+        try:
+            r = requests.post(
+                "https://identity.dataspace.copernicus.eu/auth/realms/CDSE"
+                "/protocol/openid-connect/token",
+                data={
+                    "client_id": "cdse-public",
+                    "username": user,
+                    "password": password,
+                    "grant_type": "password",
+                },
+                timeout=30,
+            )
+        except requests.RequestException as exc:
+            last = f"{type(exc).__name__}: {exc}"
+        else:
+            if r.status_code == 200:
+                body = r.json()
+                return body["access_token"], float(body.get("expires_in") or 600)
+            if r.status_code != 429 and r.status_code < 500:
+                raise RuntimeError(
+                    f"CDSE auth gagal ({r.status_code}): {r.text[:300]}\n"
+                    "Pastikan email dan password di .env sudah benar.\n"
+                    "Daftar: https://dataspace.copernicus.eu"
+                )
+            last = f"HTTP {r.status_code}"
+            retry_after = r.headers.get("Retry-After")
+        if attempt < _TOKEN_MAX_ATTEMPTS:
+            logger.warning("[M1] Login CDSE gagal (attempt %d/%d): %s",
+                           attempt, _TOKEN_MAX_ATTEMPTS, last)
+            _retry_sleep(attempt, retry_after, reason="login ditolak sementara",
+                         max_attempts=_TOKEN_MAX_ATTEMPTS)
+    raise RuntimeError(f"CDSE auth gagal setelah {_TOKEN_MAX_ATTEMPTS} percobaan: {last}")
 
 
 # Di bawah porsi AOI ini sebuah TANGGAL S1 (gabungan semua frame-nya) tidak
@@ -120,6 +166,8 @@ def _get_cdse_token(user: str, password: str) -> str:
 # lalu menulis stack fusion 455 MB yang 99,4% NaN. Footprint sudah ada di
 # respons katalog, jadi ini bisa diputuskan sebelum unduhan dimulai.
 MIN_S1_AOI_COVERAGE = 0.05
+
+_DISCOVER_MAX_ATTEMPTS = 3
 
 
 def _footprint_wkt(item: dict) -> str | None:
@@ -213,7 +261,28 @@ def discover_scenes(
 
     logger.info("[M1] Querying CDSE: area=%s... from=%s to=%s", bbox_wkt[:40], date_from.date(), date_to.date())
 
-    r = requests.get(url, timeout=60)
+    # Katalog yang sibuk (429/5xx) atau koneksi putus tidak boleh langsung
+    # menggagalkan siklus Live / pembuatan dataset: dicoba ulang dengan
+    # backoff. 4xx lain (filter salah) final.
+    r = None
+    last = ""
+    for attempt in range(1, _DISCOVER_MAX_ATTEMPTS + 1):
+        retry_after = None
+        try:
+            r = requests.get(url, timeout=60)
+        except requests.RequestException as exc:
+            r, last = None, f"{type(exc).__name__}: {exc}"
+        else:
+            if r.status_code == 200 or (r.status_code != 429 and r.status_code < 500):
+                break
+            last, retry_after = f"HTTP {r.status_code}", r.headers.get("Retry-After")
+        if attempt < _DISCOVER_MAX_ATTEMPTS:
+            logger.warning("[M1] Query CDSE gagal (attempt %d/%d): %s",
+                           attempt, _DISCOVER_MAX_ATTEMPTS, last)
+            _retry_sleep(attempt, retry_after, reason="katalog sibuk",
+                         max_attempts=_DISCOVER_MAX_ATTEMPTS)
+    if r is None:
+        raise RuntimeError(f"CDSE query gagal setelah {_DISCOVER_MAX_ATTEMPTS} percobaan: {last}")
     if r.status_code != 200:
         raise RuntimeError(f"CDSE query gagal ({r.status_code}): {r.text[:300]}")
 
@@ -278,6 +347,7 @@ def download_scene(
     keep_raw: bool = False,
     progress_cb: Callable[[float, str], None] | None = None,
     reuse_root: Path | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> DownloadResult:
     import requests
 
@@ -336,12 +406,14 @@ def download_scene(
         while attempt < MAX_RETRIES:
             attempt += 1
             try:
-                with session.get(
+                with dg.source_slot(dg.CDSE), session.get(
                     download_url, stream=True, timeout=dg.REQUEST_TIMEOUT, allow_redirects=True
                 ) as resp:
                     if resp.status_code == 401:
                         logger.info("[M1] Token expired, refreshing (attempt %d)...", attempt)
-                        token = _get_cdse_token(user, pwd)
+                        # Token lama diserahkan supaya cache hanya login
+                        # ulang kalau belum ada thread lain yang melakukannya.
+                        token = _get_cdse_token(user, pwd, token)
                         session.headers.update({"Authorization": f"Bearer {token}"})
                         continue
 
@@ -382,7 +454,11 @@ def download_scene(
                             "[M1] Download ditolak (429 rate limit, attempt %d/%d).",
                             rate_limit_attempt, MAX_RATE_LIMIT_RETRIES,
                         )
-                        _retry_sleep(rate_limit_attempt, resp.headers.get("Retry-After"))
+                        _retry_sleep(
+                            rate_limit_attempt, resp.headers.get("Retry-After"), cancel_event,
+                            reason="dibatasi server (429)",
+                            max_attempts=MAX_RATE_LIMIT_RETRIES,
+                        )
                         # Throttle bukan kegagalan transfer, jadi tidak
                         # menghabiskan jatah MAX_RETRIES.
                         attempt -= 1
@@ -437,7 +513,8 @@ def download_scene(
                     # Backoff + jitter: retry instan terhadap server yang
                     # baru saja memutus koneksi (SSL EOF, 429 yang habis
                     # jatahnya di atas) cuma menabrak kondisi yang sama lagi.
-                    _retry_sleep(attempt)
+                    _retry_sleep(attempt, cancel_event=cancel_event,
+                                 reason="koneksi terputus", max_attempts=MAX_RETRIES)
                 else:
                     logger.error("[M1] Download gagal setelah %d attempts: %s", MAX_RETRIES, exc)
                     logger.info("[M1] File .part tersimpan di: %s", part_path)

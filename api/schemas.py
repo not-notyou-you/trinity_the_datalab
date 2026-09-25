@@ -724,3 +724,16 @@ class GeocodeItem(BaseModel):
 
 class GeocodeSearchResponse(BaseModel):
     items: list[GeocodeItem]
+
+# --- Live Monitoring (LIVE_MONITORING.md) -----------------------------------
+
+class LiveAreaCreateRequest(BaseModel):
+    region_id: int
+    name: str | None = Field(default=None, max_length=200)
+    retention: int = Field(default=6, ge=1, le=12)
+
+
+class LiveAreaUpdateRequest(BaseModel):
+    name: str | None = Field(default=None, max_length=200)
+    retention: int | None = Field(default=None, ge=1, le=12)
+    enabled: bool | None = None

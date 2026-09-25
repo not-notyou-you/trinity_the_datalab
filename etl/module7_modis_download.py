@@ -314,6 +314,7 @@ def _discover_tile_files(
     resp = None
     last_error: str = ""
     for attempt in range(1, MAX_RETRIES + 1):
+        retry_after = None
         # Listing dulu satu request tanpa retry, dan exception jaringannya
         # (ReadTimeout, ConnectionError) bukan RuntimeError sehingga lolos dari
         # fallback NRT -> arsip standar di pemanggil. Satu timeout LAADS karena
@@ -324,23 +325,30 @@ def _discover_tile_files(
             last_error = f"{type(exc).__name__}: {exc}"
             resp = None
         else:
-            # Hanya 5xx yang diulang: 4xx (mis. 404 = direktori tanggal itu
-            # memang tidak ada) adalah jawaban final, bukan gangguan.
-            if resp.status_code < 500:
+            dg.raise_for_nasa_auth(resp, "LAADS", url)
+            # Hanya 5xx dan 429 yang diulang: 4xx lain (mis. 404 = direktori
+            # tanggal itu memang tidak ada) adalah jawaban final.
+            if resp.status_code < 500 and resp.status_code != 429:
                 break
             last_error = f"HTTP {resp.status_code}"
+            retry_after = getattr(resp, "headers", {}).get("Retry-After")
         if attempt < MAX_RETRIES:
             logger.warning(
                 "[M7] listing LAADS gagal (attempt %d/%d) %s: %s",
                 attempt, MAX_RETRIES, url, last_error,
             )
-            time.sleep(2 ** attempt)
+            dg.backoff_wait(
+                dg.LAADS, attempt,
+                "server membatasi (429/503)" if retry_after else "gagal, dicoba ulang",
+                retry_after=retry_after, max_attempts=MAX_RETRIES,
+            )
     if resp is None:
         raise RuntimeError(
             f"gagal listing LAADS setelah {MAX_RETRIES} percobaan ({last_error}): {url}"
         )
     if resp.status_code != 200:
         raise RuntimeError(f"gagal listing LAADS ({resp.status_code}): {url}")
+    dg.clear_auth_failure("LAADS")
 
     found = []
     for tile in tiles:
@@ -436,15 +444,20 @@ def _download_with_retry(
 
     for attempt in range(1, MAX_RETRIES + 1):
         attempt_started = time.monotonic()
+        retry_after = None
         _plog_event(
             plog, dataset_id, scene_id, "DOWNLOAD", "RUNNING",
             f"{item_label}: downloading (attempt {attempt}/{MAX_RETRIES})",
             {"item": item_label, "attempt": attempt, "max_retries": MAX_RETRIES, "url": url},
         )
         try:
-            with requests.get(
+            with dg.source_slot(dg.LAADS), requests.get(
                 url, headers=_auth_headers(), stream=True, timeout=dg.REQUEST_TIMEOUT
             ) as r:
+                # 401/403: token Earthdata bersama semua job -- gagal cepat.
+                dg.raise_for_nasa_auth(r, "LAADS", url)
+                if r.status_code in dg.THROTTLE_STATUSES:
+                    retry_after = r.headers.get("Retry-After")
                 r.raise_for_status()
                 expected_size = int(r.headers.get("Content-Length", 0))
                 downloaded = 0
@@ -472,6 +485,7 @@ def _download_with_retry(
             # os.replace: atomic-overwrite di Windows maupun POSIX (Path.rename
             # gagal FileExistsError di Windows kalau proses lain menang duluan).
             os.replace(tmp_path, out_path)
+            dg.clear_auth_failure("LAADS")
             checksum = _md5(out_path)
             logger.info("[M7] downloaded %s (md5=%s...)", out_path.name, checksum[:12])
             _plog_event(
@@ -492,7 +506,8 @@ def _download_with_retry(
                 attempt, MAX_RETRIES, out_path.name, exc,
             )
             tmp_path.unlink(missing_ok=True)
-            is_final = attempt == MAX_RETRIES
+            auth_failed = isinstance(exc, dg.NasaAuthError)
+            is_final = auth_failed or attempt == MAX_RETRIES
             _plog_event(
                 plog, dataset_id, scene_id, "DOWNLOAD", "FAILED" if is_final else "RUNNING",
                 f"{item_label}: attempt {attempt}/{MAX_RETRIES} failed ({exc})",
@@ -502,8 +517,15 @@ def _download_with_retry(
                     "duration_seconds": round(time.monotonic() - attempt_started, 3),
                 },
             )
+            if auth_failed:
+                raise
             if attempt < MAX_RETRIES:
-                time.sleep(2 ** attempt)
+                # Retry-After (429/503, dibatasi) atau backoff + jitter.
+                dg.backoff_wait(
+                dg.LAADS, attempt,
+                "server membatasi (429/503)" if retry_after else "gagal, dicoba ulang",
+                retry_after=retry_after, max_attempts=MAX_RETRIES,
+            )
 
     raise RuntimeError(f"gagal download {url} setelah {MAX_RETRIES} percobaan: {last_exc}")
 
@@ -937,8 +959,8 @@ def _build_source_mosaic(
 
             tile_info.append(info)
             tile_tifs.append(tile_tif)
-        except ImportError:
-            # Masalah environment, bukan data: tile lain pasti gagal juga.
+        except (ImportError, dg.NasaAuthError):
+            # Masalah environment/token, bukan data: tile lain pasti gagal juga.
             raise
         except Exception as exc:
             logger.warning(

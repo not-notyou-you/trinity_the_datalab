@@ -159,7 +159,8 @@ def stub_rasters(monkeypatch):
         return [{"product_identifier": PID, "size_mb": 1.0, "cloud_cover": 0,
                  "acquisition_datetime": ACQ}]
 
-    def fake_download(scene_meta, output_dir, keep_raw=True, progress_cb=None, reuse_root=None):
+    def fake_download(scene_meta, output_dir, keep_raw=True, progress_cb=None, reuse_root=None,
+                      cancel_event=None):
         out = Path(output_dir)
         (out / f"{PID}.SAFE.zip").parent.mkdir(parents=True, exist_ok=True)
         (out / f"{PID}.SAFE.zip").write_bytes(b"zip")

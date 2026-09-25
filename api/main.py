@@ -20,7 +20,7 @@ from etl.database_client import DatabaseClient
 # sama persis dengan api.deps.get_db, jadi dependency_overrides lewat jalur mana
 # pun mengenai callable yang sama.
 from api.deps import get_db, set_db
-from api.routes import datasets, health, lineage, live, merge, pipeline, products, quality, regions, scenes, storage
+from api.routes import datasets, health, lineage, live, merge, pipeline, products, quality, regions, report, scenes, storage
 
 logger = logging.getLogger(__name__)
 _db_client: DatabaseClient | None = None
@@ -147,6 +147,7 @@ app.include_router(lineage.router, prefix="/api/metadata", tags=["Lineage"])
 app.include_router(storage.router, prefix="/api/storage", tags=["Storage"])
 app.include_router(pipeline.router, prefix="/api/pipeline", tags=["Pipeline"])
 app.include_router(datasets.router, prefix="/api/datasets", tags=["Datasets"])
+app.include_router(report.router, prefix="/api/datasets", tags=["Report"])
 app.include_router(live.router, prefix="/api/live", tags=["Live"])
 app.include_router(regions.router, prefix="/api/regions", tags=["Regions"])
 app.include_router(merge.router, prefix="/api/merge", tags=["Merge"])

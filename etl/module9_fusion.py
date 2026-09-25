@@ -1402,6 +1402,92 @@ def audit_dataset_grids(
     return result
 
 
+def audit_dataset_coverage(
+    db: DatabaseClient, dataset_id: int, dataset_name: str,
+    layer: str = "sentinel1/VV", drop_ratio: float = 0.7,
+) -> dict:
+    """Periksa apakah ada stack fusion dataset ini yang kehilangan frame S1.
+
+    Insiden yang melahirkan fungsi ini: `_mosaic_s1_by_level`/`refuse_date`
+    bisa menulis stack dari HANYA SATU dari beberapa frame S1 satu tanggal --
+    baik karena antrean live-pipeline habis sebelum semua frame sampai
+    (`_pipeline_worker` drain) atau karena query perakitan-ulang cuma melihat
+    satu job_id (lihat `etl/refusion.py`). Grid tetap sama (`_reproject_to_grid`
+    selalu mengalokasikan bentuk penuh), jadi bug ini TIDAK kelihatan dari
+    shape berkas -- cuma dari `valid_fraction` yang jauh lebih rendah dari
+    tanggal lain di dataset yang sama. 28 dari 44 stack lintas 4 dataset
+    ditemukan begini, semuanya diam-diam, sampai dicek manual.
+
+    Baseline-nya `valid_fraction` TERTINGGI yang tercatat di dataset ini:
+    AOI-nya sama untuk semua tanggal, jadi tanggal yang mosaiknya lengkap
+    memberi tahu berapa cakupan yang seharusnya bisa dicapai. Tanggal dengan
+    valid_fraction di bawah `drop_ratio` kali baseline itu dicurigai.
+
+    Murah (cuma baca atribut HDF5, bukan datanya) dan tidak butuh tahu berapa
+    frame yang "seharusnya" ada per tanggal -- itu yang membuatnya bisa
+    dipanggil langsung untuk mengaudit dataset lama tanpa akses ke riwayat
+    job/scene-nya sama sekali.
+
+    Mengembalikan {"baseline": ..., "clean": [...], "dropped": [...]}.
+    """
+    result: dict = {"baseline": None, "clean": [], "dropped": []}
+    root = fm.get_dataset_root(dataset_id, dataset_name)
+    if not root.exists():
+        return result
+
+    entries = []
+    for path in sorted(root.rglob("*.h5")):
+        try:
+            with h5py.File(path, "r") as h:
+                grp = h
+                for part in layer.split("/"):
+                    grp = grp[part]
+                vf = float(grp.attrs["valid_fraction"])
+        except (OSError, KeyError):
+            # Berkas rusak atau tidak punya layer ini: bukan urusan audit ini.
+            continue
+        entries.append({"file": path.name, "valid_fraction": round(vf, 6)})
+
+    if not entries:
+        return result
+
+    baseline = max(e["valid_fraction"] for e in entries)
+    result["baseline"] = baseline
+    threshold = baseline * drop_ratio
+    for entry in entries:
+        if entry["valid_fraction"] < threshold:
+            result["dropped"].append(entry)
+        else:
+            result["clean"].append(entry)
+    return result
+
+
+def _warn_on_coverage_drop(
+    db: DatabaseClient, dataset_id: int, dataset_name: str
+) -> None:
+    """Teriakkan ke log kalau ada stack dengan cakupan jauh di bawah tanggal lain.
+
+    Sengaja cuma memperingatkan, bukan menggagalkan job: lihat alasannya di
+    `_warn_on_grid_drift`, yang sama persis -- operator yang tahu lalu
+    memutuskan tanggal mana yang perlu dirakit ulang (`etl/refusion.py`).
+    """
+    try:
+        audit = audit_dataset_coverage(db, dataset_id, dataset_name)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("[M9] audit cakupan dilewati: %s", exc)
+        return
+    bad = audit.get("dropped") or []
+    if not bad:
+        return
+    logger.warning(
+        "[M9] dataset %s punya %d stack dengan cakupan sentinel1/VV jauh di "
+        "bawah tanggal lain di dataset ini (baseline valid_fraction=%.4f) -- "
+        "kemungkinan mosaik kehilangan frame: %s",
+        dataset_id, len(bad), audit["baseline"],
+        ", ".join(f"{b['file']} ({b['valid_fraction']:.3f})" for b in bad[:5]),
+    )
+
+
 def _warn_on_grid_drift(
     db: DatabaseClient, dataset_id: int, dataset_name: str
 ) -> None:
@@ -2010,6 +2096,10 @@ def _build_fusion_stack_for_level(
     # stack lama yang sudah lahir di grid lain tetap diam saja sampai ada yang
     # memeriksanya. Cuma membaca atribut HDF5, bukan datanya.
     _warn_on_grid_drift(db, dataset_id, dataset_name)
+    # Sama untuk cakupan: shape stack selalu penuh (grid dipaku), tapi
+    # mosaiknya bisa saja cuma dari satu frame kalau _mosaic_s1_by_level atau
+    # refuse_date kehilangan frame lain -- lihat docstring audit_dataset_coverage.
+    _warn_on_coverage_drop(db, dataset_id, dataset_name)
 
     return FusionRun(
         fusion_id=fusion_id,
