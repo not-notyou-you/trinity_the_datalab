@@ -518,3 +518,43 @@ def test_cycle_result_quiet_cycle_is_ok(monkeypatch):
 
     r = lc._cycle_result(_result_mon([]), 1, [], 6, 6)
     assert r == {"level": "ok", "text": "Selesai: tidak ada scene baru (6/6 tersimpan)"}
+
+
+# ---------------------------------------------------------------------------
+# panel log Live
+# ---------------------------------------------------------------------------
+
+def test_activity_merges_cycle_events_and_pipeline_logs(monkeypatch):
+    from datetime import datetime, timezone
+    from etl import live_monitor as lm
+    from etl import pipeline_logger as pl
+
+    def ts(m):
+        return datetime(2026, 9, 26, 10, m, tzinfo=timezone.utc)
+
+    events = [
+        SimpleNamespace(created_at=ts(1), scene_date=None, step="CYCLE", status="STARTED",
+                        message="Siklus dimulai"),
+        SimpleNamespace(created_at=ts(3), scene_date=date(2026, 9, 20), step="INGEST",
+                        status="OK", message="Job selesai"),
+    ]
+    area = SimpleNamespace(dataset_id=9, deleted_at=None)
+
+    @contextmanager
+    def session():
+        yield SimpleNamespace(get=lambda m, k: area,
+                              scalars=lambda stmt: SimpleNamespace(all=lambda: events))
+
+    mon = lm.LiveMonitor.__new__(lm.LiveMonitor)
+    mon._db = SimpleNamespace(session=session)
+    monkeypatch.setattr(pl.PipelineLogManager, "__init__", lambda self, db: None)
+    monkeypatch.setattr(pl.PipelineLogManager, "query_logs", lambda self, ds, limit: ([
+        {"timestamp": ts(2), "scene_id": "S1A_X", "stage": "DOWNLOAD", "status": "RUNNING",
+         "message": "Downloading: 300 / 1600 MB", "details": {"progress_percent": 18.8}},
+    ], 1))
+
+    rows = mon.activity(1, limit=5)
+    assert [r["stage"] for r in rows] == ["INGEST", "DOWNLOAD", "CYCLE"]
+    assert [r["status"] for r in rows] == ["COMPLETED", "RUNNING", "RUNNING"]
+    assert rows[0]["scene_id"] == "2026-09-20" and rows[2]["scene_id"] == "SIKLUS"
+    assert len(mon.activity(1, limit=2)) == 2

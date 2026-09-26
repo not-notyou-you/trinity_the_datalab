@@ -223,6 +223,15 @@ async def area_events(area_id: int, limit: int = Query(100, ge=1, le=1000),
     return _monitor(db).events(area_id, limit)
 
 
+@router.get("/areas/{area_id}/activity", summary="Log terbaru: langkah siklus + pipeline unduh/proses")
+async def area_activity(area_id: int, limit: int = Query(5, ge=1, le=200),
+                        db: DatabaseClient = Depends(get_db)) -> list[dict]:
+    try:
+        return _monitor(db).activity(area_id, limit)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc))
+
+
 @router.get("/areas/{area_id}/log", summary="Log scene, termasuk yang sudah dihapus")
 async def area_scene_log(area_id: int, db: DatabaseClient = Depends(get_db)) -> list[dict]:
     return _monitor(db).scene_log(area_id)

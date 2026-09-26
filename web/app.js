@@ -1544,7 +1544,7 @@ function formatDuration(seconds) {
 }
 function logStatusClass(status) {
   if (status === 'COMPLETED') return 'log-ok';
-  if (status === 'RUNNING') return 'log-progress';
+  if (status === 'RUNNING' || status === 'WARNING') return 'log-progress';
   if (status === 'FAILED') return 'log-error';
   return 'log-muted';
 }
@@ -1754,8 +1754,19 @@ async function loadLive() {
         escapeHTML(a.name) + (a.latest_scene_date ? ' · ' + lmDate(a.latest_scene_date, true) : '') + '</option>').join('')
     : '<option value="">Belum ada daerah</option>';
   sel.disabled = !LM.areas.length;
+  await loadLmActivity();
   renderLmMeta();
   await loadLmCard();
+}
+
+// 5 log terbaru daerah terpilih, hanya selama ada proses (bar tampil):
+// sama seperti panel "Live Logs" di kartu Dataset Saya.
+async function loadLmActivity() {
+  const a = lmArea();
+  const key = a ? 'lm-' + a.area_id : null;
+  if (!a || !a.progress) { if (key) delete state.logs[key]; return; }
+  try { state.logs[key] = await api('/api/live/areas/' + a.area_id + '/activity?limit=5'); }
+  catch (err) { /* panel log bersifat tambahan; bar tetap tampil */ }
 }
 
 // Bar untuk kartu Dataset Saya: hanya selama job aktif. QUEUED menampilkan
@@ -1866,7 +1877,7 @@ function lmProgressHTML(a, withAlerts) {
       waiting: a.status === 'WAITING' || !!w || !!(p.timing && p.timing.stalled),
       failPct: p.total ? p.failed / p.total * 100 : 0,
       notes: [{ text: waitNoteText(w), kind: 'warn' }, { text: tp.note, kind: 'warn' }],
-    });
+    }) + (withAlerts === false ? '' : '<div class="lm-logs">' + renderLogPanel('lm-' + a.area_id) + '</div>');
   } else if (a && a.last_result && withAlerts !== false) {
     html = lmResultHTML(a.last_result);
   }

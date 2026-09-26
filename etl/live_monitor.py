@@ -587,6 +587,42 @@ class LiveMonitor:
                      "scene_date": r.scene_date.isoformat() if r.scene_date else None}
                     for r in rows]
 
+    # Status live_events -> kosakata status processing_logs, supaya panel log
+    # UI (renderLogPanel, sama dengan Dataset Saya) mewarnainya konsisten.
+    _EVENT_STATUS = {"OK": "COMPLETED", "STARTED": "RUNNING"}
+
+    def activity(self, area_id: int, limit: int = 5) -> list[dict]:
+        """Log terbaru daerah: langkah siklus (live_events) digabung dengan
+        log pipeline dataset daerahnya (processing_logs: unduhan, progres
+        byte, tiap tahap scene). Urut terbaru dulu, bentuknya sama dengan
+        /api/datasets/{id}/logs."""
+        from etl.pipeline_logger import PipelineLogManager
+
+        with self._db.session() as sess:
+            a = sess.get(LiveArea, area_id)
+            if a is None or a.deleted_at is not None:
+                raise LookupError(f"Daerah Live {area_id} tidak ditemukan")
+            dataset_id = a.dataset_id
+            evs = sess.scalars(select(LiveEvent).where(LiveEvent.area_id == area_id)
+                               .order_by(LiveEvent.event_id.desc()).limit(limit)).all()
+            rows = [{
+                "timestamp": e.created_at,
+                "scene_id": e.scene_date.isoformat() if e.scene_date else "SIKLUS",
+                "stage": e.step,
+                "status": self._EVENT_STATUS.get(e.status, e.status),
+                "message": e.message,
+                "details": {},
+                "source": "live",
+            } for e in evs]
+        if dataset_id is not None:
+            try:
+                logs, _ = PipelineLogManager(self._db).query_logs(dataset_id, limit=limit)
+                rows += [{**l, "source": "pipeline"} for l in logs]
+            except Exception:
+                logger.exception("[LIVE] log pipeline area=%d gagal dibaca", area_id)
+        rows.sort(key=lambda r: r["timestamp"], reverse=True)
+        return rows[:limit]
+
     def scene_log(self, area_id: int) -> list[dict]:
         """Seluruh scene termasuk yang sudah dihapus (audit, 6.1)."""
         with self._db.session() as sess:

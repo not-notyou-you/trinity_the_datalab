@@ -1799,6 +1799,8 @@ body.lightbox-open { overflow: hidden; }
   .pbar.indeterminate .pbar-fill { animation: none; left: 0; width: 100%; opacity: .45; }
 }
 .lm-area-meta .pbar { flex-basis: 100%; margin-top: 2px; }
+.lm-logs { flex-basis: 100%; min-width: 0; }
+.lm-logs:empty { display: none; }
 .lm-empty .pbar { max-width: 420px; margin: 18px auto 0; }
 .lm-empty { text-align: center; padding: 40px 12px; }
 .lm-dim { color: var(--text); opacity: .6; font-size: 13px; font-weight: 400; }
