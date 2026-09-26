@@ -271,6 +271,46 @@ class ReportGenerator:
         items = compute_quality_by_source(self.db, self.dataset_id)
         return [item.model_dump() for item in items]
 
+    def _coverage_audit_issues(self, dataset_name: str) -> list[dict]:
+        """Surface `audit_dataset_coverage` (valid_fraction sentinel1/VV per
+        stack fusion) ke Section 9.2, supaya cakupan rendah -- baik yang
+        berulang legitimately (tier revisit orbit S1) maupun yang terisolasi
+        dan patut dicurigai sebagai bug mosaik -- termonitor otomatis lewat
+        laporan, tanpa perlu investigasi manual per dataset seperti sebelumnya.
+        Murah (cuma baca attrs HDF5); kegagalannya tidak boleh menggagalkan
+        laporan sama sekali."""
+        from etl.module9_fusion import audit_dataset_coverage
+
+        try:
+            audit = audit_dataset_coverage(self.db, self.dataset_id, dataset_name)
+        except Exception:  # noqa: BLE001
+            logger.exception("[report] audit cakupan dilewati untuk dataset %s", self.dataset_id)
+            return []
+        issues = []
+        recurring = audit.get("recurring_low") or []
+        if recurring:
+            issues.append({
+                "source": "FUSION", "severity": "LOW",
+                "title": f"{len(recurring)} stack fusion dengan valid_fraction sentinel1/VV "
+                         "lebih rendah tapi berulang (tier revisit orbit)",
+                "detail": ", ".join(f"{e['file']} ({e['valid_fraction']:.3f})" for e in recurring[:8]),
+                "action": "Kemungkinan besar partial swath S1 asli untuk tanggal ini (AOI "
+                          "diapit >1 relative-orbit); tidak perlu di-refuse kecuali dicek manual.",
+                "status": "INFO",
+            })
+        dropped = audit.get("dropped") or []
+        if dropped:
+            issues.append({
+                "source": "FUSION", "severity": "HIGH",
+                "title": f"{len(dropped)} stack fusion dengan valid_fraction sentinel1/VV "
+                         "jauh di bawah dan TERISOLASI (bukan tier berulang)",
+                "detail": ", ".join(f"{e['file']} ({e['valid_fraction']:.3f})" for e in dropped[:8]),
+                "action": "Periksa etl.refusion.scene_results_for_date untuk tanggal ini -- "
+                          "kemungkinan mosaik kehilangan frame S1 yang sebenarnya ada di disk/DB.",
+                "status": "OPEN",
+            })
+        return issues
+
     def _s1_orbit_counts(self) -> dict[str, int]:
         with self.db.session() as sess:
             rows = sess.execute(
@@ -644,6 +684,7 @@ class ReportGenerator:
         chart_dir = ctx.root / "reports" / "_charts"
         chart_dir.mkdir(parents=True, exist_ok=True)
         ctx.issues = _collect_issues(ctx)
+        ctx.issues.extend(self._coverage_audit_issues(ds["name"]))
         ctx.scores = _compute_scores(ctx)
         try:
             ctx.forecasts = rf.build_forecasts(st)

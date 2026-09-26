@@ -1428,9 +1428,17 @@ def audit_dataset_coverage(
     dipanggil langsung untuk mengaudit dataset lama tanpa akses ke riwayat
     job/scene-nya sama sekali.
 
-    Mengembalikan {"baseline": ..., "clean": [...], "dropped": [...]}.
+    Mengembalikan {"baseline": ..., "clean": [...], "dropped": [...],
+    "recurring_low": [...]}. `dropped` cuma tanggal yang valid_fraction-nya
+    TERISOLASI (tidak ada tanggal lain di dataset ini dengan valid_fraction
+    serupa) -- pola khas "kehilangan satu frame". `recurring_low` adalah
+    tanggal dengan valid_fraction rendah yang MUNCUL BERULANG (>=2 tanggal
+    saling berdekatan nilainya): AOI yang diapit lebih dari satu relative-orbit
+    S1 punya cakupan yang legitimately membentuk tier-tier rendah/tinggi
+    berulang tiap siklus revisit, jadi ini bukan indikasi bug -- lihat
+    `_warn_on_coverage_drop` yang melaporkan keduanya dengan level log berbeda.
     """
-    result: dict = {"baseline": None, "clean": [], "dropped": []}
+    result: dict = {"baseline": None, "clean": [], "dropped": [], "recurring_low": []}
     root = fm.get_dataset_root(dataset_id, dataset_name)
     if not root.exists():
         return result
@@ -1454,11 +1462,37 @@ def audit_dataset_coverage(
     baseline = max(e["valid_fraction"] for e in entries)
     result["baseline"] = baseline
     threshold = baseline * drop_ratio
+    below = [e for e in entries if e["valid_fraction"] < threshold]
     for entry in entries:
-        if entry["valid_fraction"] < threshold:
-            result["dropped"].append(entry)
-        else:
+        if entry["valid_fraction"] >= threshold:
             result["clean"].append(entry)
+
+    # AOI yang diapit dua relative-orbit S1 punya cakupan yang legitimately
+    # "tier-tier" (mis. ~0.62/~0.92/~0.999 berulang tiap siklus revisit) --
+    # bukan cuma satu baseline penuh vs sisanya rusak. Membandingkan setiap
+    # tanggal ke SATU baseline terbaik (di atas) akan salah-flag tier rendah
+    # yang berulang sebagai "dropped" walau itu memang cakupan maksimum yang
+    # tersedia untuk tanggal itu. Untuk membedakan tier legitimate dari
+    # kejadian TERISOLASI (satu tanggal jatuh sendirian, tidak dekat dengan
+    # valid_fraction tanggal manapun yang lain -- itu justru pola bug
+    # "kehilangan satu frame" yang dijelaskan di docstring atas): kelompokkan
+    # entri di bawah threshold berdasarkan kedekatan valid_fraction (toleransi
+    # absolut kecil). Kelompok dengan >=2 anggota dianggap tier berulang yang
+    # sah -> informational, bukan alert kegagalan. Kelompok dengan cuma 1
+    # anggota tetap dianggap "dropped" (perlu diperiksa manual/refuse_date).
+    TIER_TOLERANCE = 0.03
+    below_sorted = sorted(below, key=lambda e: e["valid_fraction"])
+    clusters: list[list[dict]] = []
+    for entry in below_sorted:
+        if clusters and entry["valid_fraction"] - clusters[-1][-1]["valid_fraction"] <= TIER_TOLERANCE:
+            clusters[-1].append(entry)
+        else:
+            clusters.append([entry])
+    for cluster in clusters:
+        if len(cluster) >= 2:
+            result["recurring_low"].extend(cluster)
+        else:
+            result["dropped"].extend(cluster)
     return result
 
 
@@ -1476,13 +1510,27 @@ def _warn_on_coverage_drop(
     except Exception as exc:  # noqa: BLE001
         logger.debug("[M9] audit cakupan dilewati: %s", exc)
         return
+    recurring = audit.get("recurring_low") or []
+    if recurring:
+        # Tier cakupan rendah yang berulang (>=2 tanggal dengan valid_fraction
+        # serupa) -- konsisten dengan AOI yang diapit >1 relative-orbit S1.
+        # INFO saja, bukan alert kegagalan: lihat docstring audit_dataset_coverage.
+        logger.info(
+            "[M9] dataset %s punya %d stack dengan cakupan sentinel1/VV lebih "
+            "rendah tapi BERULANG di dataset ini (baseline valid_fraction=%.4f) "
+            "-- kemungkinan besar swath S1 memang cuma menutupi sebagian AOI "
+            "pada tanggal-tanggal ini (partial swath asli, bukan bug mosaik): %s",
+            dataset_id, len(recurring), audit["baseline"],
+            ", ".join(f"{b['file']} ({b['valid_fraction']:.3f})" for b in recurring[:8]),
+        )
     bad = audit.get("dropped") or []
     if not bad:
         return
     logger.warning(
         "[M9] dataset %s punya %d stack dengan cakupan sentinel1/VV jauh di "
-        "bawah tanggal lain di dataset ini (baseline valid_fraction=%.4f) -- "
-        "kemungkinan mosaik kehilangan frame: %s",
+        "bawah tanggal lain di dataset ini DAN TERISOLASI (tidak ada tanggal "
+        "lain dengan valid_fraction serupa) -- baseline valid_fraction=%.4f -- "
+        "kemungkinan mosaik kehilangan frame, periksa scene_results_for_date: %s",
         dataset_id, len(bad), audit["baseline"],
         ", ".join(f"{b['file']} ({b['valid_fraction']:.3f})" for b in bad[:5]),
     )

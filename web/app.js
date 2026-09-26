@@ -1755,8 +1755,39 @@ async function loadLive() {
     : '<option value="">Belum ada daerah</option>';
   sel.disabled = !LM.areas.length;
   await loadLmActivity();
+  renderLmAreaList();
   renderLmMeta();
-  await loadLmCard();
+  // Kartu (preview) hanya diambil ulang bila isinya berubah: daerah lain yang
+  // sedang diunduh, atau siklus daerah ini sendiri, tidak mengosongkan kartu.
+  const a = lmArea();
+  const sig = a ? a.area_id + '|' + a.scene_count + '|' + a.latest_scene_date + '|' + (LM.date || '') : '';
+  if (!LM.card || sig !== LM.cardSig || !LM.card.scene) { LM.cardSig = sig; await loadLmCard(); }
+}
+
+// Semua Daerah Live sekaligus: nama, status, dan loading bar masing-masing
+// selama diunduh/diproses. Klik baris = tampilkan kartunya.
+function renderLmAreaList() {
+  const box = document.getElementById('lmAreaList');
+  if (LM.areas.length < 2) { box.innerHTML = ''; return; }
+  box.innerHTML = LM.areas.map(a => {
+    const busy = a.running || a.status === 'BACKFILLING' || a.status === 'WAITING';
+    return '<button type="button" class="lm-area-item' + (a.area_id === LM.areaId ? ' active' : '') + '" data-id="' + a.area_id + '">' +
+      '<span class="lm-area-item-head"><b>' + escapeHTML(a.name) + '</b>' +
+        '<span class="lm-pill ' + (a.status === 'ERROR' ? 'lv-high' : busy ? 'lv-warn' : 'lv-ok') + '">' +
+          escapeHTML((LM_STATUS_TEXT[a.status] || a.status) + (busy ? '…' : '')) + '</span></span>' +
+      '<span class="lm-meta-item">' + a.scene_count + '/' + a.retention + ' scene' +
+        (a.latest_scene_date ? ' · terbaru ' + lmDate(a.latest_scene_date, true) : '') + '</span>' +
+      (a.progress ? lmProgressHTML(a, false) : '') +
+    '</button>';
+  }).join('');
+  box.querySelectorAll('.lm-area-item').forEach(b => b.addEventListener('click', () => lmSelectArea(parseInt(b.dataset.id, 10))));
+}
+
+function lmSelectArea(id) {
+  if (id === LM.areaId) return;
+  LM.areaId = id; LM.date = null; LM.card = null;
+  document.getElementById('lmAreaSelect').value = String(id);
+  loadLive();
 }
 
 // 5 log terbaru daerah terpilih, hanya selama ada proses (bar tampil):
@@ -1903,6 +1934,11 @@ function renderLmMeta() {
     '<span class="lm-meta-actions">' +
       '<label class="lm-ret">Simpan <select id="lmRetSelect">' + opts + '</select> scene</label>' +
       '<button type="button" class="btn btn-ghost btn-sm" id="lmCheckBtn"' + (a.running ? ' disabled' : '') + '>Cek sekarang</button>' +
+      (a.dataset_id != null && a.scene_count > 0
+        ? '<a class="btn btn-ghost btn-sm" href="/api/datasets/' + a.dataset_id + '/report" target="_blank">Laporan</a>' +
+          '<a class="btn btn-ghost btn-sm" href="/api/datasets/' + a.dataset_id + '/report/json" target="_blank">JSON</a>' +
+          '<a class="btn btn-ghost btn-sm" href="/api/datasets/' + a.dataset_id + '/report?force=true" target="_blank" title="Buat ulang laporan dari data terbaru">Buat ulang</a>'
+        : '') +
       '<button type="button" class="btn btn-danger btn-sm" id="lmDeleteBtn">Hapus daerah</button>' +
     '</span>' +
     lmProgressHTML(a);
@@ -2151,9 +2187,7 @@ document.getElementById('lmConfirmOk').addEventListener('click', async () => {
 });
 document.getElementById('lmImageClose').addEventListener('click', () => document.getElementById('lmImageModal').classList.add('hidden'));
 
-document.getElementById('lmAreaSelect').addEventListener('change', e => {
-  LM.areaId = parseInt(e.target.value, 10) || null; LM.date = null; renderLmMeta(); loadLmCard();
-});
+document.getElementById('lmAreaSelect').addEventListener('change', e => lmSelectArea(parseInt(e.target.value, 10) || null));
 
 function openLmAddModal(regionId) {
   const sel = document.getElementById('lmRegion');
@@ -2182,7 +2216,10 @@ document.getElementById('lmAddConfirm').addEventListener('click', async () => {
     document.getElementById('lmAddModal').classList.add('hidden');
     document.getElementById('lmName').value = '';
     showToast('Daerah "' + a.name + '" ditambahkan, pengisian awal dimulai', 'success');
-    LM.areaId = a.area_id; LM.date = null;
+    // Daerah yang sudah punya scene tetap tampil; daerah baru muncul di daftar
+    // dengan loading bar-nya sendiri.
+    const cur = lmArea();
+    if (!cur || !cur.scene_count) { LM.areaId = a.area_id; LM.date = null; LM.card = null; }
     await loadLive();
   } catch (err) { showToast(err.message, 'error'); }
   finally { btn.disabled = false; }
@@ -2450,12 +2487,31 @@ function drawPreviewGallery(id) {
   const filterRow = (label, inner) =>
     '<div class="preview-filter"><span class="preview-filter-label">' + label + '</span>' + inner + '</div>';
 
+  // coverage_quality datang dari attr H5 fusion (lihat api/routes/datasets.py
+  // _read_coverage_quality) -- "partial" berarti swath Sentinel-1 tidak
+  // menutup seluruh AOI di tanggal itu (bukan bug, tapi perlu kelihatan
+  // supaya tidak disalahartikan sebagai preview yang rusak).
+  const isPartial = s => s.coverage_quality === 'partial';
   const dateRow = filterRow('Tanggal', data.scenes.length > 1
     ? '<div class="preview-dates">' + data.scenes.map(s =>
-        '<button class="preview-date' + (s.scene === scene.scene ? ' active' : '') + '"' +
-          ' data-preview-scene="' + escapeHTML(s.scene) + '">' + formatDateKey(s.scene) + '</button>'
+        '<button class="preview-date' + (s.scene === scene.scene ? ' active' : '') +
+          (isPartial(s) ? ' preview-date-partial' : '') + '"' +
+          ' data-preview-scene="' + escapeHTML(s.scene) + '"' +
+          (isPartial(s) ? ' title="Cakupan Sentinel-1 sebagian (partial swath)"' : '') + '>' +
+          formatDateKey(s.scene) + (isPartial(s) ? ' <span class="preview-date-flag">●</span>' : '') +
+        '</button>'
       ).join('') + '</div>'
-    : '<span class="preview-single-date">' + formatDateKey(scene.scene) + '</span>');
+    : '<span class="preview-single-date">' + formatDateKey(scene.scene) +
+        (isPartial(scene) ? ' <span class="preview-date-flag" title="Cakupan Sentinel-1 sebagian (partial swath)">●</span>' : '') +
+      '</span>');
+
+  const coverageBadge = scene.coverage_quality === 'partial'
+    ? '<span class="preview-coverage-badge" title="' +
+        (scene.coverage_min_valid_fraction != null
+          ? 'Cakupan valid ~' + Math.round(scene.coverage_min_valid_fraction * 100) + '% dari AOI'
+          : 'Sentinel-1 tidak menutup seluruh AOI di tanggal ini') +
+      '">Partial Coverage</span>'
+    : '';
 
   const levelRow = levels.length > 1
     ? filterRow('Level', '<div class="preview-levels" role="tablist">' + levels.map(l =>
@@ -2559,6 +2615,7 @@ function drawPreviewGallery(id) {
   const html =
     '<div class="struct-title preview-title">' +
       '<span class="preview-title-icon">' + ICONS.image + '</span>Preview' +
+      coverageBadge +
       '<span class="preview-size">' + humanBytes(data.total_size_bytes) + '</span>' +
     '</div>' +
     '<div class="preview-bar">' + dateRow + levelRow + kindRow + '</div>' +

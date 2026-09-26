@@ -426,6 +426,40 @@ def _preview_level_payload(
     }
 
 
+def _read_coverage_quality(dataset_id: int, name: str, scene: str) -> dict:
+    """Baca attr coverage_quality/coverage_min_valid_fraction dari H5 fusion.
+
+    Ditulis oleh module9_fusion setelah fusion selesai, jadi bisa saja belum
+    ada (dataset lama, atau tanggal ini belum sampai tahap fusion) -- itu
+    kondisi normal, bukan error, jadi selalu balikin dict kosong dan tidak
+    pernah melempar.
+    """
+    fusion_dir = fm.get_fusion_dir(dataset_id, name, scene)
+    # Nama subfolder & sufiks berkas beda per strategi fusion (hybrid /
+    # co-occurrence / full-coverage, lihat etl/fusion_strategies.SUBFOLDER) --
+    # daripada query DB buat tahu strategi dataset ini, cukup coba ketiganya
+    # dan pakai yang pertama kebetulan ada.
+    h5_path = next(
+        (p for p in fusion_dir.glob(f"*/fusion_{scene}_*_processed.h5") if p.is_file()),
+        None,
+    )
+    if h5_path is None:
+        return {}
+    try:
+        import h5py
+        with h5py.File(h5_path, "r") as f:
+            quality = f.attrs.get("coverage_quality")
+            min_fraction = f.attrs.get("coverage_min_valid_fraction")
+    except OSError:
+        return {}
+    result: dict = {}
+    if quality is not None:
+        result["coverage_quality"] = str(quality)
+    if min_fraction is not None:
+        result["coverage_min_valid_fraction"] = float(min_fraction)
+    return result
+
+
 def _preview_scene_payload(dataset_id: int, name: str, scene: str) -> dict:
     """Rakit satu entri scene preview: isi preview_metadata.json ditambah URL
     gambar yang siap dipakai <img src>.
@@ -447,7 +481,7 @@ def _preview_scene_payload(dataset_id: int, name: str, scene: str) -> dict:
     default_level = preferred_preview_level(levels)
 
     files = fm.get_preview_date_files(dataset_id, name, scene)
-    return {
+    payload = {
         "scene": scene,
         "acquisition_date": metadata.get("acquisition_date", scene),
         "s1_scene_key": metadata.get("s1_scene_key"),
@@ -461,6 +495,8 @@ def _preview_scene_payload(dataset_id: int, name: str, scene: str) -> dict:
         "by_level": by_level,
         "kinds": by_level.get(default_level, {}).get("kinds", {}),
     }
+    payload.update(_read_coverage_quality(dataset_id, name, scene))
+    return payload
 
 
 @router.get(

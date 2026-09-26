@@ -181,11 +181,32 @@ def _ensure_land(masks_dir, bbox, transform, shape, url, force) -> str:
         return f"skipped: {exc}"
 
 
+def _missing_tiles_now_available(masks_dir: Path, wo) -> bool:
+    """Apakah manifest mencatat tile hilang yang sekarang sudah ada di disk."""
+    import json
+
+    try:
+        manifest = json.loads(
+            (masks_dir / "manifest_water_occurrence.json").read_text("utf-8")
+        )
+        missing = manifest["statistics"].get("tiles_missing") or []
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+    return any(wo.local_tile_path(t).exists() for t in missing)
+
+
 def _ensure_occurrence(masks_dir, bbox, transform, shape, force) -> str:
     from etl import water_occurrence as wo
 
     target = masks_dir / f"{wo.WATER_OCCURRENCE_STEM}.tif"
     reuse = _reuse_or_rebuild(target, transform, shape, force)
+    if reuse and _missing_tiles_now_available(masks_dir, wo):
+        # Layer lama dibangun saat sebagian tile belum diunduh (bagian itu
+        # nodata). Grid-nya tetap cocok, jadi tanpa cek ini layer terpotong
+        # itu dipakai ulang selamanya meski tile-nya sudah ada sekarang.
+        logger.info("[%s] tile JRC yang dulu hilang kini ada — "
+                    "water_occurrence dibangun ulang", MODULE)
+        reuse = None
     if reuse:
         return reuse
     try:

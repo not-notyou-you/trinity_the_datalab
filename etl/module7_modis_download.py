@@ -77,7 +77,11 @@ LAADS_NRT_BASE = "https://nrt3.modaps.eosdis.nasa.gov/archive/allData/61"
 # window and must fall back here instead.
 LAADS_STANDARD_BASE = "https://ladsweb.modaps.eosdis.nasa.gov/archive/allData/61"
 
-MODIS_FLOOD_PRODUCT = "MCDWD_L3_F2_NRT"
+# Granule HDF gabungan (1/2/3-day + CS) versi NRT. Dulu MCDWD_L3_F2_NRT, tapi
+# NASA kini menerbitkan varian F2 itu hanya sebagai .tif satu band (tanpa
+# FloodCS_1Day pengisi celah) sehingga listing .hdf-nya selalu kosong dan FLOOD
+# gagal untuk setiap tanggal terbaru (live monitoring, Sep 2026).
+MODIS_FLOOD_PRODUCT = "MCDWD_L3_NRT"
 
 # NDVI/NDWI utamanya dari MOD09A1: komposit surface reflectance 8 hari yang
 # per piksel memilih observasi terbaik (awan & sudut pandang minimum) dalam
@@ -148,7 +152,7 @@ DAY_OF_YEAR_SDS = "sur_refl_day_of_year"
 MODIS_SINUSOIDAL_CRS = "+proj=sinu +lon_0=0 +x_0=0 +y_0=0 +R=6371007.181 +units=m +no_defs"
 _SIN_TILE_SIZE_M = 1111950.5196666666
 # Produk flood MCDWD memakai grid geografis 10x10 derajat, bukan sinusoidal.
-_GEOGRAPHIC_TILE_PRODUCTS = {"MCDWD_L3", "MCDWD_L3_F2_NRT"}
+_GEOGRAPHIC_TILE_PRODUCTS = {"MCDWD_L3", "MCDWD_L3_NRT", "MCDWD_L3_F2_NRT"}
 
 # Nama SDS surface reflectance + QA state per keluarga produk (grid 500 m;
 # state MOD09GA ada di grid 1 km, state MOD09A1 di 500 m).
@@ -401,14 +405,27 @@ def _discover_tile_files_with_fallback(
     try:
         items = _discover_tile_files(date, tiles, std_product, base=LAADS_STANDARD_BASE)
     except RuntimeError as exc:
-        raise RuntimeError(f"{nrt_error}; fallback standar juga gagal: {exc}") from exc
+        std_error = exc
+    else:
+        if items:
+            return items, std_product
+        std_error = RuntimeError(f"tidak ada granule {std_product}")
 
-    if not items:
-        raise RuntimeError(
-            f"{nrt_error}; fallback standar {std_product} juga tidak punya granule "
-            f"untuk {date.date().isoformat()}"
-        )
-    return items, std_product
+    # Celah antara retensi NRT (~7 hari di nrt3) dan terbitnya produk standar
+    # (MCDWD_L3 baru sampai 2025): ladsweb menyimpan salinan NRT jangka panjang.
+    try:
+        items = _discover_tile_files(date, tiles, product, base=LAADS_STANDARD_BASE)
+    except RuntimeError as exc:
+        archive_error = exc
+    else:
+        if items:
+            return items, product
+        archive_error = RuntimeError(f"tidak ada granule arsip {product}")
+
+    raise RuntimeError(
+        f"{nrt_error}; fallback standar {std_product} gagal: {std_error}; "
+        f"arsip NRT ladsweb gagal: {archive_error}"
+    )
 
 
 def _download_with_retry(

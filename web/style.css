@@ -915,6 +915,17 @@ details.advanced .field-row-3 { margin-top: 14px; }
 }
 .preview-single-date { font-family: var(--font-mono); font-size: 12px; color: var(--text); }
 
+/* coverage_quality="partial": swath Sentinel-1 tidak menutup seluruh AOI di
+   tanggal itu -- bukan bug, tapi harus kelihatan supaya tidak disalahartikan
+   sebagai preview yang rusak/terpotong. */
+.preview-coverage-badge {
+  font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em;
+  color: var(--amber); border: 1px solid var(--amber); background: rgba(240,166,60,0.1);
+  padding: 2px 7px; border-radius: 6px; white-space: nowrap;
+}
+.preview-date-partial { border-color: var(--amber); }
+.preview-date-flag { color: var(--amber); font-size: 8px; vertical-align: middle; }
+
 .preview-kinds, .preview-levels { display: flex; flex-wrap: wrap; gap: 4px; }
 .preview-kind { display: inline-flex; align-items: center; gap: 6px; }
 .preview-kind-count {
@@ -1760,6 +1771,14 @@ body.lightbox-open { overflow: hidden; }
   padding: 10px 34px 10px 12px;
 }
 #lmRegion { width: 100%; padding: 10px 34px 10px 12px; }
+.lm-area-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 10px; margin-top: 14px; }
+.lm-area-list:empty { display: none; }
+.lm-area-item { display: flex; flex-direction: column; gap: 6px; text-align: left; background: rgba(0,0,0,0.22); border: 1px solid var(--glass-border); border-radius: 8px; padding: 10px 12px; color: var(--text); font: inherit; cursor: pointer; min-width: 0; }
+.lm-area-item:hover { border-color: var(--hairline); }
+.lm-area-item.active { border-color: var(--cyan); box-shadow: 0 0 0 1px var(--cyan) inset; }
+.lm-area-item-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.lm-area-item-head b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lm-area-item .pbar { margin: 2px 0 0; }
 .lm-area-meta { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; margin-top: 14px; font-size: 13px; }
 .lm-area-meta:empty { display: none; }
 .lm-pill { font-family: var(--font-mono); font-size: 12px; padding: 3px 10px; border-radius: 999px; border: 1px solid currentColor; }
