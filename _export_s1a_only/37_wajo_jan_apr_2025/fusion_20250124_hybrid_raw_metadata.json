@@ -1,0 +1,133 @@
+{
+  "fusion_id": 234,
+  "dataset_id": 37,
+  "region_id": 30,
+  "feature_date": "2025-01-24",
+  "acquisition_datetime": "2025-01-24T17:18:25.473894+07:00",
+  "processing_datetime": "2026-09-24T11:49:40.086412+00:00",
+  "aoi_bbox": [
+    119.8838224,
+    -4.2865042,
+    120.4412323,
+    -3.6444397
+  ],
+  "shape": {
+    "height": 7057,
+    "width": 6127
+  },
+  "processing_level": "RAW",
+  "source_levels": {
+    "SENTINEL1": "RAW",
+    "MODIS": "RAW",
+    "GPM": "RAW"
+  },
+  "source_tiers": {
+    "SENTINEL1": "ALIGNED",
+    "MODIS": "ALIGNED",
+    "GPM": "ALIGNED"
+  },
+  "fusion_strategy": "HYBRID",
+  "layers": [
+    "sentinel1/VV",
+    "sentinel1/VH",
+    "modis/FLOOD",
+    "modis/FLOOD_SOURCE",
+    "gpm/rainfall_daily"
+  ],
+  "layer_sources": {
+    "sentinel1/VV": {
+      "path": "data\\datasets\\37_wajo_jan_apr_2025\\sentinel-1\\RAW\\S1A_IW_GRDH_1SDV_20250124T101825_20_calibrated_VV_crop.tif",
+      "paths": [
+        "data\\datasets\\37_wajo_jan_apr_2025\\sentinel-1\\RAW\\S1A_IW_GRDH_1SDV_20250124T101825_20_calibrated_VV_crop.tif"
+      ],
+      "date": "2025-01-24",
+      "tier": "ALIGNED",
+      "processing_level": "RAW",
+      "valid_fraction": 0.9996951078419267
+    },
+    "sentinel1/VH": {
+      "path": "data\\datasets\\37_wajo_jan_apr_2025\\sentinel-1\\RAW\\S1A_IW_GRDH_1SDV_20250124T101825_20_calibrated_VH_crop.tif",
+      "paths": [
+        "data\\datasets\\37_wajo_jan_apr_2025\\sentinel-1\\RAW\\S1A_IW_GRDH_1SDV_20250124T101825_20_calibrated_VH_crop.tif"
+      ],
+      "date": "2025-01-24",
+      "tier": "ALIGNED",
+      "processing_level": "RAW",
+      "valid_fraction": 0.9996951078419267
+    },
+    "modis/FLOOD": {
+      "path": "data\\datasets\\37_wajo_jan_apr_2025\\modis\\RAW\\modis_20250124_flood.tif",
+      "date": "2025-01-24",
+      "day_offset": 0,
+      "tier": "ALIGNED",
+      "processing_level": "RAW",
+      "valid_fraction": 0.04131770953946575,
+      "source_tags": {
+        "band_2": "FLOOD_SOURCE: 1=Flood_2Day_250m, 2=FloodCS_1Day_250m, 255=tanpa data",
+        "flood_composite": "Flood_2Day_250m",
+        "flood_fill": "FloodCS_1Day_250m",
+        "fraction_from_1day_cs": "0.0192",
+        "fraction_from_2day": "0.0224",
+        "observation_date": "2025-01-24",
+        "source_granules": "MCDWD_L3.A2025024.h29v09.061.2025343225520.hdf,MCDWD_L3.A2025024.h30v09.061.2025343225756.hdf",
+        "source_product": "MCDWD_L3",
+        "valid_fraction": "0.0416"
+      }
+    },
+    "modis/FLOOD_SOURCE": {
+      "path": "data\\datasets\\37_wajo_jan_apr_2025\\modis\\RAW\\modis_20250124_flood.tif",
+      "date": "2025-01-24",
+      "day_offset": 0,
+      "tier": "ALIGNED",
+      "processing_level": "RAW",
+      "valid_fraction": 0.04131770953946575,
+      "source_tags": {
+        "band_2": "FLOOD_SOURCE: 1=Flood_2Day_250m, 2=FloodCS_1Day_250m, 255=tanpa data",
+        "flood_composite": "Flood_2Day_250m",
+        "flood_fill": "FloodCS_1Day_250m",
+        "fraction_from_1day_cs": "0.0192",
+        "fraction_from_2day": "0.0224",
+        "observation_date": "2025-01-24",
+        "source_granules": "MCDWD_L3.A2025024.h29v09.061.2025343225520.hdf,MCDWD_L3.A2025024.h30v09.061.2025343225756.hdf",
+        "source_product": "MCDWD_L3",
+        "valid_fraction": "0.0416"
+      }
+    },
+    "gpm/rainfall_daily": {
+      "path": "data\\datasets\\37_wajo_jan_apr_2025\\gpm-imerg\\RAW\\gpm_rain_24h_20250124.tif",
+      "date": "2025-01-24",
+      "day_offset": 0,
+      "tier": "ALIGNED",
+      "processing_level": "RAW",
+      "valid_fraction": 1.0,
+      "source_tags": {
+        "imerg_runs": "F",
+        "source_product": "GPM_3IMERGD",
+        "units": "mm",
+        "window": "24h",
+        "window_days": "1",
+        "window_end_utc": "2025-01-25T00:00:00Z",
+        "window_start_utc": "2025-01-24T00:00:00Z"
+      },
+      "hours_after_s1_acquisition": 13.69
+    }
+  },
+  "layer_coverage": {
+    "sentinel1/VV": 0.9997,
+    "sentinel1/VH": 0.9997,
+    "modis/FLOOD": 0.0413,
+    "modis/FLOOD_SOURCE": 0.0413,
+    "gpm/rainfall_daily": 1.0
+  },
+  "source_scenes": {
+    "s1_scene_id": 1569
+  },
+  "days_since_s1": 0,
+  "temporal_offsets": {
+    "modis": 0,
+    "gpm": 0
+  },
+  "file_name": "fusion_20250124_hybrid_raw.h5",
+  "file_size_mb": 261.144,
+  "checksum_sha256": "2a8fb7b1bdafec292cc0d582e7b1bf654abc4afa70ba17f429477211ea731743"
+}

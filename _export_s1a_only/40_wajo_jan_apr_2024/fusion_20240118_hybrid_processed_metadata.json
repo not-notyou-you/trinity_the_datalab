@@ -1,0 +1,253 @@
+{
+  "fusion_id": 370,
+  "dataset_id": 40,
+  "region_id": 30,
+  "feature_date": "2024-01-18",
+  "acquisition_datetime": "2024-01-18T17:18:31.858919+07:00",
+  "processing_datetime": "2026-09-25T08:47:05.368963+00:00",
+  "aoi_bbox": [
+    119.8838224,
+    -4.2865042,
+    120.4412323,
+    -3.6444397
+  ],
+  "shape": {
+    "height": 7124,
+    "width": 6184
+  },
+  "processing_level": "PROCESSED",
+  "source_levels": {
+    "SENTINEL1": "PROCESSED",
+    "MODIS": "PROCESSED",
+    "GPM": "PROCESSED"
+  },
+  "source_tiers": {
+    "SENTINEL1": "COG",
+    "MODIS": "COG",
+    "GPM": "COG"
+  },
+  "fusion_strategy": "HYBRID",
+  "layers": [
+    "sentinel1/VV",
+    "sentinel1/VH",
+    "modis/FLOOD",
+    "modis/FLOOD_SOURCE",
+    "modis/NDVI",
+    "modis/NDVI_AGE_DAYS",
+    "modis/NDWI",
+    "modis/NDWI_AGE_DAYS",
+    "gpm/rainfall_24h",
+    "gpm/rainfall_72h",
+    "gpm/rainfall_7d"
+  ],
+  "layer_sources": {
+    "sentinel1/VV": {
+      "path": "data\\datasets\\40_wajo_jan_apr_2024\\sentinel-1\\PROCESSED\\S1A_IW_GRDH_1SDV_20240118T101831_20_calibrated_VV_lee.tif",
+      "paths": [
+        "data\\datasets\\40_wajo_jan_apr_2024\\sentinel-1\\PROCESSED\\S1A_IW_GRDH_1SDV_20240118T101831_20_calibrated_VV_lee.tif"
+      ],
+      "date": "2024-01-18",
+      "tier": "COG",
+      "processing_level": "PROCESSED",
+      "valid_fraction": 0.9996979444880668
+    },
+    "sentinel1/VH": {
+      "path": "data\\datasets\\40_wajo_jan_apr_2024\\sentinel-1\\PROCESSED\\S1A_IW_GRDH_1SDV_20240118T101831_20_calibrated_VH_lee.tif",
+      "paths": [
+        "data\\datasets\\40_wajo_jan_apr_2024\\sentinel-1\\PROCESSED\\S1A_IW_GRDH_1SDV_20240118T101831_20_calibrated_VH_lee.tif"
+      ],
+      "date": "2024-01-18",
+      "tier": "COG",
+      "processing_level": "PROCESSED",
+      "valid_fraction": 0.9996979444880668
+    },
+    "modis/FLOOD": {
+      "path": "data\\datasets\\40_wajo_jan_apr_2024\\modis\\PROCESSED\\modis_20240118_flood.tif",
+      "date": "2024-01-18",
+      "day_offset": 0,
+      "tier": "COG",
+      "processing_level": "PROCESSED",
+      "valid_fraction": 0.045023908396303366,
+      "source_tags": {
+        "band_2": "FLOOD_SOURCE: 1=Flood_2Day_250m, 2=FloodCS_1Day_250m, 255=tanpa data",
+        "flood_composite": "Flood_2Day_250m",
+        "flood_fill": "FloodCS_1Day_250m",
+        "fraction_from_1day_cs": "0.0451",
+        "fraction_from_2day": "0.0000",
+        "observation_date": "2024-01-18",
+        "source_granules": "MCDWD_L3.A2024018.h29v09.061.2025279233953.hdf,MCDWD_L3.A2024018.h30v09.061.2025280070138.hdf",
+        "source_product": "MCDWD_L3",
+        "valid_fraction": "0.0451"
+      }
+    },
+    "modis/FLOOD_SOURCE": {
+      "path": "data\\datasets\\40_wajo_jan_apr_2024\\modis\\PROCESSED\\modis_20240118_flood.tif",
+      "date": "2024-01-18",
+      "day_offset": 0,
+      "tier": "COG",
+      "processing_level": "PROCESSED",
+      "valid_fraction": 0.045023908396303366,
+      "source_tags": {
+        "band_2": "FLOOD_SOURCE: 1=Flood_2Day_250m, 2=FloodCS_1Day_250m, 255=tanpa data",
+        "flood_composite": "Flood_2Day_250m",
+        "flood_fill": "FloodCS_1Day_250m",
+        "fraction_from_1day_cs": "0.0451",
+        "fraction_from_2day": "0.0000",
+        "observation_date": "2024-01-18",
+        "source_granules": "MCDWD_L3.A2024018.h29v09.061.2025279233953.hdf,MCDWD_L3.A2024018.h30v09.061.2025280070138.hdf",
+        "source_product": "MCDWD_L3",
+        "valid_fraction": "0.0451"
+      }
+    },
+    "modis/NDVI": {
+      "path": "data\\datasets\\40_wajo_jan_apr_2024\\modis\\PROCESSED\\modis_20240118_ndvi.tif",
+      "date": "2024-01-18",
+      "day_offset": 0,
+      "tier": "COG",
+      "processing_level": "PROCESSED",
+      "valid_fraction": 0.747640757369183,
+      "source_tags": {
+        "age_days_median": "20.0",
+        "band_2": "AGE_DAYS: umur observasi (hari) terhadap tanggal fitur",
+        "composite_rule": "observasi cerah terbaru <= 2024-01-18, maksimal 32 hari",
+        "lookback_days": "32",
+        "periods_used": "2024-01-17,2024-01-09,2024-01-01,2023-12-27,2023-12-19,2023-12-11",
+        "source_granules": "MOD09A1.A2023345.h29v09.061.2023354053556.hdf,MOD09A1.A2023345.h30v09.061.2023354053420.hdf,MOD09A1.A2023353.h29v09.061.2023365113630.hdf,MOD09A1.A2023353.h30v09.061.2023365113345.hdf,MOD09A1.A2023361.h29v09.061.2024005190413.hdf,MOD09A1.A2023361.h30v09.061.2024005181159.hdf,MOD09A1.A2024001.h29v09.061.2024011195418.hdf,MOD09A1.A2024001.h30v09.061.2024011194643.hdf,MOD09A1.A2024009.h29v09.061.2024022173634.hdf,MOD09A1.A2024009.h30v09.061.2024022174607.hdf,MOD09A1.A2024017.h29v09.061.2024027224152.hdf,MOD09A1.A2024017.h30v09.061.2024027224422.hdf",
+        "source_product": "MOD09A1",
+        "valid_fraction": "0.7362"
+      }
+    },
+    "modis/NDVI_AGE_DAYS": {
+      "path": "data\\datasets\\40_wajo_jan_apr_2024\\modis\\PROCESSED\\modis_20240118_ndvi.tif",
+      "date": "2024-01-18",
+      "day_offset": 0,
+      "tier": "COG",
+      "processing_level": "PROCESSED",
+      "valid_fraction": 0.747640757369183,
+      "source_tags": {
+        "age_days_median": "20.0",
+        "band_2": "AGE_DAYS: umur observasi (hari) terhadap tanggal fitur",
+        "composite_rule": "observasi cerah terbaru <= 2024-01-18, maksimal 32 hari",
+        "lookback_days": "32",
+        "periods_used": "2024-01-17,2024-01-09,2024-01-01,2023-12-27,2023-12-19,2023-12-11",
+        "source_granules": "MOD09A1.A2023345.h29v09.061.2023354053556.hdf,MOD09A1.A2023345.h30v09.061.2023354053420.hdf,MOD09A1.A2023353.h29v09.061.2023365113630.hdf,MOD09A1.A2023353.h30v09.061.2023365113345.hdf,MOD09A1.A2023361.h29v09.061.2024005190413.hdf,MOD09A1.A2023361.h30v09.061.2024005181159.hdf,MOD09A1.A2024001.h29v09.061.2024011195418.hdf,MOD09A1.A2024001.h30v09.061.2024011194643.hdf,MOD09A1.A2024009.h29v09.061.2024022173634.hdf,MOD09A1.A2024009.h30v09.061.2024022174607.hdf,MOD09A1.A2024017.h29v09.061.2024027224152.hdf,MOD09A1.A2024017.h30v09.061.2024027224422.hdf",
+        "source_product": "MOD09A1",
+        "valid_fraction": "0.7362"
+      }
+    },
+    "modis/NDWI": {
+      "path": "data\\datasets\\40_wajo_jan_apr_2024\\modis\\PROCESSED\\modis_20240118_ndwi.tif",
+      "date": "2024-01-18",
+      "day_offset": 0,
+      "tier": "COG",
+      "processing_level": "PROCESSED",
+      "valid_fraction": 0.7744089545170272,
+      "source_tags": {
+        "age_days_median": "20.0",
+        "band_2": "AGE_DAYS: umur observasi (hari) terhadap tanggal fitur",
+        "composite_rule": "observasi cerah terbaru <= 2024-01-18, maksimal 32 hari",
+        "lookback_days": "32",
+        "periods_used": "2024-01-17,2024-01-09,2024-01-01,2023-12-27,2023-12-19,2023-12-11",
+        "source_granules": "MOD09A1.A2023345.h29v09.061.2023354053556.hdf,MOD09A1.A2023345.h30v09.061.2023354053420.hdf,MOD09A1.A2023353.h29v09.061.2023365113630.hdf,MOD09A1.A2023353.h30v09.061.2023365113345.hdf,MOD09A1.A2023361.h29v09.061.2024005190413.hdf,MOD09A1.A2023361.h30v09.061.2024005181159.hdf,MOD09A1.A2024001.h29v09.061.2024011195418.hdf,MOD09A1.A2024001.h30v09.061.2024011194643.hdf,MOD09A1.A2024009.h29v09.061.2024022173634.hdf,MOD09A1.A2024009.h30v09.061.2024022174607.hdf,MOD09A1.A2024017.h29v09.061.2024027224152.hdf,MOD09A1.A2024017.h30v09.061.2024027224422.hdf",
+        "source_product": "MOD09A1",
+        "valid_fraction": "0.7625"
+      }
+    },
+    "modis/NDWI_AGE_DAYS": {
+      "path": "data\\datasets\\40_wajo_jan_apr_2024\\modis\\PROCESSED\\modis_20240118_ndwi.tif",
+      "date": "2024-01-18",
+      "day_offset": 0,
+      "tier": "COG",
+      "processing_level": "PROCESSED",
+      "valid_fraction": 0.7744089545170272,
+      "source_tags": {
+        "age_days_median": "20.0",
+        "band_2": "AGE_DAYS: umur observasi (hari) terhadap tanggal fitur",
+        "composite_rule": "observasi cerah terbaru <= 2024-01-18, maksimal 32 hari",
+        "lookback_days": "32",
+        "periods_used": "2024-01-17,2024-01-09,2024-01-01,2023-12-27,2023-12-19,2023-12-11",
+        "source_granules": "MOD09A1.A2023345.h29v09.061.2023354053556.hdf,MOD09A1.A2023345.h30v09.061.2023354053420.hdf,MOD09A1.A2023353.h29v09.061.2023365113630.hdf,MOD09A1.A2023353.h30v09.061.2023365113345.hdf,MOD09A1.A2023361.h29v09.061.2024005190413.hdf,MOD09A1.A2023361.h30v09.061.2024005181159.hdf,MOD09A1.A2024001.h29v09.061.2024011195418.hdf,MOD09A1.A2024001.h30v09.061.2024011194643.hdf,MOD09A1.A2024009.h29v09.061.2024022173634.hdf,MOD09A1.A2024009.h30v09.061.2024022174607.hdf,MOD09A1.A2024017.h29v09.061.2024027224152.hdf,MOD09A1.A2024017.h30v09.061.2024027224422.hdf",
+        "source_product": "MOD09A1",
+        "valid_fraction": "0.7625"
+      }
+    },
+    "gpm/rainfall_24h": {
+      "path": "data\\datasets\\40_wajo_jan_apr_2024\\gpm-imerg\\PROCESSED\\gpm_rain_24h_20240118.tif",
+      "date": "2024-01-18",
+      "day_offset": 0,
+      "tier": "COG",
+      "processing_level": "PROCESSED",
+      "valid_fraction": 1.0,
+      "source_tags": {
+        "imerg_runs": "F",
+        "source_product": "GPM_3IMERGD",
+        "units": "mm",
+        "window": "24h",
+        "window_days": "1",
+        "window_end_utc": "2024-01-19T00:00:00Z",
+        "window_start_utc": "2024-01-18T00:00:00Z"
+      },
+      "hours_after_s1_acquisition": 13.69
+    },
+    "gpm/rainfall_72h": {
+      "path": "data\\datasets\\40_wajo_jan_apr_2024\\gpm-imerg\\PROCESSED\\gpm_rain_72h_20240118.tif",
+      "date": "2024-01-18",
+      "day_offset": 0,
+      "tier": "COG",
+      "processing_level": "PROCESSED",
+      "valid_fraction": 1.0,
+      "source_tags": {
+        "imerg_runs": "F",
+        "source_product": "GPM_3IMERGD",
+        "units": "mm",
+        "window": "72h",
+        "window_days": "3",
+        "window_end_utc": "2024-01-19T00:00:00Z",
+        "window_start_utc": "2024-01-16T00:00:00Z"
+      },
+      "hours_after_s1_acquisition": 13.69
+    },
+    "gpm/rainfall_7d": {
+      "path": "data\\datasets\\40_wajo_jan_apr_2024\\gpm-imerg\\PROCESSED\\gpm_rain_7d_20240118.tif",
+      "date": "2024-01-18",
+      "day_offset": 0,
+      "tier": "COG",
+      "processing_level": "PROCESSED",
+      "valid_fraction": 1.0,
+      "source_tags": {
+        "imerg_runs": "F",
+        "source_product": "GPM_3IMERGD",
+        "units": "mm",
+        "window": "7d",
+        "window_days": "7",
+        "window_end_utc": "2024-01-19T00:00:00Z",
+        "window_start_utc": "2024-01-12T00:00:00Z"
+      },
+      "hours_after_s1_acquisition": 13.69
+    }
+  },
+  "layer_coverage": {
+    "sentinel1/VV": 0.9997,
+    "sentinel1/VH": 0.9997,
+    "modis/FLOOD": 0.045,
+    "modis/FLOOD_SOURCE": 0.045,
+    "modis/NDVI": 0.7476,
+    "modis/NDVI_AGE_DAYS": 0.7476,
+    "modis/NDWI": 0.7744,
+    "modis/NDWI_AGE_DAYS": 0.7744,
+    "gpm/rainfall_24h": 1.0,
+    "gpm/rainfall_72h": 1.0,
+    "gpm/rainfall_7d": 1.0
+  },
+  "source_scenes": {
+    "s1_scene_id": 2472
+  },
+  "days_since_s1": 0,
+  "temporal_offsets": {
+    "modis": 0,
+    "gpm": 0
+  },
+  "file_name": "fusion_20240118_hybrid_processed.h5",
+  "file_size_mb": 376.244,
+  "checksum_sha256": "af7fc9f83fdbe46f9a726b257a5ac3fe94dd7eee0640602419c208a7b326560e"
+}

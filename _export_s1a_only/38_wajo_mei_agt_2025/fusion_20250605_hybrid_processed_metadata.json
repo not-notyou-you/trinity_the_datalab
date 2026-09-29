@@ -1,0 +1,253 @@
+{
+  "fusion_id": 282,
+  "dataset_id": 38,
+  "region_id": 30,
+  "feature_date": "2025-06-05",
+  "acquisition_datetime": "2025-06-05T17:18:23.918185+07:00",
+  "processing_datetime": "2026-09-24T17:40:56.674250+00:00",
+  "aoi_bbox": [
+    119.8838224,
+    -4.2865042,
+    120.4412323,
+    -3.6444397
+  ],
+  "shape": {
+    "height": 7123,
+    "width": 6184
+  },
+  "processing_level": "PROCESSED",
+  "source_levels": {
+    "SENTINEL1": "PROCESSED",
+    "MODIS": "PROCESSED",
+    "GPM": "PROCESSED"
+  },
+  "source_tiers": {
+    "SENTINEL1": "COG",
+    "MODIS": "COG",
+    "GPM": "COG"
+  },
+  "fusion_strategy": "HYBRID",
+  "layers": [
+    "sentinel1/VV",
+    "sentinel1/VH",
+    "modis/FLOOD",
+    "modis/FLOOD_SOURCE",
+    "modis/NDVI",
+    "modis/NDVI_AGE_DAYS",
+    "modis/NDWI",
+    "modis/NDWI_AGE_DAYS",
+    "gpm/rainfall_24h",
+    "gpm/rainfall_72h",
+    "gpm/rainfall_7d"
+  ],
+  "layer_sources": {
+    "sentinel1/VV": {
+      "path": "data\\datasets\\38_wajo_mei_agt_2025\\sentinel-1\\PROCESSED\\S1A_IW_GRDH_1SDV_20250605T101823_20_calibrated_VV_lee.tif",
+      "paths": [
+        "data\\datasets\\38_wajo_mei_agt_2025\\sentinel-1\\PROCESSED\\S1A_IW_GRDH_1SDV_20250605T101823_20_calibrated_VV_lee.tif"
+      ],
+      "date": "2025-06-05",
+      "tier": "COG",
+      "processing_level": "PROCESSED",
+      "valid_fraction": 1.0
+    },
+    "sentinel1/VH": {
+      "path": "data\\datasets\\38_wajo_mei_agt_2025\\sentinel-1\\PROCESSED\\S1A_IW_GRDH_1SDV_20250605T101823_20_calibrated_VH_lee.tif",
+      "paths": [
+        "data\\datasets\\38_wajo_mei_agt_2025\\sentinel-1\\PROCESSED\\S1A_IW_GRDH_1SDV_20250605T101823_20_calibrated_VH_lee.tif"
+      ],
+      "date": "2025-06-05",
+      "tier": "COG",
+      "processing_level": "PROCESSED",
+      "valid_fraction": 1.0
+    },
+    "modis/FLOOD": {
+      "path": "data\\datasets\\38_wajo_mei_agt_2025\\modis\\PROCESSED\\modis_20250605_flood.tif",
+      "date": "2025-06-05",
+      "day_offset": 0,
+      "tier": "COG",
+      "processing_level": "PROCESSED",
+      "valid_fraction": 0.663835462585989,
+      "source_tags": {
+        "band_2": "FLOOD_SOURCE: 1=Flood_2Day_250m, 2=FloodCS_1Day_250m, 255=tanpa data",
+        "flood_composite": "Flood_2Day_250m",
+        "flood_fill": "FloodCS_1Day_250m",
+        "fraction_from_1day_cs": "0.1044",
+        "fraction_from_2day": "0.5593",
+        "observation_date": "2025-06-05",
+        "source_granules": "MCDWD_L3.A2025156.h29v09.061.2025345173026.hdf,MCDWD_L3.A2025156.h30v09.061.2025345173304.hdf",
+        "source_product": "MCDWD_L3",
+        "valid_fraction": "0.6637"
+      }
+    },
+    "modis/FLOOD_SOURCE": {
+      "path": "data\\datasets\\38_wajo_mei_agt_2025\\modis\\PROCESSED\\modis_20250605_flood.tif",
+      "date": "2025-06-05",
+      "day_offset": 0,
+      "tier": "COG",
+      "processing_level": "PROCESSED",
+      "valid_fraction": 0.663835462585989,
+      "source_tags": {
+        "band_2": "FLOOD_SOURCE: 1=Flood_2Day_250m, 2=FloodCS_1Day_250m, 255=tanpa data",
+        "flood_composite": "Flood_2Day_250m",
+        "flood_fill": "FloodCS_1Day_250m",
+        "fraction_from_1day_cs": "0.1044",
+        "fraction_from_2day": "0.5593",
+        "observation_date": "2025-06-05",
+        "source_granules": "MCDWD_L3.A2025156.h29v09.061.2025345173026.hdf,MCDWD_L3.A2025156.h30v09.061.2025345173304.hdf",
+        "source_product": "MCDWD_L3",
+        "valid_fraction": "0.6637"
+      }
+    },
+    "modis/NDVI": {
+      "path": "data\\datasets\\38_wajo_mei_agt_2025\\modis\\PROCESSED\\modis_20250605_ndvi.tif",
+      "date": "2025-06-05",
+      "day_offset": 0,
+      "tier": "COG",
+      "processing_level": "PROCESSED",
+      "valid_fraction": 0.6196661226618797,
+      "source_tags": {
+        "age_days_median": "10.0",
+        "band_2": "AGE_DAYS: umur observasi (hari) terhadap tanggal fitur",
+        "composite_rule": "observasi cerah terbaru <= 2025-06-05, maksimal 32 hari",
+        "lookback_days": "32",
+        "periods_used": "2025-06-02,2025-05-25,2025-05-17,2025-05-09,2025-05-01",
+        "source_granules": "MOD09A1.A2025121.h29v09.061.2025133154730.hdf,MOD09A1.A2025121.h30v09.061.2025133154353.hdf,MOD09A1.A2025129.h29v09.061.2025140153819.hdf,MOD09A1.A2025129.h30v09.061.2025140153804.hdf,MOD09A1.A2025137.h29v09.061.2025148122937.hdf,MOD09A1.A2025137.h30v09.061.2025148123407.hdf,MOD09A1.A2025145.h29v09.061.2025154052257.hdf,MOD09A1.A2025145.h30v09.061.2025154053848.hdf,MOD09A1.A2025153.h29v09.061.2025218194431.hdf,MOD09A1.A2025153.h30v09.061.2025218194813.hdf",
+        "source_product": "MOD09A1",
+        "valid_fraction": "0.6114"
+      }
+    },
+    "modis/NDVI_AGE_DAYS": {
+      "path": "data\\datasets\\38_wajo_mei_agt_2025\\modis\\PROCESSED\\modis_20250605_ndvi.tif",
+      "date": "2025-06-05",
+      "day_offset": 0,
+      "tier": "COG",
+      "processing_level": "PROCESSED",
+      "valid_fraction": 0.6196661226618797,
+      "source_tags": {
+        "age_days_median": "10.0",
+        "band_2": "AGE_DAYS: umur observasi (hari) terhadap tanggal fitur",
+        "composite_rule": "observasi cerah terbaru <= 2025-06-05, maksimal 32 hari",
+        "lookback_days": "32",
+        "periods_used": "2025-06-02,2025-05-25,2025-05-17,2025-05-09,2025-05-01",
+        "source_granules": "MOD09A1.A2025121.h29v09.061.2025133154730.hdf,MOD09A1.A2025121.h30v09.061.2025133154353.hdf,MOD09A1.A2025129.h29v09.061.2025140153819.hdf,MOD09A1.A2025129.h30v09.061.2025140153804.hdf,MOD09A1.A2025137.h29v09.061.2025148122937.hdf,MOD09A1.A2025137.h30v09.061.2025148123407.hdf,MOD09A1.A2025145.h29v09.061.2025154052257.hdf,MOD09A1.A2025145.h30v09.061.2025154053848.hdf,MOD09A1.A2025153.h29v09.061.2025218194431.hdf,MOD09A1.A2025153.h30v09.061.2025218194813.hdf",
+        "source_product": "MOD09A1",
+        "valid_fraction": "0.6114"
+      }
+    },
+    "modis/NDWI": {
+      "path": "data\\datasets\\38_wajo_mei_agt_2025\\modis\\PROCESSED\\modis_20250605_ndwi.tif",
+      "date": "2025-06-05",
+      "day_offset": 0,
+      "tier": "COG",
+      "processing_level": "PROCESSED",
+      "valid_fraction": 0.5067034998952975,
+      "source_tags": {
+        "age_days_median": "10.0",
+        "band_2": "AGE_DAYS: umur observasi (hari) terhadap tanggal fitur",
+        "composite_rule": "observasi cerah terbaru <= 2025-06-05, maksimal 32 hari",
+        "lookback_days": "32",
+        "periods_used": "2025-06-02,2025-05-25,2025-05-17,2025-05-01",
+        "source_granules": "MOD09A1.A2025121.h29v09.061.2025133154730.hdf,MOD09A1.A2025121.h30v09.061.2025133154353.hdf,MOD09A1.A2025137.h29v09.061.2025148122937.hdf,MOD09A1.A2025137.h30v09.061.2025148123407.hdf,MOD09A1.A2025145.h29v09.061.2025154052257.hdf,MOD09A1.A2025145.h30v09.061.2025154053848.hdf,MOD09A1.A2025153.h29v09.061.2025218194431.hdf,MOD09A1.A2025153.h30v09.061.2025218194813.hdf",
+        "source_product": "MOD09A1",
+        "valid_fraction": "0.5001"
+      }
+    },
+    "modis/NDWI_AGE_DAYS": {
+      "path": "data\\datasets\\38_wajo_mei_agt_2025\\modis\\PROCESSED\\modis_20250605_ndwi.tif",
+      "date": "2025-06-05",
+      "day_offset": 0,
+      "tier": "COG",
+      "processing_level": "PROCESSED",
+      "valid_fraction": 0.5067034998952975,
+      "source_tags": {
+        "age_days_median": "10.0",
+        "band_2": "AGE_DAYS: umur observasi (hari) terhadap tanggal fitur",
+        "composite_rule": "observasi cerah terbaru <= 2025-06-05, maksimal 32 hari",
+        "lookback_days": "32",
+        "periods_used": "2025-06-02,2025-05-25,2025-05-17,2025-05-01",
+        "source_granules": "MOD09A1.A2025121.h29v09.061.2025133154730.hdf,MOD09A1.A2025121.h30v09.061.2025133154353.hdf,MOD09A1.A2025137.h29v09.061.2025148122937.hdf,MOD09A1.A2025137.h30v09.061.2025148123407.hdf,MOD09A1.A2025145.h29v09.061.2025154052257.hdf,MOD09A1.A2025145.h30v09.061.2025154053848.hdf,MOD09A1.A2025153.h29v09.061.2025218194431.hdf,MOD09A1.A2025153.h30v09.061.2025218194813.hdf",
+        "source_product": "MOD09A1",
+        "valid_fraction": "0.5001"
+      }
+    },
+    "gpm/rainfall_24h": {
+      "path": "data\\datasets\\38_wajo_mei_agt_2025\\gpm-imerg\\PROCESSED\\gpm_rain_24h_20250605.tif",
+      "date": "2025-06-05",
+      "day_offset": 0,
+      "tier": "COG",
+      "processing_level": "PROCESSED",
+      "valid_fraction": 1.0,
+      "source_tags": {
+        "imerg_runs": "F",
+        "source_product": "GPM_3IMERGD",
+        "units": "mm",
+        "window": "24h",
+        "window_days": "1",
+        "window_end_utc": "2025-06-06T00:00:00Z",
+        "window_start_utc": "2025-06-05T00:00:00Z"
+      },
+      "hours_after_s1_acquisition": 13.69
+    },
+    "gpm/rainfall_72h": {
+      "path": "data\\datasets\\38_wajo_mei_agt_2025\\gpm-imerg\\PROCESSED\\gpm_rain_72h_20250605.tif",
+      "date": "2025-06-05",
+      "day_offset": 0,
+      "tier": "COG",
+      "processing_level": "PROCESSED",
+      "valid_fraction": 1.0,
+      "source_tags": {
+        "imerg_runs": "F",
+        "source_product": "GPM_3IMERGD",
+        "units": "mm",
+        "window": "72h",
+        "window_days": "3",
+        "window_end_utc": "2025-06-06T00:00:00Z",
+        "window_start_utc": "2025-06-03T00:00:00Z"
+      },
+      "hours_after_s1_acquisition": 13.69
+    },
+    "gpm/rainfall_7d": {
+      "path": "data\\datasets\\38_wajo_mei_agt_2025\\gpm-imerg\\PROCESSED\\gpm_rain_7d_20250605.tif",
+      "date": "2025-06-05",
+      "day_offset": 0,
+      "tier": "COG",
+      "processing_level": "PROCESSED",
+      "valid_fraction": 1.0,
+      "source_tags": {
+        "imerg_runs": "F",
+        "source_product": "GPM_3IMERGD",
+        "units": "mm",
+        "window": "7d",
+        "window_days": "7",
+        "window_end_utc": "2025-06-06T00:00:00Z",
+        "window_start_utc": "2025-05-30T00:00:00Z"
+      },
+      "hours_after_s1_acquisition": 13.69
+    }
+  },
+  "layer_coverage": {
+    "sentinel1/VV": 1.0,
+    "sentinel1/VH": 1.0,
+    "modis/FLOOD": 0.6638,
+    "modis/FLOOD_SOURCE": 0.6638,
+    "modis/NDVI": 0.6197,
+    "modis/NDVI_AGE_DAYS": 0.6197,
+    "modis/NDWI": 0.5067,
+    "modis/NDWI_AGE_DAYS": 0.5067,
+    "gpm/rainfall_24h": 1.0,
+    "gpm/rainfall_72h": 1.0,
+    "gpm/rainfall_7d": 1.0
+  },
+  "source_scenes": {
+    "s1_scene_id": 1849
+  },
+  "days_since_s1": 0,
+  "temporal_offsets": {
+    "modis": 0,
+    "gpm": 0
+  },
+  "file_name": "fusion_20250605_hybrid_processed.h5",
+  "file_size_mb": 347.259,
+  "checksum_sha256": "6dc601a46137d6a560dc47c8ed5ea485cdfb951156833319e87f24b659b6683d"
+}
