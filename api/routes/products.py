@@ -63,7 +63,7 @@ def _product_to_schema(p: DataProduct) -> ProductItem:
     description=(
         "List output products with optional filters for tier, source, band, "
         "scene and validity. Combine tier + source to get one sensor's "
-        "products at one stage, e.g. ?tier=COG&source=MODIS. Nama tier lama tetap diterima dan menjaring artefak yang sama."
+        "products at one stage, e.g. ?tier=COG&source=MODIS. Old tier names are still accepted and filter the same artefacts."
     ),
 )
 async def list_products(

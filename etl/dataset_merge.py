@@ -318,7 +318,7 @@ def check_mergeable(stacks: list[StackInfo]) -> MergeCandidate:
     cand = MergeCandidate(date_key=date_key, stacks=list(stacks))
 
     if len(stacks) < 2:
-        cand.blocked_reason = "Perlu minimal dua stack untuk digabung."
+        cand.blocked_reason = "At least two stacks are needed to merge."
         return cand
 
     base = stacks[0]
@@ -327,15 +327,15 @@ def check_mergeable(stacks: list[StackInfo]) -> MergeCandidate:
     for s in stacks[1:]:
         if not base_sig.compatible_with(s.signature()):
             cand.blocked_reason = (
-                f"Grid {s.dataset_name} tidak sejajar dengan {base.dataset_name}. "
-                "Penggabungan dibatalkan karena akan butuh resample, dan resample "
-                "mengubah nilai backscatter."
+                f"The grid of {s.dataset_name} is not aligned with {base.dataset_name}. "
+                "Merging was cancelled because it would need to resample, and resampling "
+                "changes backscatter values."
             )
             return cand
         if s.layers != base.layers:
             missing = set(base.layers) ^ set(s.layers)
             cand.blocked_reason = (
-                f"Himpunan lapisan berbeda antara {base.dataset_name} dan "
+                f"Different sets of layers between {base.dataset_name} and "
                 f"{s.dataset_name}: {', '.join(sorted(missing))}."
             )
             return cand
@@ -343,10 +343,10 @@ def check_mergeable(stacks: list[StackInfo]) -> MergeCandidate:
     strategies = {s.fusion_strategy for s in stacks}
     if len(strategies) > 1:
         cand.blocked_reason = (
-            "Strategi fusion berbeda antar-stack: "
+            "Different fusion strategies between stacks: "
             + ", ".join(sorted(str(x) for x in strategies))
-            + ". Menggabungkannya akan menghasilkan satu berkas yang separuhnya "
-            "dihitung dengan aturan berbeda."
+            + ". Merging them would produce a single file that is half "
+            "computed with different rules."
         )
         return cand
 
@@ -355,8 +355,8 @@ def check_mergeable(stacks: list[StackInfo]) -> MergeCandidate:
 
     if _overlap_pairs(stacks):
         cand.warnings.append(
-            "Ada strip yang saling tumpang tindih; di daerah itu yang dipakai "
-            "adalah stack dengan piksel valid terbanyak."
+            "Some strips overlap; in the overlap the stack with the most "
+            "valid pixels is used."
         )
     return cand
 
@@ -385,8 +385,8 @@ def _offset_of(stack: StackInfo, origin: tuple[float, float]) -> tuple[int, int]
     for name, v in (("kolom", col), ("baris", row)):
         if abs(v - round(v)) > ALIGN_TOL_PX:
             raise GridMismatch(
-                f"{stack.dataset_name}: offset {name} {v:.4f} piksel bukan "
-                "bilangan bulat, grid tidak sejajar."
+                f"{stack.dataset_name}: offset {name} {v:.4f} pixels is not "
+                "a whole number, so the grid is not aligned."
             )
     return int(round(row)), int(round(col))
 
@@ -612,9 +612,9 @@ def write_previews(
         "kind": "merged",
         "date": date_key,
         "note": (
-            "Preview berkas gabungan. Disubsampel (bukan dirata-rata) ke sisi "
-            "terpanjang maksimum "
-            f"{PREVIEW_MAX_SIDE} px; untuk analisis pakai HDF5-nya."
+            "Preview of the merged file. Subsampled (not averaged) to a maximum "
+            "longest side of "
+            f"{PREVIEW_MAX_SIDE} px; use the HDF5 for analysis."
         ),
         "images": entries,
     })

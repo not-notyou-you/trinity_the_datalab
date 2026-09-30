@@ -327,3 +327,99 @@ def test_recover_interrupted_jobs_skips_finished_jobs(db_client, sample_dataset,
     mgr = DatasetManager(db_client)
     monkeypatch.setattr(mgr, "_spawn_job_runner", spawned.append)
     assert done_id not in mgr.recover_interrupted_jobs()
+
+
+# --- koneksi putus / 401 / circuit breaker (dataset 54, 2026-09-30) ---------
+
+@pytest.fixture
+def _reset_breaker():
+    import etl.download_guard as dg
+    dg._breaker_failures.clear()
+    dg._breaker_open_until.clear()
+    yield
+    dg._breaker_failures.clear()
+    dg._breaker_open_until.clear()
+
+
+def test_download_scene_401_refresh_does_not_consume_retry_budget(tmp_path, monkeypatch, _reset_breaker):
+    """Koneksi putus sampai attempt terakhir, lalu 401: token baru harus
+    tetap dipakai untuk satu request lagi, bukan langsung gagal."""
+    import requests
+
+    import etl.module1_download as m1
+
+    pid = "S1A_IW_GRDH_TEST_401.SAFE"
+    out_dir = tmp_path / "22_f" / "_work" / pid / "raw" / "sentinel1"
+    out_dir.mkdir(parents=True)
+
+    monkeypatch.setenv("COPERNICUS_USER", "u")
+    monkeypatch.setenv("COPERNICUS_PASSWORD", "p")
+    monkeypatch.setattr(m1, "_get_cdse_token", lambda *a: "tok")
+    monkeypatch.setattr(m1, "_extract_bands", lambda z, o: (o / "vv.tif", o / "vh.tif"))
+    monkeypatch.setattr(m1.time, "sleep", lambda s: None)
+    monkeypatch.setattr(m1.dg, "BREAKER_THRESHOLD", 99)
+
+    calls = []
+
+    def fake_get(self, url, **kwargs):
+        calls.append(url)
+        n = len(calls)
+        if n < m1_max(m1):
+            raise requests.exceptions.ConnectionError("SSL EOF")
+        if n == m1_max(m1):
+            return _FakeCdseResponse(401)
+        return _FakeCdseResponse(200, body=b"zipbytes")
+
+    monkeypatch.setattr(requests.Session, "get", fake_get)
+
+    result = m1.download_scene(
+        {"product_identifier": pid, "download_url": "https://catalogue.dataspace.copernicus.eu/x",
+         "acquisition_datetime": datetime(2025, 1, 11, tzinfo=timezone.utc)},
+        output_dir=str(out_dir), keep_raw=True,
+    )
+    assert result.zip_path.endswith(".zip")
+    assert len(calls) == m1_max(m1) + 1
+
+
+def m1_max(m1):
+    # MAX_RETRIES lokal di download_scene; nilainya dijaga lewat tes ini.
+    return 6
+
+
+def test_connection_retry_delay_outlasts_short_outage():
+    import etl.download_guard as dg
+
+    total = sum(dg.connection_retry_delay(a) for a in range(1, 6))
+    assert total >= 150
+    assert all(dg.connection_retry_delay(a) <= dg.CONNECTION_RETRY_MAX_S + 2 for a in range(1, 20))
+
+
+def test_breaker_opens_when_several_workers_lose_connection(_reset_breaker):
+    import threading
+
+    import etl.download_guard as dg
+
+    assert dg.record_connection_failure("CDSE") is False
+    assert dg.breaker_remaining("CDSE") == 0
+    # Satu worker gagal berulang tidak membuka breaker.
+    assert dg.record_connection_failure("CDSE") is False
+
+    opened = []
+    t = threading.Thread(target=lambda: opened.append(dg.record_connection_failure("CDSE")))
+    t.start()
+    t.join()
+    assert opened == [True]
+    assert dg.breaker_remaining("CDSE") > 0
+    assert dg.breaker_remaining("LAADS") == 0
+
+
+def test_wait_for_breaker_is_cancellable(_reset_breaker):
+    import threading
+
+    import etl.download_guard as dg
+
+    dg._breaker_open_until["CDSE"] = dg.time.monotonic() + 60
+    ev = threading.Event()
+    ev.set()
+    with pytest.raises(dg.DownloadCancelled):
+        dg.wait_for_breaker("CDSE", ev)

@@ -359,14 +359,14 @@ def _find_aux_daily_file(
 # "linear": stack menyimpan sigma0 apa adanya (bukan dB), dan konsumen yang
 # mengira dB akan menormalisasi nilai 0,002..7000 dengan cara yang keliru.
 LAYER_UNITS: dict[str, str] = {
-    "sentinel1/VV": "sigma0 linear (bukan dB)",
-    "sentinel1/VH": "sigma0 linear (bukan dB)",
-    "modis/FLOOD": "kelas MCDWD: 0 tanpa air, 1 air permanen, 2 banjir berulang, 3 banjir, 255 data tidak cukup",
+    "sentinel1/VV": "linear sigma0 (not dB)",
+    "sentinel1/VH": "linear sigma0 (not dB)",
+    "modis/FLOOD": "MCDWD class: 0 no water, 1 permanent water, 2 recurrent flood, 3 flood, 255 insufficient data",
     "modis/NDVI": "indeks tanpa satuan [-1, 1]",
     "modis/NDWI": "indeks tanpa satuan [-1, 1]",
-    "modis/FLOOD_SOURCE": "asal piksel FLOOD: 1 komposit 2 hari, 2 komposit 1 hari CS (pengisi celah), 255 tanpa data",
-    "modis/NDVI_AGE_DAYS": "hari (umur observasi NDVI terhadap tanggal fitur)",
-    "modis/NDWI_AGE_DAYS": "hari (umur observasi NDWI terhadap tanggal fitur)",
+    "modis/FLOOD_SOURCE": "origin of FLOOD pixel: 1 2-day composite, 2 1-day CS composite (gap filler), 255 no data",
+    "modis/NDVI_AGE_DAYS": "days (age of the NDVI observation relative to the feature date)",
+    "modis/NDWI_AGE_DAYS": "days (age of the NDWI observation relative to the feature date)",
     "gpm/rainfall_daily": "mm",
     "gpm/rainfall_24h": "mm",
     "gpm/rainfall_72h": "mm",
@@ -427,7 +427,7 @@ def _reproject_to_grid(
     with rasterio.open(src_path) as src:
         if band > src.count:
             # Berkas dari versi sebelum band kualitas ditambahkan.
-            raise _MissingBand(f"{src_path.name} cuma punya {src.count} band, butuh band {band}")
+            raise _MissingBand(f"{src_path.name} only has {src.count} band(s), needs band {band}")
         reproject(
             source=rasterio.band(src, band),
             destination=dest,
@@ -1715,8 +1715,8 @@ def _build_fusion_stack_for_level(
         # error daripada menduplikasi alur perakitan untuk kasus tanpa-S1.
         if region_id is None:
             raise RuntimeError(
-                "require_s1=False butuh region_id untuk membuat scene "
-                "placeholder tempat data_products fusi ditempelkan"
+                "require_s1=False needs a region_id to create the placeholder "
+                "scene to which the fusion data_products are attached"
             )
         logger.info(
             "[M9] tanggal=%s tanpa scene S1 (strategi=%s): stack ditulis dengan "
@@ -1960,7 +1960,7 @@ def _build_fusion_stack_for_level(
             "s1_offset_days": s1_offset_days,
             "temporal_offset_modis": offsets[MODIS_PLAN_NAME],
             "temporal_offset_gpm": offsets[GPM_PLAN_NAME],
-            "aux_day_rule": "tanggal fitur, atau sehari sebelumnya; tidak pernah sesudahnya",
+            "aux_day_rule": "the feature date, or the day before; never after",
         },
     )
 
@@ -2236,10 +2236,10 @@ def create_fusion_stack(
         plan = plan or load_processing_plan(db, dataset_id)
         if not plan.is_configured(S1_PLAN_NAME):
             raise RuntimeError(
-                f"FUSION dataset={dataset_id} diminta tanpa SENTINEL1 di "
-                "dataset_source_config. Fusi di pipeline ini di-anchor ke grid "
-                "dan tanggal akuisisi scene S1; tanpa S1 tidak ada grid "
-                "referensi maupun tanggal untuk dipasangkan "
+                f"FUSION dataset={dataset_id} was requested without SENTINEL1 in "
+                "dataset_source_config. Fusion in this pipeline is anchored to the grid "
+                "and acquisition date of the S1 scene; without S1 there is no "
+                "reference grid or date to pair with "
                 "(DOCS/PIPELINE.md)."
             )
 

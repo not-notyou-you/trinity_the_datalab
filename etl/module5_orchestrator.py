@@ -158,7 +158,7 @@ class _JobContext:
         memastikan S1 dikonfigurasi (_process_scene dan pemanggilnya)."""
         plan = self.plan.get(S1_SOURCE_NAME)
         if plan is None:  # pragma: no cover - dijaga run_dataset_job
-            raise RuntimeError("jalur Sentinel-1 dipanggil tanpa konfigurasi S1")
+            raise RuntimeError("the Sentinel-1 path was called without an S1 configuration")
         return plan
     # Set once run_dataset_job enters its dataset_log_file(...) block; worker
     # threads enrol themselves with it so their records reach the .txt file.
@@ -632,7 +632,7 @@ def _run_preview_for_date(
         for level in jc.plan.output_levels():
             with jc.plog.stage(
                 jc.dataset_id, primary.pid, module="MODULE10_PREVIEW", stage="PREVIEW",
-                message=f"Rendering PNG preview level {level} dari tier "
+                message=f"Rendering PNG preview level {level} from tier "
                         f"{preview_tier_for_level(level).upper()}",
                 acquisition_date=date_key, processing_level=level,
                 s1_frames=len(members),
@@ -1598,7 +1598,7 @@ def _ingest_aux_days(
             jc.plog.log_event(
                 jc.dataset_id, date_key, "ORCHESTRATOR", "SCENE_PIPELINE",
                 "COMPLETED" if written else "FAILED",
-                f"Aux {date_key}: {written} berkas ditulis",
+                f"Aux {date_key}: {written} file(s) written",
                 {"date": day.isoformat(), "files_written": written,
                  "aux_complete": aux_complete,
                  "missing_sources": sorted(missing_sources),

@@ -252,9 +252,9 @@ class TestRendering:
         assert entry["range_method"] == "categorical"
         assert {item["value"] for item in entry["legend"]} == {0, 1, 2, 3}
         pct = entry["statistics"]["class_percent"]
-        assert pct["Air permanen (referensi)"] == 50.0
-        assert pct["Banjir (tidak biasa)"] == 25.0
-        assert pct["Tidak ada data"] == 25.0
+        assert pct["Permanent water (reference)"] == 50.0
+        assert pct["Flood (unusual)"] == 25.0
+        assert pct["No data"] == 25.0
 
         rgba = np.array(Image.open(color / png("modis_flood")))
         # 10 px diperbesar kelipatan bulat -> blok nearest, bukan PNG 10 px.

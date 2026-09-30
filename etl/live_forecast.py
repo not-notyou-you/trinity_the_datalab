@@ -3,7 +3,7 @@
 
 Deret sangat pendek (1-12 scene), tanpa training:
 
-    1 titik    persistence (nilai terakhir), pita lebar, label "data belum cukup"
+    1 titik    persistence (nilai terakhir), pita lebar, label "not enough data"
     2-3 titik  simple exponential smoothing (alpha tetap)
     >= 4 titik Holt (level + tren) dengan tren teredam (phi) supaya 4 titik
                tidak diekstrapolasi jadi garis lurus tak terbatas
@@ -39,19 +39,19 @@ DEFAULT_INTERVAL_DAYS = 12
 # dari live_scenes.metrics.
 SERIES: dict[str, dict] = {
     "sentinel1": {
-        "label": "Rata-rata VH", "unit": "dB",
+        "label": "Mean VH", "unit": "dB",
         "path": ("sentinel1", "vh_mean_db"), "bounds": (-40.0, 10.0),
         "fallback_sigma": 1.5, "chart": "line",
     },
     # MODIS: % area air NDWI. LST tidak ada di pipeline (lihat catatan di
     # etl/live_interpret.py); indeks air adalah konfirmasi optik genangan.
     "modis": {
-        "label": "Area air (NDWI > 0)", "unit": "%",
+        "label": "Water area (NDWI > 0)", "unit": "%",
         "path": ("modis", "ndwi", "water_pct"), "bounds": (0.0, 100.0),
         "fallback_sigma": 5.0, "chart": "line",
     },
     "gpm": {
-        "label": "Hujan 72 jam", "unit": "mm",
+        "label": "72-hour rainfall", "unit": "mm",
         "path": ("gpm", "rain_72h", "mean_mm"), "bounds": (0.0, None),
         "fallback_sigma": 25.0, "chart": "bar",
     },
@@ -109,7 +109,7 @@ def forecast_series(points: list[tuple[date, float]], bounds=(None, None),
     pts = [(d, float(v)) for d, v in points if v is not None]
     n = len(pts)
     if n == 0:
-        return {"method": None, "points": [], "note": "tidak ada data"}
+        return {"method": None, "points": [], "note": "no data"}
     y = [v for _, v in pts]
     h = steps if steps else forecast_steps(n)
 
@@ -120,11 +120,11 @@ def forecast_series(points: list[tuple[date, float]], bounds=(None, None),
         interval = DEFAULT_INTERVAL_DAYS
 
     if n == 1:
-        method, note = "persistence", "data belum cukup"
+        method, note = "persistence", "not enough data"
         means = [y[-1]] * h
         sigma = fallback_sigma * 2
     elif n <= 3:
-        method, note = "ses", "data sedikit, pita lebar"
+        method, note = "ses", "little data, wide band"
         preds, level = _ses(y)
         means = [level] * h
         sigma = _rmse(y[1:], preds, fallback_sigma)
@@ -179,7 +179,7 @@ def build_area_forecast(scenes: list[tuple[date, dict]]) -> dict:
     # Garis ambang grafik GPM (4.4) dari tempat ambang yang sama dengan
     # kalimat kondisi.
     result["series"]["gpm"]["thresholds"] = {
-        "waspada": THRESHOLDS["rain_72h_warn_mm"],
-        "tinggi": THRESHOLDS["rain_72h_high_mm"],
+        "alert": THRESHOLDS["rain_72h_warn_mm"],
+        "high": THRESHOLDS["rain_72h_high_mm"],
     }
     return result

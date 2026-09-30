@@ -65,7 +65,7 @@ def _checked_date_key(date_key: str) -> str:
     bentuk masukan yang bisa menunjuk keluar dari folder merged.
     """
     if len(date_key) != 8 or not date_key.isdigit():
-        raise HTTPException(400, "Format tanggal harus YYYYMMDD.")
+        raise HTTPException(400, "Date format must be YYYYMMDD.")
     return date_key
 
 
@@ -93,7 +93,7 @@ def _preview_images(date_key: str) -> list[dict]:
     ]
 
 
-@router.delete("/result/{date_key}", summary="Hapus hasil gabungan satu tanggal")
+@router.delete("/result/{date_key}", summary="Delete the merged result for one date")
 async def delete_merge_result(date_key: str, preview_only: bool = False) -> dict:
     """Hapus berkas gabungan satu tanggal beserta preview-nya.
 
@@ -123,7 +123,7 @@ async def delete_merge_result(date_key: str, preview_only: bool = False) -> dict
         removed.append(out_path.name)
 
     if not removed:
-        raise HTTPException(404, f"Tidak ada hasil gabungan untuk {date_key}.")
+        raise HTTPException(404, f"No merged result for {date_key}.")
 
     logger.info("[MERGE] hapus %s: %s (%d byte)", date_key, ", ".join(removed), freed)
     return {
@@ -135,12 +135,12 @@ async def delete_merge_result(date_key: str, preview_only: bool = False) -> dict
     }
 
 
-@router.get("/preview/{date_key}", summary="Daftar preview satu tanggal gabungan")
+@router.get("/preview/{date_key}", summary="List previews for one merged date")
 async def list_merge_previews(date_key: str) -> dict:
     return {"date": date_key, "images": _preview_images(date_key)}
 
 
-@router.post("/preview/{date_key}/rebuild", summary="Buat preview dari hasil gabungan")
+@router.post("/preview/{date_key}/rebuild", summary="Build previews from the merged result")
 async def rebuild_merge_preview(date_key: str) -> dict:
     """Render ulang PNG dari berkas gabungan yang sudah ada.
 
@@ -150,20 +150,20 @@ async def rebuild_merge_preview(date_key: str) -> dict:
     """
     out_path = _merged_path(date_key)
     if not out_path.exists():
-        raise HTTPException(404, f"{out_path.name} belum ada; gabungkan dulu.")
+        raise HTTPException(404, f"{out_path.name} does not exist yet; merge first.")
 
     try:
         dm.previews_from_merged(out_path)
     except (OSError, ValueError, KeyError) as exc:
         logger.exception("[MERGE] preview %s gagal dirender", date_key)
-        raise HTTPException(500, f"Preview gagal dibuat: {exc}")
+        raise HTTPException(500, f"Preview could not be built: {exc}")
 
     return {"date": date_key, "preview_images": _preview_images(date_key)}
 
 
 @router.get(
     "/preview/{date_key}/{filename}",
-    summary="Satu PNG preview hasil gabungan",
+    summary="A single merged-result preview PNG",
     response_class=FileResponse,
 )
 async def get_merge_preview(date_key: str, filename: str) -> FileResponse:
@@ -178,7 +178,7 @@ async def get_merge_preview(date_key: str, filename: str) -> FileResponse:
         (p for p in preview_dir.glob("*.png") if p.name == filename), None
     ) if preview_dir.is_dir() else None
     if match is None:
-        raise HTTPException(404, f"Preview {filename} tidak ada untuk {date_key}.")
+        raise HTTPException(404, f"Preview {filename} does not exist for {date_key}.")
     return FileResponse(
         match,
         media_type="image/png",
@@ -186,7 +186,7 @@ async def get_merge_preview(date_key: str, filename: str) -> FileResponse:
     )
 
 
-@router.get("/candidates", summary="Dataset mana yang bisa digabung")
+@router.get("/candidates", summary="Which datasets can be merged")
 async def list_merge_candidates(db: DatabaseClient = Depends(get_db)) -> dict:
     """Tanggal-tanggal yang punya stack di lebih dari satu dataset, beserta
     apakah grid-nya memang bisa ditempel.
@@ -209,14 +209,14 @@ async def list_merge_candidates(db: DatabaseClient = Depends(get_db)) -> dict:
         c["preview_images"] = _preview_images(c["date"]) if existing.exists() else []
 
     result["explanation"] = (
-        "Penggabungan hanya menempel, tidak meresample: strip yang grid-nya "
-        "tidak sejajar ditolak, bukan dipaksakan. Data sumber tidak diubah "
-        "maupun dihapus."
+        "Merging only stitches, it does not resample: strips whose grids "
+        "are not aligned are rejected, not forced. Source data is neither "
+        "modified nor deleted."
     )
     return result
 
 
-@router.post("/run", summary="Gabungkan stack untuk satu tanggal")
+@router.post("/run", summary="Merge stacks for one date")
 async def run_merge(
     payload: dict,
     db: DatabaseClient = Depends(get_db),
@@ -236,15 +236,15 @@ async def run_merge(
     overwrite = bool(payload.get("overwrite", False))
 
     if not date_key:
-        raise HTTPException(400, "Field 'date' wajib diisi, format YYYYMMDD.")
+        raise HTTPException(400, "The 'date' field is required, format YYYYMMDD.")
     if len(dataset_ids) < 2:
-        raise HTTPException(400, "Perlu minimal dua dataset_ids untuk digabung.")
+        raise HTTPException(400, "At least two dataset_ids are needed to merge.")
 
     datasets = _all_datasets(db)
     known = {d["dataset_id"] for d in datasets}
     unknown = [i for i in dataset_ids if i not in known]
     if unknown:
-        raise HTTPException(404, f"Dataset tidak ditemukan: {unknown}")
+        raise HTTPException(404, f"Dataset not found: {unknown}")
 
     wanted = [d for d in datasets if d["dataset_id"] in set(dataset_ids)]
     stacks = [
@@ -254,9 +254,9 @@ async def run_merge(
     if len(stacks) < 2:
         raise HTTPException(
             400,
-            f"Hanya {len(stacks)} stack ditemukan untuk tanggal {date_key} di "
-            "dataset yang diminta. Kemungkinan stack-nya belum jadi atau sudah "
-            "dihapus sejak daftar kandidat dibuat.",
+            f"Only {len(stacks)} stack(s) found for date {date_key} in the "
+            "requested datasets. The stacks may not be ready yet or may have been "
+            "deleted since the candidate list was built.",
         )
 
     check = dm.check_mergeable(stacks)
@@ -267,15 +267,15 @@ async def run_merge(
     if out_path.exists() and not overwrite:
         raise HTTPException(
             409,
-            f"{out_path.name} sudah ada. Kirim overwrite=true kalau memang mau "
-            "ditimpa.",
+            f"{out_path.name} already exists. Send overwrite=true if you really want "
+            "to overwrite it.",
         )
 
     try:
         dm.merge_stacks(stacks, out_path)
     except (ValueError, OSError) as exc:
         logger.exception("[MERGE] gagal menggabungkan %s", date_key)
-        raise HTTPException(500, f"Penggabungan gagal: {exc}")
+        raise HTTPException(500, f"Merge failed: {exc}")
 
     return {
         "status": "MERGED",

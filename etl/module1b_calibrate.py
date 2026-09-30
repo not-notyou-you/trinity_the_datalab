@@ -37,7 +37,7 @@ def _find_calibration_xml(zip_path: str, polarisation: str) -> bytes:
         ]
         if not candidates:
             raise RuntimeError(
-                f"Calibration XML tidak ditemukan untuk polarisasi {polarisation} di {zip_path}"
+                f"Calibration XML not found for polarisation {polarisation} in {zip_path}"
             )
         return zf.read(candidates[0])
 
@@ -55,7 +55,7 @@ def _parse_calibration_lut(xml_bytes: bytes) -> tuple[np.ndarray, np.ndarray, np
         pixel_rows.append(pixels)
         sigma_rows.append(sigmas)
     if not lines:
-        raise RuntimeError("calibrationVectorList kosong atau format XML tidak dikenali")
+        raise RuntimeError("calibrationVectorList is empty or the XML format is not recognised")
     return np.array(lines), np.array(pixel_rows[0]), np.array(sigma_rows)
 
 
@@ -110,7 +110,7 @@ def _reproject_with_gcps(data: np.ndarray, src_path: str, output_path: str, dst_
     with rasterio.open(src_path) as src:
         gcps, gcp_crs = src.gcps
         if not gcps:
-            raise RuntimeError(f"Tidak ada GCP pada {src_path}, tidak bisa reproject tanpa itu")
+            raise RuntimeError(f"No GCPs in {src_path}; cannot reproject without them")
 
         transform, width, height = calculate_default_transform(
             gcp_crs, dst_crs, src.width, src.height, gcps=gcps

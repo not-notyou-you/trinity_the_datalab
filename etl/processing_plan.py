@@ -198,7 +198,7 @@ class SourcePlan:
             all_bands = GPM_PROCESSED_WINDOWS
         else:
             raise ValueError(
-                f"targets() hanya untuk MODIS/GPM, bukan {self.source_name}"
+                f"targets() is only for MODIS/GPM, not {self.source_name}"
             )
 
         out: dict[str, list[tuple[str, str]]] = {}

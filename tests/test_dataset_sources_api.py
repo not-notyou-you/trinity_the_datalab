@@ -137,7 +137,7 @@ class TestCreateDatasetWithSources:
             sample_region, sources={}, fusion_strategy=None,
         ))
         assert resp.status_code == 422, resp.text
-        assert "minimal 1 sumber" in resp.text
+        assert "at least 1 source" in resp.text
 
     def test_missing_sources_rejected(self, api_client, sample_region):
         body = _payload(sample_region)
@@ -157,7 +157,7 @@ class TestCreateDatasetWithSources:
             sample_region, sources={"landsat": {"processing": ["RAW"]}}, fusion_strategy=None,
         ))
         assert resp.status_code == 422, resp.text
-        assert "source tidak dikenal" in resp.text
+        assert "unknown source" in resp.text
 
 
 # ---------------------------------------------------------------------------

@@ -19,7 +19,7 @@ def resolve_region_id(db: DatabaseClient, region_id: int) -> tuple[str, int, str
     with db.session() as sess:
         region = sess.get(RegionOfInterest, region_id)
         if region is None or not region.is_active or region.deleted_at is not None:
-            raise ValueError(f"Lokasi dengan id {region_id} tidak ditemukan atau sudah dihapus")
+            raise ValueError(f"Location with id {region_id} was not found or has been deleted")
         return to_shape(region.bbox).wkt, region.region_id, region.name
 
 
@@ -42,7 +42,7 @@ def _match_known_region(db: DatabaseClient, location: str) -> tuple[str, int, st
 def _geocode_nominatim(location: str) -> tuple[str, str]:
     results = geocode_search(location, limit=1)
     if not results:
-        raise ValueError(f"Lokasi tidak ditemukan: {location}")
+        raise ValueError(f"Location not found: {location}")
     return results[0]["bbox_wkt"], results[0]["display_name"]
 
 
@@ -62,7 +62,7 @@ def _create_region_from_geocode(db: DatabaseClient, bbox_wkt: str, label: str, l
         region = RegionOfInterest(
             region_code=code,
             name=label[:100],
-            description=f"Auto-created dari geocoding lokasi: {location}",
+            description=f"Auto-created from geocoding of location: {location}",
             bbox=f"SRID=4326;{bbox_wkt}",
             admin_level=3,
             country_code="ID",

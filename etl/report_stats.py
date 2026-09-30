@@ -43,13 +43,13 @@ logger = logging.getLogger(__name__)
 
 # Musim untuk wilayah monsun Indonesia (dataset default country_code = ID).
 SEASONS: list[tuple[str, str, tuple[int, ...]]] = [
-    ("DJF", "Musim hujan (Des-Feb)", (12, 1, 2)),
-    ("MAM", "Peralihan I (Mar-Mei)", (3, 4, 5)),
-    ("JJA", "Musim kemarau (Jun-Agu)", (6, 7, 8)),
-    ("SON", "Peralihan II (Sep-Nov)", (9, 10, 11)),
+    ("DJF", "Wet season (Dec-Feb)", (12, 1, 2)),
+    ("MAM", "Transition I (Mar-May)", (3, 4, 5)),
+    ("JJA", "Dry season (Jun-Aug)", (6, 7, 8)),
+    ("SON", "Transition II (Sep-Nov)", (9, 10, 11)),
 ]
-MONTH_NAMES = ["", "Januari", "Februari", "Maret", "April", "Mei", "Juni", "Juli",
-               "Agustus", "September", "Oktober", "November", "Desember"]
+MONTH_NAMES = ["", "January", "February", "March", "April", "May", "June", "July",
+               "August", "September", "October", "November", "December"]
 
 # Urutan tier lineage per source (etl/tier_names.py) -- dipakai untuk
 # menghitung "loss" antar level pemrosesan di Section 3.
@@ -60,7 +60,7 @@ TIER_ORDER: dict[str, list[str]] = {
 }
 
 # MCDWD (MODIS Global Flood Product) -- kode kelas piksel.
-FLOOD_CLASSES = {0: "Tidak ada air", 1: "Air permukaan", 2: "Banjir berulang", 3: "Banjir (anomali)"}
+FLOOD_CLASSES = {0: "No water", 1: "Surface water", 2: "Recurrent flood", 3: "Flood (anomaly)"}
 FLOOD_NODATA = 255
 
 RAINY_THRESHOLD_MM = 0.1
@@ -238,7 +238,7 @@ def _collect_tiers(sess, dataset_id: int, st: ReportStats) -> None:
         .group_by(DataProduct.source, DataProduct.product_tier, DataProduct.processing_level)
     ).all()
     st.queries.append(
-        "data_products GROUP BY source, product_tier, processing_level: COUNT, COUNT DISTINCT tanggal, "
+        "data_products GROUP BY source, product_tier, processing_level: COUNT, COUNT DISTINCT dates, "
         "SUM/AVG/STDDEV(file_size_mb), COUNT DISTINCT band, SUM(invalid)"
     )
     for src, tier, level, n, n_dates, s, a, sd, n_bands, n_invalid in rows:
@@ -301,7 +301,7 @@ def _collect_s1(sess, dataset_id: int, st: ReportStats) -> None:
         .where(SatelliteScene.scene_id.in_(select(DataProduct.scene_id).where(s1_filter)))
         .order_by(SatelliteScene.acquisition_datetime)
     ).all()
-    st.queries.append("satellite_scenes WHERE scene_id IN (produk S1 dataset) -- tanggal, orbit, incidence angle")
+    st.queries.append("satellite_scenes WHERE scene_id IN (dataset S1 products) -- dates, orbit, incidence angle")
     for sid, ident, acq, orbit, rel, near, far, raw_mb in scenes:
         st.s1_scenes.append({
             "scene_id": sid, "product_identifier": ident,
@@ -350,7 +350,7 @@ def _collect_s1(sess, dataset_id: int, st: ReportStats) -> None:
         .order_by(month, QualityMetric.band_name)
     ).all()
     st.queries.append(
-        "quality_metrics (tanpa produk bersatuan linear) GROUP BY DATE_TRUNC('month'), band: COUNT, AVG/STDDEV/MIN/MAX(backscatter_mean_db), "
+        "quality_metrics (excluding linear-unit products) GROUP BY DATE_TRUNC('month'), band: COUNT, AVG/STDDEV/MIN/MAX(backscatter_mean_db), "
         "AVG(speckle_index), AVG(valid/total), AVG(quality_score)"
     )
     for mth, band, n, a, sd, mn, mx, spk, valid, score in monthly:
@@ -369,7 +369,7 @@ def _collect_s1(sess, dataset_id: int, st: ReportStats) -> None:
         .where(SatelliteScene.scene_id.in_(select(DataProduct.scene_id).where(s1_filter)))
         .group_by(SatelliteScene.orbit_direction)
     ).all()
-    st.queries.append("satellite_scenes GROUP BY orbit_direction: COUNT DISTINCT scene, MIN/MAX incidence, rentang waktu")
+    st.queries.append("satellite_scenes GROUP BY orbit_direction: COUNT DISTINCT scene, MIN/MAX incidence, time range")
     for orbit, n, near, far, n_rel, first, last in orbit_rows:
         st.s1_orbit.append({
             "orbit": getattr(orbit, "value", orbit) or "UNKNOWN", "scenes": int(n),
@@ -412,7 +412,7 @@ def _collect_fusion(sess, dataset_id: int, st: ReportStats) -> None:
         .where(FusionProduct.dataset_id == dataset_id)
         .order_by(FusionProduct.feature_date, FusionProduct.processing_level)
     ).all()
-    st.queries.append("fusion_products WHERE dataset_id -- tanggal, kelengkapan source, offset temporal")
+    st.queries.append("fusion_products WHERE dataset_id -- dates, source completeness, temporal offset")
     for (d, level, strat, s1, modis, gpm, s1_off, mod_off, gpm_off, since, path, created) in rows:
         st.fusion.append({
             "date": d, "level": level, "strategy": strat, "s1_scene_id": s1, "modis_scene_id": modis,
@@ -431,7 +431,7 @@ def _collect_nasa_products(sess, dataset_id: int, st: ReportStats) -> None:
         .where(NasaScene.nasa_scene_id.in_(ids))
         .group_by(NasaScene.source, NasaScene.product_short_name)
     ).all()
-    st.queries.append("nasa_scenes GROUP BY source, product_short_name (produk NASA yang dipakai fusi)")
+    st.queries.append("nasa_scenes GROUP BY source, product_short_name (NASA products used by fusion)")
     for src, name, _ in rows:
         st.nasa_products.setdefault(src, []).append(name)
 

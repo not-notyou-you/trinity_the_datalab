@@ -153,7 +153,7 @@ def _ensure_land(masks_dir, bbox, transform, shape, url, force) -> str:
     if reuse:
         return reuse
     if not url:
-        return "skipped: DATABASE_URL tidak diset"
+        return "skipped: DATABASE_URL is not set"
     try:
         geoms = lm.fetch_land_geometries(bbox, url)
         land = lm.rasterize_land(geoms, transform, shape)
@@ -221,7 +221,7 @@ def _ensure_occurrence(masks_dir, bbox, transform, shape, force) -> str:
                 wo.SOURCE_URL_TEMPLATE,
             )
         if not note.get("tiles_used"):
-            return f"skipped: tile JRC belum diunduh {note.get('tiles_missing')}"
+            return f"skipped: JRC tile not downloaded yet {note.get('tiles_missing')}"
         wo.write_occurrence(arr, target, transform, note)
         wo.render_preview(arr, masks_dir / f"{wo.WATER_OCCURRENCE_STEM}.png")
         wo.write_manifest(masks_dir / "manifest_water_occurrence.json", note)

@@ -79,7 +79,7 @@ def _retry_sleep(
     attempt: int,
     retry_after: str | None = None,
     cancel_event: threading.Event | None = None,
-    reason: str = "koneksi terputus",
+    reason: str = "connection lost",
     max_attempts: int | None = None,
 ) -> None:
     """Jeda sebelum percobaan ulang (lihat download_guard.backoff_wait):
@@ -146,18 +146,18 @@ def _fetch_cdse_token(user: str, password: str) -> tuple[str, float]:
                 return body["access_token"], float(body.get("expires_in") or 600)
             if r.status_code != 429 and r.status_code < 500:
                 raise RuntimeError(
-                    f"CDSE auth gagal ({r.status_code}): {r.text[:300]}\n"
-                    "Pastikan email dan password di .env sudah benar.\n"
-                    "Daftar: https://dataspace.copernicus.eu"
+                    f"CDSE auth failed ({r.status_code}): {r.text[:300]}\n"
+                    "Make sure the email and password in .env are correct.\n"
+                    "Register: https://dataspace.copernicus.eu"
                 )
             last = f"HTTP {r.status_code}"
             retry_after = r.headers.get("Retry-After")
         if attempt < _TOKEN_MAX_ATTEMPTS:
             logger.warning("[M1] Login CDSE gagal (attempt %d/%d): %s",
                            attempt, _TOKEN_MAX_ATTEMPTS, last)
-            _retry_sleep(attempt, retry_after, reason="login ditolak sementara",
+            _retry_sleep(attempt, retry_after, reason="login temporarily rejected",
                          max_attempts=_TOKEN_MAX_ATTEMPTS)
-    raise RuntimeError(f"CDSE auth gagal setelah {_TOKEN_MAX_ATTEMPTS} percobaan: {last}")
+    raise RuntimeError(f"CDSE auth failed after {_TOKEN_MAX_ATTEMPTS} attempts: {last}")
 
 
 # Di bawah porsi AOI ini sebuah TANGGAL S1 (gabungan semua frame-nya) tidak
@@ -279,12 +279,12 @@ def discover_scenes(
         if attempt < _DISCOVER_MAX_ATTEMPTS:
             logger.warning("[M1] Query CDSE gagal (attempt %d/%d): %s",
                            attempt, _DISCOVER_MAX_ATTEMPTS, last)
-            _retry_sleep(attempt, retry_after, reason="katalog sibuk",
+            _retry_sleep(attempt, retry_after, reason="catalogue busy",
                          max_attempts=_DISCOVER_MAX_ATTEMPTS)
     if r is None:
-        raise RuntimeError(f"CDSE query gagal setelah {_DISCOVER_MAX_ATTEMPTS} percobaan: {last}")
+        raise RuntimeError(f"CDSE query failed after {_DISCOVER_MAX_ATTEMPTS} attempts: {last}")
     if r.status_code != 200:
-        raise RuntimeError(f"CDSE query gagal ({r.status_code}): {r.text[:300]}")
+        raise RuntimeError(f"CDSE query failed ({r.status_code}): {r.text[:300]}")
 
     items = r.json().get("value", [])
     logger.info("[M1] Ditemukan %d scene di CDSE.", len(items))
@@ -355,8 +355,8 @@ def download_scene(
     pwd = os.getenv("COPERNICUS_PASSWORD")
     if not user or not pwd:
         raise RuntimeError(
-            "COPERNICUS_USER dan COPERNICUS_PASSWORD harus ada di .env\n"
-            "Daftar gratis: https://dataspace.copernicus.eu"
+            "COPERNICUS_USER and COPERNICUS_PASSWORD must be set in .env\n"
+            "Register for free: https://dataspace.copernicus.eu"
         )
 
     out = Path(output_dir)
@@ -395,8 +395,15 @@ def download_scene(
             logger.info("[M1] Melanjutkan download dari %.0f MB...", resume_from / 1e6)
             session.headers.update({"Range": f"bytes={resume_from}-"})
 
-        MAX_RETRIES = 3
+        # 6 dengan dg.connection_retry_delay: bertahan ~2.5 menit gangguan
+        # CDSE sebelum scene dinyatakan gagal (dulu 3 x 2-4 s).
+        MAX_RETRIES = 6
         attempt = 0
+        # 401 di tengah retry (token kedaluwarsa selama unduhan panjang) tidak
+        # boleh menghabiskan jatah: dataset 54 2026-09-30, token diperbarui di
+        # attempt 3/3 lalu loop berhenti tanpa memakainya -- 3 scene yang
+        # sudah ~1.1 GB gagal.
+        auth_refreshes_left = 2
         # Percobaan ulang yang tidak menghabiskan jatah MAX_RETRIES: server
         # menolak Range. Dibatasi sendiri supaya server yang terus-menerus
         # menolak tidak membuat loop tak berujung.
@@ -405,6 +412,7 @@ def download_scene(
         rate_limit_attempt = 0
         while attempt < MAX_RETRIES:
             attempt += 1
+            dg.wait_for_breaker(dg.CDSE, cancel_event)
             try:
                 with dg.source_slot(dg.CDSE), session.get(
                     download_url, stream=True, timeout=dg.REQUEST_TIMEOUT, allow_redirects=True
@@ -415,6 +423,9 @@ def download_scene(
                         # ulang kalau belum ada thread lain yang melakukannya.
                         token = _get_cdse_token(user, pwd, token)
                         session.headers.update({"Authorization": f"Bearer {token}"})
+                        if auth_refreshes_left > 0:
+                            auth_refreshes_left -= 1
+                            attempt -= 1
                         continue
 
                     if resp.status_code == 416:
@@ -456,7 +467,7 @@ def download_scene(
                         )
                         _retry_sleep(
                             rate_limit_attempt, resp.headers.get("Retry-After"), cancel_event,
-                            reason="dibatasi server (429)",
+                            reason="rate-limited by server (429)",
                             max_attempts=MAX_RATE_LIMIT_RETRIES,
                         )
                         # Throttle bukan kegagalan transfer, jadi tidak
@@ -501,9 +512,11 @@ def download_scene(
 
                     os.replace(_long(part_path), _long(zip_path))
                     logger.info("[M1] Download selesai.")
+                    dg.record_connection_success(dg.CDSE)
                     break
 
             except (ConnectionError, TimeoutError, OSError) as exc:
+                dg.record_connection_failure(dg.CDSE)
                 if attempt < MAX_RETRIES:
                     logger.warning("[M1] Download terputus (attempt %d/%d): %s. Retry...", attempt, MAX_RETRIES, exc)
                     if _long(part_path).exists():
@@ -513,15 +526,18 @@ def download_scene(
                     # Backoff + jitter: retry instan terhadap server yang
                     # baru saja memutus koneksi (SSL EOF, 429 yang habis
                     # jatahnya di atas) cuma menabrak kondisi yang sama lagi.
-                    _retry_sleep(attempt, cancel_event=cancel_event,
-                                 reason="koneksi terputus", max_attempts=MAX_RETRIES)
+                    delay = dg.connection_retry_delay(attempt)
+                    logger.info("[M1] Menunggu %.0f s sebelum mencoba lagi (connection lost, attempt %d)...",
+                                delay, attempt)
+                    dg.note_wait(dg.CDSE, delay, "connection lost", attempt, MAX_RETRIES)
+                    dg.sleep_or_cancel(delay, cancel_event)
                 else:
                     logger.error("[M1] Download gagal setelah %d attempts: %s", MAX_RETRIES, exc)
                     logger.info("[M1] File .part tersimpan di: %s", part_path)
                     raise
 
         if not _long(zip_path).exists():
-            raise RuntimeError(f"Download tidak lengkap. Cek file: {part_path}")
+            raise RuntimeError(f"Download incomplete. Check file: {part_path}")
 
         file_size_mb = _long(zip_path).stat().st_size / (1024 ** 2)
         logger.info("[M1] Download selesai: %.1f MB", file_size_mb)
@@ -566,9 +582,9 @@ def _extract_bands(zip_path: Path, output_dir: Path) -> tuple[Path, Path]:
         vh_files = [f for f in all_files
                     if "/measurement/" in f and "-vh-" in f.lower() and f.endswith(".tiff")]
         if not vv_files:
-            raise RuntimeError(f"Band VV tidak ditemukan dalam {zip_path.name}")
+            raise RuntimeError(f"VV band not found in {zip_path.name}")
         if not vh_files:
-            raise RuntimeError(f"Band VH tidak ditemukan dalam {zip_path.name}")
+            raise RuntimeError(f"VH band not found in {zip_path.name}")
 
         stem = zip_path.stem[:35]
         vv_out = output_dir / f"{stem}_VV.tif"

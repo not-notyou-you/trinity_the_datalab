@@ -382,7 +382,7 @@ def _progress_mon(monkeypatch, running, event):
 def test_progress_waiting_and_idle(monkeypatch):
     mon = _progress_mon(monkeypatch, False, None)
     assert mon._progress(SimpleNamespace(area_id=1, status="WAITING", dataset_id=5)) == \
-        {"phase": "Menunggu giliran", "percent": None, "waiting": None, "timing": {"elapsed_s": 5}}
+        {"phase": "Waiting its turn", "percent": None, "waiting": None, "timing": {"elapsed_s": 5}}
     assert mon._progress(SimpleNamespace(area_id=1, status="ACTIVE", dataset_id=5)) is None
 
 
@@ -394,7 +394,7 @@ def test_progress_ingest_uses_job_counters(monkeypatch):
     monkeypatch.setattr(dm.DatasetManager, "get_progress", lambda self, ds: {
         "total_scenes": 4, "processed_count": 1, "failed_count": 1, "progress_percent": 55})
     p = mon._progress(SimpleNamespace(area_id=1, status="BACKFILLING", dataset_id=5))
-    assert p == {"phase": "Mengunduh & memproses", "percent": 55,
+    assert p == {"phase": "Downloading & processing", "percent": 55,
                  "ok": 1, "failed": 1, "total": 4, "waiting": None, "timing": {"elapsed_s": 5}}
 
 
@@ -402,7 +402,7 @@ def test_progress_other_phases_are_indeterminate(monkeypatch):
     ev = SimpleNamespace(step="SCENE", status="OK")
     mon = _progress_mon(monkeypatch, True, ev)
     p = mon._progress(SimpleNamespace(area_id=1, status="RUNNING", dataset_id=5))
-    assert p == {"phase": "Menyusun metrik & preview", "percent": None, "waiting": None, "timing": {"elapsed_s": 5}}
+    assert p == {"phase": "Building metrics & previews", "percent": None, "waiting": None, "timing": {"elapsed_s": 5}}
 
 
 # ---------------------------------------------------------------------------
@@ -507,8 +507,8 @@ def test_cycle_result_distinguishes_full_partial_failed(monkeypatch):
     d = [date(2026, 9, i) for i in (1, 2, 3)]
     r = lc._cycle_result(_result_mon(rows), 1, d, 5, 6)
     assert r["level"] == "warn"
-    assert r["text"] == ("Selesai: 3 scene baru \u2014 1 lengkap, 1 sebagian (GPM gagal), "
-                         "1 gagal Sentinel-1")
+    assert r["text"] == ("Done: 3 new scene(s) \u2014 1 complete, 1 partial (GPM failed), "
+                         "1 failed Sentinel-1")
 
 
 def test_cycle_result_quiet_cycle_is_ok(monkeypatch):
@@ -517,7 +517,7 @@ def test_cycle_result_quiet_cycle_is_ok(monkeypatch):
     monkeypatch.setattr(dg, "_auth_failures", {})
 
     r = lc._cycle_result(_result_mon([]), 1, [], 6, 6)
-    assert r == {"level": "ok", "text": "Selesai: tidak ada scene baru (6/6 tersimpan)"}
+    assert r == {"level": "ok", "text": "Done: no new scenes (6/6 stored)"}
 
 
 # ---------------------------------------------------------------------------
@@ -556,5 +556,5 @@ def test_activity_merges_cycle_events_and_pipeline_logs(monkeypatch):
     rows = mon.activity(1, limit=5)
     assert [r["stage"] for r in rows] == ["INGEST", "DOWNLOAD", "CYCLE"]
     assert [r["status"] for r in rows] == ["COMPLETED", "RUNNING", "RUNNING"]
-    assert rows[0]["scene_id"] == "2026-09-20" and rows[2]["scene_id"] == "SIKLUS"
+    assert rows[0]["scene_id"] == "2026-09-20" and rows[2]["scene_id"] == "CYCLE"
     assert len(mon.activity(1, limit=2)) == 2

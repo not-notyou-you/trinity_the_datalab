@@ -168,7 +168,7 @@ class TestReportForecast:
         assert fc.backtest["test_days"] == 30
         for lo95, lo80, m, hi80, hi95 in zip(fc.lo95, fc.lo80, fc.mean, fc.hi80, fc.hi95):
             assert 0 <= lo95 <= lo80 <= m <= hi80 <= hi95  # hujan tidak pernah negatif
-        assert fc.confidence in ("Tinggi", "Sedang", "Rendah")
+        assert fc.confidence in ("High", "Medium", "Low")
 
     def test_short_series_skipped(self):
         from etl.report_forecast import build_forecasts

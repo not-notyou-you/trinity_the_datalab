@@ -98,7 +98,7 @@ def rank(tier: str) -> int:
     if t in LEGACY_RANK:
         return LEGACY_RANK[t]
     raise ValueError(
-        f"Tier tidak dikenal: {tier!r}. Valid: {sorted(set(RANK) | set(LEGACY_RANK))}"
+        f"Unknown tier: {tier!r}. Valid: {sorted(set(RANK) | set(LEGACY_RANK))}"
     )
 
 
@@ -120,13 +120,13 @@ def canonical_tier(tier: str, source: str | None = None) -> str:
     if t == "SILVER":
         if source is None:
             raise ValueError(
-                "SILVER butuh `source` untuk dipetakan: rank 2 bercabang jadi "
+                "SILVER needs `source` to be mapped: rank 2 branches into "
                 f"{sorted(RANK2_BY_SOURCE.values())}"
             )
         return RANK2_BY_SOURCE[_upper(source)]
     if t in LEGACY_TO_NEW:
         return LEGACY_TO_NEW[t]
-    raise ValueError(f"Tier tidak dikenal: {tier!r}")
+    raise ValueError(f"Unknown tier: {tier!r}")
 
 
 def display_tier(tier: str, source: str | None = None) -> str:
@@ -146,12 +146,12 @@ def tier_at_rank(r: int, source: str | None = None) -> str:
     """rank -> nama kanonik. rank 2 wajib membawa source."""
     if r == 2:
         if source is None:
-            raise ValueError("rank 2 bercabang per-source, `source` wajib")
+            raise ValueError("rank 2 branches per source, `source` is required")
         return RANK2_BY_SOURCE[_upper(source)]
     for name, rr in RANK.items():
         if rr == r:
             return name
-    raise ValueError(f"Rank tidak dikenal: {r}")
+    raise ValueError(f"Unknown rank: {r}")
 
 
 def tiers_at_rank(r: int, *, include_legacy: bool = True) -> tuple[str, ...]:

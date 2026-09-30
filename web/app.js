@@ -53,11 +53,12 @@ const ACTIVE_STATUSES = new Set(['QUEUED','PREPARING','DOWNLOADING','PROCESSING'
 
 const state = {
   datasets: [], progress: {}, logs: {}, firstLogAt: {}, pollTimer: null, livePollTimer: null,
-  openScenes: new Set(), openStructure: new Set(), structureHTML: {}, cardElements: {},
+  openScenes: new Set(), openStructure: new Set(), openPreview: new Set(), structureHTML: {}, cardElements: {},
   // Kartu dataset yang badannya sedang dilipat (hanya kepala/ringkasan yang
   // terlihat). Kosong = semua terbuka seperti sebelumnya; per-kartu, bertahan
   // antar-polling sama seperti openScenes/openStructure.
   collapsedCards: new Set(),
+  openMenus: new Set(),
   // Panel "Gabungkan Dataset": accordion tunggal (bukan per-baris), karena
   // barisnya berbagi satu konteks (tanggal siap digabung hari ini).
   mergeCollapsed: false,
@@ -77,7 +78,7 @@ async function api(path, options) {
   let data = null;
   try { data = await res.json(); } catch (e) {}
   if (!res.ok) {
-    const msg = (data && data.detail) ? data.detail : ('Permintaan gagal (' + res.status + ')');
+    const msg = (data && data.detail) ? data.detail : ('Request failed (' + res.status + ')');
     throw new Error(msg);
   }
   return data;
@@ -125,7 +126,7 @@ const LAYER_COLORS = {
   fusion: '#D400FF',
 };
 const LAYER_LABELS = {
-  download: 'unduh', processing: 'proses', fusion: 'fusi',
+  download: 'download', processing: 'process', fusion: 'fusion',
 };
 function buildRingSVG(layers, size) {
   size = size || 96;
@@ -167,7 +168,7 @@ function switchTab(name) {
   if (name === 'datasets') { loadDatasets(); startDatasetPolling(); } else { stopDatasetPolling(); }
   if (name === 'live') { loadLive(); startLivePolling(); } else { stopLivePolling(); }
 }
-document.querySelectorAll('.tab').forEach(btn => btn.addEventListener('click', () => switchTab(btn.dataset.tab)));
+document.querySelectorAll('.tab[data-tab]').forEach(btn => btn.addEventListener('click', () => switchTab(btn.dataset.tab)));
 document.body.classList.add('tab-create');
 
 const floatNav = document.getElementById('floatNav');
@@ -176,9 +177,9 @@ floatNav.querySelector('.floatnav-brand').addEventListener('click', () => floatN
 async function checkHealth() {
   try {
     const h = await api('/api/health');
-    setStatus(h.db_connected ? 'ok' : 'degraded', h.db_connected ? 'Terhubung' : 'Basis data bermasalah');
+    setStatus(h.db_connected ? 'ok' : 'degraded', h.db_connected ? 'Connected' : 'Database issue');
   } catch (e) {
-    setStatus('down', 'Tidak terhubung');
+    setStatus('down', 'Disconnected');
   }
 }
 function setStatus(kind, label) {
@@ -193,7 +194,7 @@ const COLOR_TILE_ATTR = 'Tiles &copy; Esri &mdash; Esri, HERE, Garmin, USGS, Int
 
 let mapActivated = false;
 let selectedBBox = null; // [minLon, minLat, maxLon, maxLat]
-const DEFAULT_HINT = 'Pilih lokasi atau seret peta untuk mengubah area';
+const DEFAULT_HINT = 'Pick a location or drag the map to change the area';
 
 // The map is the whole app's background: #bgMap fills the viewport and is fully interactive
 // (drag/zoom it and that IS the page background moving). The "peta wilayah" column in the
@@ -387,7 +388,7 @@ function fmtBBox(bbox) {
          bbox[3].toFixed(3) + ', ' + bbox[2].toFixed(3);
 }
 
-const SOURCE_LABEL = { SEEDER: 'sistem', USER: 'buatan sendiri', GEOCODE: 'hasil pencarian' };
+const SOURCE_LABEL = { SEEDER: 'system', USER: 'custom', GEOCODE: 'from search' };
 
 // Filter lokal supaya ketikan langsung terasa (tanpa menunggu jaringan). Query
 // yang sama juga dikirim ke server setelah debounce, untuk menjaring lokasi yang
@@ -405,8 +406,8 @@ function renderRegionCards() {
   if (rows.length === 0) {
     grid.innerHTML = '<div class="empty-small">' +
       (state.locationQuery.trim()
-        ? 'Tidak ada lokasi cocok dengan "' + escapeHTML(state.locationQuery.trim()) + '"'
-        : 'Belum ada lokasi. Tambahkan lewat tombol di atas.') +
+        ? 'No locations match "' + escapeHTML(state.locationQuery.trim()) + '"'
+        : 'No locations yet. Add one with the button above.') +
       '</div>';
     return;
   }
@@ -419,13 +420,13 @@ function renderRegionCards() {
         '<div class="region-meta">' +
           (r.area_km2 ? '<span class="region-area">' + r.area_km2.toFixed(1) + ' km&sup2;</span>' : '') +
           '<span class="src-badge src-' + escapeHTML((r.source || 'SEEDER').toLowerCase()) + '">' +
-            escapeHTML(SOURCE_LABEL[r.source] || 'sistem') +
+            escapeHTML(SOURCE_LABEL[r.source] || 'system') +
           '</span>' +
         '</div>' +
       '</div>' +
       (r.deletable
         ? '<button type="button" class="region-del" data-del-id="' + r.region_id + '"' +
-          ' title="Hapus lokasi" aria-label="Hapus ' + escapeHTML(r.name) + '">' + ICONS.trash + '</button>'
+          ' title="Delete location" aria-label="Delete ' + escapeHTML(r.name) + '">' + ICONS.trash + '</button>'
         : '') +
     '</div>'
   ).join('');
@@ -483,7 +484,7 @@ async function loadRegions(options) {
       }
     }
   } catch (e) {
-    grid.innerHTML = '<div class="empty-small">Gagal memuat daftar lokasi</div>';
+    grid.innerHTML = '<div class="empty-small">Failed to load locations</div>';
   }
 }
 
@@ -517,7 +518,7 @@ function openAddLocationModal() {
   ['alName', 'alPaste', 'alMinLon', 'alMinLat', 'alMaxLon', 'alMaxLat', 'alDesc', 'geoSearchInput']
     .forEach(id => { document.getElementById(id).value = ''; });
   document.getElementById('geoResults').innerHTML =
-    '<p class="geo-hint">Ketik minimal 2 huruf lalu pilih salah satu hasil.</p>';
+    '<p class="geo-hint">Type at least 2 letters, then pick a result.</p>';
   setAddLocError('');
   setLocTab('search');
   addLocModal.classList.remove('hidden');
@@ -537,15 +538,15 @@ document.querySelectorAll('.modal-tab').forEach(t =>
 const runGeoSearch = debounce(async (query) => {
   const box = document.getElementById('geoResults');
   if (query.length < 2) {
-    box.innerHTML = '<p class="geo-hint">Ketik minimal 2 huruf lalu pilih salah satu hasil.</p>';
+    box.innerHTML = '<p class="geo-hint">Type at least 2 letters, then pick a result.</p>';
     return;
   }
-  box.innerHTML = '<p class="geo-hint">Mencari...</p>';
+  box.innerHTML = '<p class="geo-hint">Searching...</p>';
   try {
     const result = await api('/api/regions/geocode?q=' + encodeURIComponent(query));
     state.geoResults = result.items;
     if (!result.items.length) {
-      box.innerHTML = '<p class="geo-hint">Tidak ada hasil untuk "' + escapeHTML(query) + '"</p>';
+      box.innerHTML = '<p class="geo-hint">No results for "' + escapeHTML(query) + '"</p>';
       return;
     }
     box.innerHTML = result.items.map((it, i) =>
@@ -604,14 +605,14 @@ function readAddLocationForm() {
   };
   const name = document.getElementById('alName').value.trim();
   const b = { min_lon: num('alMinLon'), min_lat: num('alMinLat'), max_lon: num('alMaxLon'), max_lat: num('alMaxLat') };
-  if (!name) return { error: 'Nama lokasi belum diisi' };
+  if (!name) return { error: 'Location name is required' };
   if ([b.min_lon, b.min_lat, b.max_lon, b.max_lat].some(v => !isFinite(v))) {
-    return { error: 'Keempat koordinat harus diisi dengan angka' };
+    return { error: 'All four coordinates must be numbers' };
   }
-  if (b.min_lon < -180 || b.max_lon > 180) return { error: 'Longitude harus di rentang -180 sampai 180' };
-  if (b.min_lat < -90 || b.max_lat > 90) return { error: 'Latitude harus di rentang -90 sampai 90' };
-  if (b.min_lon >= b.max_lon) return { error: 'Longitude minimum harus lebih kecil dari longitude maksimum' };
-  if (b.min_lat >= b.max_lat) return { error: 'Latitude minimum harus lebih kecil dari latitude maksimum' };
+  if (b.min_lon < -180 || b.max_lon > 180) return { error: 'Longitude must be between -180 and 180' };
+  if (b.min_lat < -90 || b.max_lat > 90) return { error: 'Latitude must be between -90 and 90' };
+  if (b.min_lon >= b.max_lon) return { error: 'Min longitude must be less than max longitude' };
+  if (b.min_lat >= b.max_lat) return { error: 'Min latitude must be less than max latitude' };
   return { body: Object.assign({ name: name, description: document.getElementById('alDesc').value.trim() || null }, b) };
 }
 
@@ -619,7 +620,7 @@ document.getElementById('alSave').addEventListener('click', async () => {
   const parsed = readAddLocationForm();
   if (parsed.error) { setAddLocError(parsed.error); setLocTab('manual'); return; }
   const btn = document.getElementById('alSave');
-  btn.disabled = true; btn.textContent = 'Menyimpan...';
+  btn.disabled = true; btn.textContent = 'Saving...';
   try {
     const created = await api('/api/regions', { method: 'POST', body: JSON.stringify(parsed.body) });
     closeAddLocationModal();
@@ -628,7 +629,7 @@ document.getElementById('alSave').addEventListener('click', async () => {
     document.getElementById('locSearch').value = '';
     await loadRegions({ highlightId: created.region_id });
     selectRegion(created.region_id);
-    showToast('Lokasi "' + created.name + '" ditambahkan', 'success');
+    showToast('Location "' + created.name + '" added', 'success');
     // Dibuka dari form Tambah Daerah Live: kembali ke form itu dengan lokasi
     // baru terpilih.
     if (state.lmReopenAdd) { state.lmReopenAdd = false; openLmAddModal(created.region_id); }
@@ -636,7 +637,7 @@ document.getElementById('alSave').addEventListener('click', async () => {
     setAddLocError(err.message);
     setLocTab('manual');
   } finally {
-    btn.disabled = false; btn.textContent = 'Simpan Lokasi';
+    btn.disabled = false; btn.textContent = 'Save Location';
   }
 });
 
@@ -650,7 +651,7 @@ function openDeleteLocationModal(id) {
   if (!region) return;
   state.pendingDeleteRegionId = id;
   document.getElementById('deleteLocationText').innerHTML =
-    'Lokasi <strong>' + escapeHTML(region.name) + '</strong> akan dihilangkan dari daftar pilihan.';
+    'Location <strong>' + escapeHTML(region.name) + '</strong> will be removed from the list.';
   delLocModal.classList.remove('hidden');
 }
 
@@ -666,7 +667,7 @@ document.getElementById('deleteLocationConfirm').addEventListener('click', async
   const id = state.pendingDeleteRegionId;
   if (!id) return;
   const btn = document.getElementById('deleteLocationConfirm');
-  btn.disabled = true; btn.textContent = 'Menghapus...';
+  btn.disabled = true; btn.textContent = 'Deleting...';
   try {
     const result = await api('/api/regions/' + id, { method: 'DELETE' });
     closeDeleteLocationModal();
@@ -682,7 +683,7 @@ document.getElementById('deleteLocationConfirm').addEventListener('click', async
     showToast(err.message, 'error');
     closeDeleteLocationModal();
   } finally {
-    btn.disabled = false; btn.textContent = 'Ya, Hapus';
+    btn.disabled = false; btn.textContent = 'Yes, Delete';
   }
 });
 
@@ -712,42 +713,42 @@ const SATELLITE_SOURCES = [
   {
     key: 'sentinel1',
     label: 'Sentinel-1 SAR (ESA)',
-    desc: 'radar, tembus awan, ~10 m, revisit ~7-8 hari',
+    desc: 'radar, sees through clouds, ~10 m, revisit ~7-8 days',
     processing: [
-      { value: 'RAW', desc: 'kalibrasi + crop (tanpa Lee filter, tanpa QA)' },
+      { value: 'RAW', desc: 'calibration + crop (no Lee filter, no QA)' },
       { value: 'PROCESSED', desc: '+ Lee filter 7x7 + QA analytics + COG' },
     ],
   },
   {
     key: 'modis',
     label: 'MODIS Optical (NASA)',
-    desc: 'banjir/vegetasi, 250 m, harian',
+    desc: 'flood/vegetation, 250 m, daily',
     processing: [
-      { value: 'RAW', desc: 'peta banjir saja (tanpa indeks turunan)' },
-      { value: 'PROCESSED', desc: '+ hitung NDVI + NDWI dari reflectance' },
+      { value: 'RAW', desc: 'flood map only (no derived indices)' },
+      { value: 'PROCESSED', desc: '+ compute NDVI + NDWI from reflectance' },
     ],
   },
   {
     key: 'gpm',
     label: 'GPM IMERG Rainfall (NASA/JAXA)',
-    desc: 'curah hujan, ~10 km, harian',
+    desc: 'precipitation, ~10 km, daily',
     processing: [
-      { value: 'RAW', desc: 'curah hujan harian (hari itu saja)' },
-      { value: 'PROCESSED', desc: '+ akumulasi 24 jam / 72 jam / 7 hari' },
+      { value: 'RAW', desc: 'daily precipitation (that day only)' },
+      { value: 'PROCESSED', desc: '+ 24 h / 72 h / 7-day accumulation' },
     ],
   },
 ];
 
 const FUSION_STRATEGIES = [
-  { value: 'CO_OCCURRENCE', label: 'CO-OCCURRENCE', desc: 'hanya tanggal yang semua sumber punya data' },
-  { value: 'FULL_COVERAGE', label: 'FULL COVERAGE', desc: 'setiap hari; MODIS/GPM diunduh harian, unduhan jauh lebih besar' },
-  { value: 'HYBRID', label: 'HYBRID', desc: 'unduh harian, rakit per tanggal Sentinel-1' },
+  { value: 'CO_OCCURRENCE', label: 'CO-OCCURRENCE', desc: 'only dates where every source has data' },
+  { value: 'FULL_COVERAGE', label: 'FULL COVERAGE', desc: 'every day; MODIS/GPM downloaded daily, much larger download' },
+  { value: 'HYBRID', label: 'HYBRID', desc: 'download daily, assemble per Sentinel-1 date' },
 ];
 
 const PREVIEW_OPTION_DEFS = [
-  { value: 'GRAYSCALE', desc: 'peregangan persentil 2-98' },
-  { value: 'COLORED', desc: 'colormap per sumber' },
-  { value: 'COMPOSITE', desc: 'false color RGB (khusus Sentinel-1)' },
+  { value: 'GRAYSCALE', desc: '2–98 percentile stretch' },
+  { value: 'COLORED', desc: 'per-source colormap' },
+  { value: 'COMPOSITE', desc: 'false-color RGB (Sentinel-1 only)' },
 ];
 
 const SOURCE_SHORT = { sentinel1: 'S1', modis: 'MODIS', gpm: 'GPM' };
@@ -776,9 +777,9 @@ function renderSatelliteCards() {
       '</label>' +
       '<div class="sat-body">' +
         '<div class="sat-body-head">' +
-          '<span class="mini-label">Tingkat Pemrosesan</span>' +
+          '<span class="mini-label">Processing Level</span>' +
           '<label class="mini-toggle">' +
-            '<input type="checkbox" class="sat-all" data-source="' + s.key + '">Semua' +
+            '<input type="checkbox" class="sat-all" data-source="' + s.key + '">All' +
           '</label>' +
         '</div>' +
         s.processing.map(p =>
@@ -924,31 +925,31 @@ function setWizardError(msg) {
 
 function validateWizardStep(step) {
   if (step === 1) {
-    if (!state.selectedRegionId) return 'Pilih dulu lokasi dari daftar di panel kiri';
+    if (!state.selectedRegionId) return 'Pick a location from the list on the left first';
     const start = $id('fDateStart').value;
     const end = $id('fDateEnd').value;
-    if (!start || !end) return 'Lengkapi rentang tanggal';
-    if (start > end) return 'Tanggal awal harus lebih dulu dari tanggal akhir';
+    if (!start || !end) return 'Please complete the date range';
+    if (start > end) return 'Start date must be before end date';
     return null;
   }
   if (step === 2) {
     const enabled = enabledSourceKeys();
-    if (enabled.length === 0) return 'Pilih minimal satu sumber satelit';
+    if (enabled.length === 0) return 'Select at least one satellite source';
     const kosong = enabled.filter(k => checkedProcessing(k).length === 0);
     if (kosong.length) {
       const def = SATELLITE_SOURCES.find(s => s.key === kosong[0]);
-      return 'Pilih minimal satu tingkat pemrosesan untuk ' + def.label;
+      return 'Select at least one processing level for ' + def.label;
     }
     return null;
   }
   if (step === 3) {
     if (enabledSourceKeys().length > 1 && !selectedFusionStrategy()) {
-      return 'Pilih strategi fusi (wajib kalau sumbernya lebih dari satu)';
+      return 'Choose a fusion strategy (required with more than one source)';
     }
     return null;
   }
   if (step === 4) {
-    if (!$id('fName').value.trim()) return 'Isi nama dataset';
+    if (!$id('fName').value.trim()) return 'Please enter a dataset name';
     return null;
   }
   return null;
@@ -986,7 +987,7 @@ function goToWizardStep(target) {
 
 function describeSourceSelection(sources) {
   const keys = Object.keys(sources);
-  if (keys.length === 0) return 'belum ada sumber dipilih';
+  if (keys.length === 0) return 'no source selected yet';
   return keys.map(k => {
     const levels = (sources[k].processing || []).map(l => (l === 'PROCESSED' ? 'PROC' : l));
     return (SOURCE_SHORT[k] || k) + '[' + (levels.join('+') || '-') + ']';
@@ -1000,15 +1001,15 @@ function renderWizardReview() {
   const previews = selectedPreviewOptions();
   const multi = enabledSourceKeys().length > 1;
   const rows = [
-    ['Lokasi', region ? region.name : 'belum dipilih'],
-    ['Tanggal', ($id('fDateStart').value || '-') + ' s/d ' + ($id('fDateEnd').value || '-')],
-    ['Sumber', describeSourceSelection(collectSources())],
-    ['Strategi fusi', selectedFusionStrategy() || (multi ? 'belum dipilih' : 'tidak dipakai (1 sumber)')],
+    ['Location', region ? region.name : 'not selected'],
+    ['Dates', ($id('fDateStart').value || '-') + ' to ' + ($id('fDateEnd').value || '-')],
+    ['Sources', describeSourceSelection(collectSources())],
+    ['Fusion strategy', selectedFusionStrategy() || (multi ? 'not selected' : 'not used (1 source)')],
     ...(selectedFusionStrategy() === 'FULL_COVERAGE'
-      ? [['Toleransi S1', selectedTolerance() + ' hari']] : []),
+      ? [['S1 tolerance', selectedTolerance() + ' days']] : []),
     ...(multi && $id('fusionOutputOnly').checked
-      ? [['Penyimpanan', 'hasil fusi saja (berkas per-satelit dihapus)']] : []),
-    ['Preview', previews.length ? previews.join(', ') : 'tidak dibuat'],
+      ? [['Storage', 'fusion output only (per-satellite files deleted)']] : []),
+    ['Preview', previews.length ? previews.join(', ') : 'none'],
   ];
   box.innerHTML = rows.map(r =>
     '<div class="review-row"><span>' + r[0] + '</span><span>' + escapeHTML(String(r[1])) + '</span></div>'
@@ -1025,7 +1026,7 @@ function updateWizardRegion() {
   box.classList.toggle('empty', !region);
   box.textContent = region
     ? region.name + ' -- ' + fmtBBox(region.bbox)
-    : 'Belum ada lokasi dipilih -- pilih dari panel kiri';
+    : 'No location selected yet -- pick one from the left panel';
   renderWizardReview();
 }
 
@@ -1041,14 +1042,14 @@ function renderClonePreview(cfg) {
   const box = $id('clonePreview');
   if (!cfg) { box.classList.add('hidden'); box.innerHTML = ''; return; }
   const dateLine = (cfg.date_start && cfg.date_end)
-    ? '<div class="clone-line">Tanggal: ' + escapeHTML(cfg.date_start) + ' s/d ' + escapeHTML(cfg.date_end) + '</div>'
+    ? '<div class="clone-line">Dates: ' + escapeHTML(cfg.date_start) + ' to ' + escapeHTML(cfg.date_end) + '</div>'
     : '';
   box.innerHTML =
-    '<p class="clone-preview-title">Konfigurasi Terakhir</p>' +
-    '<div class="clone-line">' + escapeHTML(cfg.region_name || 'lokasi tidak diketahui') + '</div>' +
+    '<p class="clone-preview-title">Last Configuration</p>' +
+    '<div class="clone-line">' + escapeHTML(cfg.region_name || 'unknown location') + '</div>' +
     dateLine +
     '<div class="clone-line">' + escapeHTML(describeSourceSelection(cfg.sources || {})) + '</div>' +
-    '<div class="clone-line">Strategi: ' + escapeHTML(cfg.fusion_strategy || 'tidak dipakai') + '</div>';
+    '<div class="clone-line">Strategy: ' + escapeHTML(cfg.fusion_strategy || 'not used') + '</div>';
   box.classList.remove('hidden');
 }
 
@@ -1175,24 +1176,24 @@ $id('cloneConfigBtn').addEventListener('click', async (e) => {
   const btn = e.currentTarget;
   const markup = btn.innerHTML;
   btn.disabled = true;
-  btn.textContent = 'Memuat config...';
+  btn.textContent = 'Loading config...';
   setCloneError('');
   try {
     const res = await fetch('/api/datasets/last-config');
     if (!res.ok) {
       throw new Error(res.status === 404
-        ? 'Belum ada dataset sebelumnya untuk disalin'
-        : 'Gagal mengambil config terakhir (' + res.status + ')');
+        ? 'No previous dataset to copy yet'
+        : 'Failed to fetch the last config (' + res.status + ')');
     }
     const cfg = await res.json();
     cacheLastConfig(cfg);
     renderClonePreview(cfg);
     const regionMissing = applyLastConfig(cfg);
     if (regionMissing) {
-      setCloneError('Lokasi "' + (cfg.region_name || cfg.region_id) +
-        '" tidak ada lagi di daftar -- pilih lokasi lain.');
+      setCloneError('Location "' + (cfg.region_name || cfg.region_id) +
+        '" is no longer in the list -- pick another location.');
     }
-    showToast('Config terakhir dipakai. Isi tanggal dan nama dataset.', 'success');
+    showToast('Last config applied. Fill in the dates and dataset name.', 'success');
   } catch (err) {
     // Tombolnya sengaja tetap aktif: klon itu jalan pintas, kegagalannya tidak
     // boleh ikut memblokir pembuatan dataset secara manual.
@@ -1254,10 +1255,10 @@ $id('createForm').addEventListener('submit', async (e) => {
     generate_preview: previewOptions.length > 0,
   };
   const submitBtn = $id('createSubmit');
-  submitBtn.disabled = true; submitBtn.textContent = 'Membuat...';
+  submitBtn.disabled = true; submitBtn.textContent = 'Creating...';
   try {
     const result = await api('/api/datasets', { method: 'POST', body: JSON.stringify(body) });
-    showToast('Dataset dibuat (status: ' + result.status + ')', 'success');
+    showToast('Dataset created (status: ' + result.status + ')', 'success');
     resetWizard();
     refreshCloneAvailability();
     switchTab('datasets');
@@ -1265,7 +1266,7 @@ $id('createForm').addEventListener('submit', async (e) => {
     setWizardError(err.message);
     showToast(err.message, 'error');
   } finally {
-    submitBtn.disabled = false; submitBtn.textContent = 'Buat Dataset';
+    submitBtn.disabled = false; submitBtn.textContent = 'Create Dataset';
   }
 });
 
@@ -1328,7 +1329,7 @@ document.getElementById('refreshDatasets').addEventListener('click', loadDataset
 function renderDatasets() {
   const container = document.getElementById('datasetList');
   if (state.datasets.length === 0) {
-    container.innerHTML = '<div class="empty">Belum ada dataset. Buat satu di tab Buat Dataset.</div>';
+    container.innerHTML = '<div class="empty">No datasets yet. Create one in the Create Dataset tab.</div>';
     state.cardElements = {};
     return;
   }
@@ -1378,7 +1379,7 @@ function perSourceStatsHTML(ds) {
   if (!keys.length) return '';
 
   const sceneLine = keys
-    .map(k => (SOURCE_SHORT[k] || k) + ': ' + (scenes[k] || 0) + ' scene')
+    .map(k => (SOURCE_SHORT[k] || k) + ': ' + (scenes[k] || 0) + ' scenes')
     .join(' · ');
   const byteLine = keys
     .map(k => (SOURCE_SHORT[k] || k) + ' ' + humanBytes(bytes[k] || 0))
@@ -1391,8 +1392,8 @@ function perSourceStatsHTML(ds) {
 // output -- berapa berkas HDF5 dan dari tanggal mana (DOCS/PIPELINE.md).
 function fusionLabelHTML(ds) {
   if (!ds.fusion_strategy) return '';
-  const extra = ds.fusion_output_only ? ' &middot; hasil fusi saja' : '';
-  return '<div class="card-fusion">Strategi Fusi: <strong>'
+  const extra = ds.fusion_output_only ? ' &middot; fusion output only' : '';
+  return '<div class="card-fusion">Fusion Strategy: <strong>'
     + escapeHTML(ds.fusion_strategy) + '</strong>' + extra + '</div>';
 }
 
@@ -1413,10 +1414,10 @@ function cardShellHTML(ds) {
       '<div class="card-info">' +
         '<div class="card-title-row">' +
           '<span class="card-name">' + escapeHTML(ds.name) + '</span>' +
-          '<span class="badge ' + statusClass + '">' + ds.status + '</span>' +
+          '<span class="badge ' + statusClass + '">' + ds.status.charAt(0) + ds.status.slice(1).toLowerCase() + '</span>' +
           '<button type="button" class="card-collapse-btn' + (collapsed ? ' collapsed' : '') +
-            '" data-action="toggle-body" title="' + (collapsed ? 'Buka panel' : 'Tutup panel') +
-            '" aria-label="' + (collapsed ? 'Buka panel' : 'Tutup panel') + '"><span class="chevron"></span></button>' +
+            '" data-action="toggle-body" title="' + (collapsed ? 'Expand panel' : 'Collapse panel') +
+            '" aria-label="' + (collapsed ? 'Expand panel' : 'Collapse panel') + '"><span class="chevron"></span></button>' +
         '</div>' +
         '<div class="card-meta">' + escapeHTML(ds.location_label || '-') + ' &middot; ' + ds.date_start + ' - ' + ds.date_end + '</div>' +
         datasetProgressHTML(ds, prog) +
@@ -1431,23 +1432,30 @@ function cardShellHTML(ds) {
       fusionLabelHTML(ds) +
       ringLegendHTML(layers) +
       '<div class="card-stats">' +
-        '<div><span class="stat-num">' + ds.total_scenes + '</span><span class="stat-label">scene</span></div>' +
-        '<div><span class="stat-num">' + ds.completed_scenes + '</span><span class="stat-label">selesai</span></div>' +
-        '<div><span class="stat-num">' + ds.failed_scenes + '</span><span class="stat-label">gagal</span></div>' +
-        '<div><span class="stat-num">' + humanBytes(ds.total_size_bytes) + '</span><span class="stat-label">ukuran</span></div>' +
-        '<div><span class="stat-num">' + logDurationText(ds.dataset_id) + '</span><span class="stat-label">durasi</span></div>' +
+        '<div><span class="stat-num">' + ds.completed_scenes + ' / ' + ds.total_scenes + '</span><span class="stat-label">scenes done</span></div>' +
+        (ds.failed_scenes ? '<div class="stat-bad"><span class="stat-num">' + ds.failed_scenes + '</span><span class="stat-label">failed</span></div>' : '') +
+        '<div><span class="stat-num">' + humanBytes(ds.total_size_bytes) + '</span><span class="stat-label">size</span></div>' +
+        '<div><span class="stat-num">' + logDurationText(ds.dataset_id) + '</span><span class="stat-label">duration</span></div>' +
       '</div>' +
       renderLogPanel(ds.dataset_id) +
+      // Baris utama hanya Download + kontrol proses; sisanya (Details, Report,
+      // Structure, Preview, Cancel, Delete) masuk menu "⋯".
       '<div class="card-actions">' +
-        (canPause ? '<button class="btn btn-warn" data-action="pause">Jeda</button>' : '') +
-        (canResume ? '<button class="btn btn-accent" data-action="resume">Lanjutkan</button>' : '') +
-        (canRetry ? '<button class="btn btn-accent" data-action="retry">Coba lagi</button>' : '') +
-        (canCancel ? '<button class="btn btn-danger" data-action="cancel">Batalkan</button>' : '') +
-        (canDownload ? '<a class="btn btn-ghost" href="/api/datasets/' + ds.dataset_id + '/download">Unduh</a>' : '') +
-        (canDownload ? '<a class="btn btn-ghost" href="/api/datasets/' + ds.dataset_id + '/report" target="_blank">Laporan</a>' : '') +
-        '<button class="btn btn-danger" data-action="delete">Hapus</button>' +
-        '<button class="btn btn-ghost" data-action="toggle-scenes">Detail</button>' +
-        (canDownload ? '<button class="btn btn-ghost" data-action="toggle-structure">Struktur</button>' : '') +
+        (canDownload ? '<a class="btn btn-primary" href="/api/datasets/' + ds.dataset_id + '/download">Download</a>' : '') +
+        (canPause ? '<button class="btn btn-warn" data-action="pause">Pause</button>' : '') +
+        (canResume ? '<button class="btn btn-accent" data-action="resume">Resume</button>' : '') +
+        (canRetry ? '<button class="btn btn-accent" data-action="retry">Retry</button>' : '') +
+        '<details class="card-more"' + (state.openMenus.has(String(ds.dataset_id)) ? ' open' : '') + '>' +
+          '<summary class="btn btn-ghost" title="More actions" aria-label="More actions">&#8943;</summary>' +
+          '<div class="card-more-menu">' +
+            '<button type="button" data-action="toggle-scenes">Details</button>' +
+            (canDownload ? '<a href="/api/datasets/' + ds.dataset_id + '/report" target="_blank">Report</a>' : '') +
+            (canDownload ? '<button type="button" data-action="toggle-structure">File structure</button>' : '') +
+            (canDownload ? '<button type="button" data-action="toggle-preview">Preview images</button>' : '') +
+            (canCancel ? '<button type="button" class="danger" data-action="cancel">Cancel processing</button>' : '') +
+            '<button type="button" class="danger" data-action="delete">Delete dataset</button>' +
+          '</div>' +
+        '</details>' +
       '</div>' +
     '</div>'
   );
@@ -1460,15 +1468,29 @@ function createDatasetCard(ds) {
   el.innerHTML =
     '<div class="card-shell">' + el._shellHTML + '</div>' +
     '<div class="card-scenes' + (state.openScenes.has(ds.dataset_id) ? '' : ' hidden') + '" id="scenes-' + ds.dataset_id + '"></div>' +
-    '<div class="card-structure' + (state.openStructure.has(ds.dataset_id) ? '' : ' hidden') + '" id="structure-' + ds.dataset_id + '"></div>';
+    '<div class="card-structure' + (state.openStructure.has(ds.dataset_id) ? '' : ' hidden') + '" id="structure-' + ds.dataset_id + '"></div>' +
+    '<div class="card-structure card-preview' + (state.openPreview.has(ds.dataset_id) ? '' : ' hidden') + '" id="previewbox-' + ds.dataset_id + '">' +
+      '<div class="preview-section" id="preview-' + ds.dataset_id + '"></div>' +
+      '<div class="mask-section" id="masks-' + ds.dataset_id + '"></div></div>';
   bindCardShell(el, ds.dataset_id);
   if (state.openScenes.has(ds.dataset_id)) renderSceneTable(el.querySelector('.card-scenes'), ds.dataset_id);
   if (state.openStructure.has(ds.dataset_id)) renderStructurePanel(el.querySelector('.card-structure'), ds.dataset_id);
+  if (state.openPreview.has(ds.dataset_id)) renderPreviewPanel(ds.dataset_id);
   return el;
 }
 
 function bindCardShell(el, id) {
-  el.querySelectorAll('.card-shell [data-action]').forEach(btn => btn.addEventListener('click', () => handleCardAction(btn.dataset.action, id)));
+  el.querySelectorAll('.card-shell [data-action]').forEach(btn => btn.addEventListener('click', () => {
+    const menu = btn.closest('.card-more');
+    if (menu) menu.open = false;
+    handleCardAction(btn.dataset.action, id);
+  }));
+  // Status buka/tutup menu "⋯" diingat supaya poll yang menulis ulang kartu
+  // tidak menutup menu yang sedang dipakai.
+  const more = el.querySelector('.card-shell .card-more');
+  if (more) more.addEventListener('toggle', () => {
+    if (more.open) state.openMenus.add(String(id)); else state.openMenus.delete(String(id));
+  });
 }
 
 // Hanya menulis ulang bagian "shell" (ring/status/stats/log/tombol) kalau
@@ -1488,6 +1510,13 @@ function updateDatasetCard(el, ds) {
   }
   if (state.openScenes.has(ds.dataset_id)) renderSceneTable(el.querySelector('.card-scenes'), ds.dataset_id);
   if (state.openStructure.has(ds.dataset_id)) renderStructurePanel(el.querySelector('.card-structure'), ds.dataset_id);
+  if (state.openPreview.has(ds.dataset_id)) renderPreviewPanel(ds.dataset_id);
+}
+
+// Panel Preview: galeri PNG per tanggal + layer referensi (mask) per dataset.
+function renderPreviewPanel(id) {
+  renderPreviewGallery(id);
+  renderMaskLayers(id);
 }
 
 // Durasi = selisih timestamp log pertama dataset dan log terbaru; ikut
@@ -1500,16 +1529,16 @@ function logDurationText(id) {
   times = times.filter(t => !isNaN(t));
   if (times.length === 0) return '-';
   const mins = Math.floor((Math.max(...times) - Math.min(...times)) / 60000);
-  return Math.floor(mins / 60) + 'j ' + (mins % 60) + 'm';
+  return Math.floor(mins / 60) + 'h ' + (mins % 60) + 'm';
 }
 
 function renderLogPanel(id) {
   const logs = state.logs[id];
   if (!logs || logs.length === 0) return '';
-  return '<div class="live-logs-title">Live Logs (terbaru)</div>' +
+  return '<div class="live-logs-title">Live Logs (latest)</div>' +
     '<div class="live-logs">' +
       logs.map(l => {
-        const t = new Date(l.timestamp).toLocaleTimeString('id-ID', { hour12: false });
+        const t = new Date(l.timestamp).toLocaleTimeString('en-GB', { hour12: false });
         const detail = formatLogDetail(l);
         return '<div class="log-row ' + logStatusClass(l.status) + '">' +
           '<span class="log-time">' + t + '</span>' +
@@ -1555,13 +1584,13 @@ function shortenSceneId(id) {
 
 async function handleCardAction(action, id) {
   if (action === 'pause') {
-    try { await api('/api/datasets/' + id + '/pause', { method: 'POST', body: JSON.stringify({}) }); showToast('Dataset dijeda', 'success'); await refreshProgress(); }
+    try { await api('/api/datasets/' + id + '/pause', { method: 'POST', body: JSON.stringify({}) }); showToast('Dataset paused', 'success'); await refreshProgress(); }
     catch (e) { showToast(e.message, 'error'); }
   } else if (action === 'resume') {
-    try { await api('/api/datasets/' + id + '/resume', { method: 'POST' }); showToast('Dataset dilanjutkan', 'success'); await refreshProgress(); }
+    try { await api('/api/datasets/' + id + '/resume', { method: 'POST' }); showToast('Dataset resumed', 'success'); await refreshProgress(); }
     catch (e) { showToast(e.message, 'error'); }
   } else if (action === 'retry') {
-    try { await api('/api/pipeline/trigger?dataset_id=' + id, { method: 'POST' }); showToast('Job dijalankan ulang', 'success'); await refreshProgress(); }
+    try { await api('/api/pipeline/trigger?dataset_id=' + id, { method: 'POST' }); showToast('Job restarted', 'success'); await refreshProgress(); }
     catch (e) { showToast(e.message, 'error'); }
   } else if (action === 'cancel') {
     openCancelModal(id);
@@ -1587,6 +1616,11 @@ async function handleCardAction(action, id) {
     box.classList.toggle('hidden');
     if (!box.classList.contains('hidden')) { state.openStructure.add(id); renderStructurePanel(box, id); }
     else { state.openStructure.delete(id); }
+  } else if (action === 'toggle-preview') {
+    const box = document.getElementById('previewbox-' + id);
+    box.classList.toggle('hidden');
+    if (!box.classList.contains('hidden')) { state.openPreview.add(id); renderPreviewPanel(id); }
+    else { state.openPreview.delete(id); }
   }
 }
 
@@ -1599,7 +1633,7 @@ state.detailOpenStages = new Set();
 
 async function renderSceneTable(box, id) {
   if (state.detailData[id]) drawDetailPanel(box, id);
-  else if (!box._html) { box._html = '<div class="empty-small">Memuat detail…</div>'; box.innerHTML = box._html; }
+  else if (!box._html) { box._html = '<div class="empty-small">Loading details…</div>'; box.innerHTML = box._html; }
   try {
     state.detailData[id] = await api('/api/datasets/' + id + '/storage/by-source');
   } catch (e) {
@@ -1609,7 +1643,7 @@ async function renderSceneTable(box, id) {
   drawDetailPanel(box, id);
 }
 
-const DETAIL_PHASE_LABEL = { download: 'Diunduh', processing: 'Diproses', fusion: 'Difusi' };
+const DETAIL_PHASE_LABEL = { download: 'Downloaded', processing: 'Processed', fusion: 'Fused' };
 
 function detailStageHTML(id, src, st, total) {
   const key = id + ':' + src + ':' + st.tier;
@@ -1621,12 +1655,12 @@ function detailStageHTML(id, src, st, total) {
       '<span class="detail-caret">' + (open ? '▾' : '▸') + '</span>' +
       '<span class="detail-phase" style="--phase-color:' + color + '">' + (DETAIL_PHASE_LABEL[st.phase] || st.phase) + '</span>' +
       '<span class="detail-tier">' + escapeHTML(st.tier) + '</span>' +
-      '<span class="detail-count">' + st.scenes.length + ' data · ' + st.file_count + ' berkas</span>' +
+      '<span class="detail-count">' + st.scenes.length + ' items · ' + st.file_count + ' files</span>' +
       '<span class="detail-size">' + humanBytes(st.size_bytes) + ' · ' + (pct < 1 && pct > 0 ? '<1' : Math.round(pct)) + '%</span>' +
     '</button>' +
     '<div class="detail-track"><div class="detail-bar" style="width:' + Math.max(pct, st.size_bytes ? 1 : 0).toFixed(2) + '%;background:' + color + '"></div></div>' +
     (open ? '<ul class="detail-scenes">' + st.scenes.map(sc =>
-      '<li><span class="mono">' + escapeHTML(sc.scene) + '</span><span class="detail-scene-meta">' + sc.file_count + ' berkas · ' + humanBytes(sc.size_bytes) + '</span></li>'
+      '<li><span class="mono">' + escapeHTML(sc.scene) + '</span><span class="detail-scene-meta">' + sc.file_count + ' files · ' + humanBytes(sc.size_bytes) + '</span></li>'
     ).join('') + '</ul>' : '') +
   '</div>';
 }
@@ -1636,7 +1670,7 @@ function drawDetailPanel(box, id) {
   const srcKeys = SOURCE_ORDER_KEYS.filter(k => data.sources[k]);
   let html = '';
   if (!srcKeys.length && !data.fusion) {
-    html += '<div class="empty-small">Belum ada data yang diunduh</div>';
+    html += '<div class="empty-small">No data downloaded yet</div>';
   }
   srcKeys.forEach(src => {
     const info = data.sources[src];
@@ -1657,8 +1691,8 @@ function drawDetailPanel(box, id) {
   }
   const prog = state.progress[id];
   if (prog && prog.scenes.length) {
-    html += '<div class="struct-title">Status pipeline Sentinel-1</div>' +
-      '<table class="scene-table"><thead><tr><th>Scene</th><th>Tahap</th><th>Status</th><th>Catatan</th></tr></thead><tbody>' +
+    html += '<div class="struct-title">Sentinel-1 pipeline status</div>' +
+      '<table class="scene-table"><thead><tr><th>Scene</th><th>Stage</th><th>Status</th><th>Notes</th></tr></thead><tbody>' +
       prog.scenes.map(s => '<tr><td class="mono">' + escapeHTML(s.product_identifier) + '</td><td>' + (s.current_stage || '-') + '</td><td><span class="badge ' + statusToClass(s.stage_status) + '">' + s.stage_status + '</span></td><td class="mono small">' + escapeHTML(s.last_error || '') + '</td></tr>').join('') +
       '</tbody></table>';
   }
@@ -1680,7 +1714,7 @@ document.getElementById('deleteConfirm').addEventListener('click', async () => {
   const force = document.getElementById('deleteForce').checked;
   try {
     await api('/api/datasets/' + pendingDeleteId + '?force=' + force, { method: 'DELETE' });
-    showToast('Penghapusan dimulai', 'success');
+    showToast('Deletion started', 'success');
     closeDeleteModal();
     await loadDatasets();
   } catch (e) { showToast(e.message, 'error'); }
@@ -1692,14 +1726,14 @@ function closeCancelModal() { document.getElementById('cancelModal').classList.a
 document.getElementById('cancelModalCancel').addEventListener('click', closeCancelModal);
 document.getElementById('cancelModalConfirm').addEventListener('click', async () => {
   const btn = document.getElementById('cancelModalConfirm');
-  btn.disabled = true; btn.textContent = 'Membatalkan...';
+  btn.disabled = true; btn.textContent = 'Cancelling...';
   try {
     const r = await api('/api/datasets/' + pendingCancelId + '/cancel', { method: 'POST', body: JSON.stringify({ cascade_delete: true }) });
-    showToast('Dataset dibatalkan (' + r.deleted_files + ' file dihapus, tier ' + r.retained_tier + ' disimpan)', 'success');
+    showToast('Dataset cancelled (' + r.deleted_files + ' files deleted, ' + r.retained_tier + ' tier kept)', 'success');
     closeCancelModal();
     await loadDatasets();
   } catch (e) { showToast(e.message, 'error'); }
-  finally { btn.disabled = false; btn.textContent = 'Ya, Batalkan'; }
+  finally { btn.disabled = false; btn.textContent = 'Yes, Cancel It'; }
 });
 
 // ---------------------------------------------------------------------------
@@ -1714,17 +1748,21 @@ const LM_ROWS = [
   ['modis_flood', 'modis_ndvi', 'modis_ndwi'],
   ['gpm_rain_24h', 'gpm_rain_72h', 'gpm_rain_7d'],
 ];
-const LM_ROW_TITLES = ['Sentinel-1 (radar)', 'MODIS (optik) di atas Sentinel-1 VH', 'GPM (curah hujan) di atas Sentinel-1 VH'];
+const LM_ROW_TITLES = ['Sentinel-1 (radar)', 'MODIS (optical) over Sentinel-1 VH', 'GPM (precipitation) over Sentinel-1 VH'];
 const LM_KEY_LABEL = {
-  s1_vv: 'Sentinel-1 VV', s1_vh: 'Sentinel-1 VH', modis_flood: 'MODIS Peta Banjir',
-  modis_ndvi: 'MODIS NDVI', modis_ndwi: 'MODIS Indeks Air (NDWI)',
-  gpm_rain_24h: 'GPM Hujan 24 jam', gpm_rain_72h: 'GPM Hujan 72 jam', gpm_rain_7d: 'GPM Hujan 7 hari',
+  s1_vv: 'Sentinel-1 VV', s1_vh: 'Sentinel-1 VH', modis_flood: 'MODIS Flood Map',
+  modis_ndvi: 'MODIS NDVI', modis_ndwi: 'MODIS Water Index (NDWI)',
+  gpm_rain_24h: 'GPM Rain 24 h', gpm_rain_72h: 'GPM Rain 72 h', gpm_rain_7d: 'GPM Rain 7 days',
 };
 const LM_STATUS_TEXT = {
-  BACKFILLING: 'Mengisi scene awal', RUNNING: 'Memeriksa scene baru', ACTIVE: 'Aktif',
-  WAITING: 'Menunggu giliran',
-  ERROR: 'Bermasalah', DELETED: 'Dihapus',
+  BACKFILLING: 'Backfilling initial scenes', RUNNING: 'Checking for new scenes', ACTIVE: 'Active',
+  WAITING: 'Waiting its turn',
+  ERROR: 'Error', DELETED: 'Deleted',
 };
+
+// Threshold keys come from the server (etl/live_forecast.py). Forecasts stored
+// before the English switch still carry the Indonesian keys until the next cycle.
+const LM_THRESHOLD_LABEL = { high: 'high', alert: 'alert', tinggi: 'high', waspada: 'alert' };
 
 function lmLevelClass(level) {
   return level === 2 ? 'lv-high' : level === 1 ? 'lv-warn' : level === 0 ? 'lv-ok' : 'lv-na';
@@ -1732,12 +1770,12 @@ function lmLevelClass(level) {
 function lmDate(iso, long) {
   if (!iso) return '-';
   const d = new Date(iso + 'T00:00:00');
-  return long ? d.toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric' })
-              : d.toLocaleDateString('id-ID', { day: '2-digit', month: '2-digit' });
+  return long ? d.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })
+              : d.toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit' });
 }
 function lmNum(v, nd) {
   if (v == null || !isFinite(v)) return '-';
-  return Number(v).toLocaleString('id-ID', { maximumFractionDigits: nd == null ? 1 : nd, minimumFractionDigits: 0 });
+  return Number(v).toLocaleString('en-US', { maximumFractionDigits: nd == null ? 1 : nd, minimumFractionDigits: 0 });
 }
 
 async function loadLive() {
@@ -1752,7 +1790,7 @@ async function loadLive() {
   sel.innerHTML = LM.areas.length
     ? LM.areas.map(a => '<option value="' + a.area_id + '"' + (a.area_id === LM.areaId ? ' selected' : '') + '>' +
         escapeHTML(a.name) + (a.latest_scene_date ? ' · ' + lmDate(a.latest_scene_date, true) : '') + '</option>').join('')
-    : '<option value="">Belum ada daerah</option>';
+    : '<option value="">No areas yet</option>';
   sel.disabled = !LM.areas.length;
   await loadLmActivity();
   renderLmAreaList();
@@ -1775,8 +1813,8 @@ function renderLmAreaList() {
       '<span class="lm-area-item-head"><b>' + escapeHTML(a.name) + '</b>' +
         '<span class="lm-pill ' + (a.status === 'ERROR' ? 'lv-high' : busy ? 'lv-warn' : 'lv-ok') + '">' +
           escapeHTML((LM_STATUS_TEXT[a.status] || a.status) + (busy ? '…' : '')) + '</span></span>' +
-      '<span class="lm-meta-item">' + a.scene_count + '/' + a.retention + ' scene' +
-        (a.latest_scene_date ? ' · terbaru ' + lmDate(a.latest_scene_date, true) : '') + '</span>' +
+      '<span class="lm-meta-item">' + a.scene_count + '/' + a.retention + ' scenes' +
+        (a.latest_scene_date ? ' · latest ' + lmDate(a.latest_scene_date, true) : '') + '</span>' +
       (a.progress ? lmProgressHTML(a, false) : '') +
     '</button>';
   }).join('');
@@ -1807,20 +1845,20 @@ function datasetProgressHTML(ds, prog) {
   const tp = timingParts(prog && prog.timing);
   if (ds.status === 'QUEUED') {
     const pos = prog && prog.queue_position;
-    return progressBarHTML((pos ? 'Menunggu antrean (posisi ' + pos + ')' : 'Menunggu dimulai') + tp.suffix, null, { waiting: true });
+    return progressBarHTML((pos ? 'Queued (position ' + pos + ')' : 'Waiting to start') + tp.suffix, null, { waiting: true });
   }
-  if (ds.status === 'PAUSED') return progressBarHTML('Dijeda', prog ? prog.progress_percent : null, { waiting: true });
+  if (ds.status === 'PAUSED') return progressBarHTML('Paused', prog ? prog.progress_percent : null, { waiting: true });
   const w = prog && prog.waiting;
   const obstacle = {
     waiting: !!w || !!(prog && prog.timing && prog.timing.stalled),
     notes: [{ text: waitNoteText(w), kind: 'warn' }, { text: tp.note, kind: 'warn' }],
   };
   const alerts = authAlertHTML(prog && prog.alerts);
-  if (ds.status === 'PREPARING' || !prog || !prog.total_scenes) return progressBarHTML('Menyiapkan…' + tp.suffix, null, obstacle) + alerts;
+  if (ds.status === 'PREPARING' || !prog || !prog.total_scenes) return progressBarHTML('Preparing…' + tp.suffix, null, obstacle) + alerts;
   const total = prog.total_scenes;
   const failed = Math.min(total, prog.failed_count || 0);
   const ok = Math.min(total - failed, prog.processed_count || 0);
-  const label = (ds.status === 'DOWNLOADING' ? 'Mengunduh' : 'Memproses') + ' · ' + sceneCountText(ok, failed, total) + tp.suffix;
+  const label = (ds.status === 'DOWNLOADING' ? 'Downloading' : 'Processing') + ' · ' + sceneCountText(ok, failed, total) + tp.suffix;
   return progressBarHTML(label, prog.progress_percent, { ...obstacle, failPct: failed / total * 100 }) + alerts;
 }
 
@@ -1828,10 +1866,10 @@ function datasetProgressHTML(ds, prog) {
 // "45 dtk" / "12 mnt" / "1 j 5 mnt"
 function fmtDuration(s) {
   if (s === null || s === undefined) return '';
-  if (s < 60) return Math.max(0, Math.round(s)) + ' dtk';
+  if (s < 60) return Math.max(0, Math.round(s)) + ' s';
   const m = Math.floor(s / 60);
-  if (m < 60) return m + ' mnt';
-  return Math.floor(m / 60) + ' j' + (m % 60 ? ' ' + (m % 60) + ' mnt' : '');
+  if (m < 60) return m + ' min';
+  return Math.floor(m / 60) + ' h' + (m % 60 ? ' ' + (m % 60) + ' min' : '');
 }
 
 // Durasi ditempel ke label, dan catatan "tidak ada kemajuan" kalau server
@@ -1841,8 +1879,8 @@ function timingParts(t) {
   const suffix = t.elapsed_s !== null && t.elapsed_s !== undefined ? ' · ' + fmtDuration(t.elapsed_s) : '';
   let note = '';
   if (t.stalled && t.last_activity_at) {
-    const at = new Date(t.last_activity_at * 1000).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' });
-    note = 'Tidak ada kemajuan sejak ' + at + ' (' + fmtDuration(t.idle_s) + ') — cek log atau batalkan & ulangi';
+    const at = new Date(t.last_activity_at * 1000).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+    note = 'No progress since ' + at + ' (' + fmtDuration(t.idle_s) + ') — check the logs or cancel & retry';
   }
   return { suffix, note };
 }
@@ -1872,27 +1910,27 @@ function progressBarHTML(label, percent, opts) {
 // "Menunggu server CDSE (Sentinel-1): dibatasi server (429) · ±45 dtk · percobaan 2/8"
 function waitNoteText(w) {
   if (!w) return '';
-  return 'Menunggu server ' + w.source_label + ': ' + w.reason +
-    ' · ±' + w.remaining_s + ' dtk' +
-    (w.attempt ? ' · percobaan ' + w.attempt + (w.max_attempts ? '/' + w.max_attempts : '') : '');
+  return 'Waiting for server ' + w.source_label + ': ' + w.reason +
+    ' · ±' + w.remaining_s + ' s' +
+    (w.attempt ? ' · attempt ' + w.attempt + (w.max_attempts ? '/' + w.max_attempts : '') : '');
 }
 
 // Token NASA ditolak: bukan hambatan sementara, pengguna harus bertindak.
 function authAlertHTML(alerts) {
   if (!alerts || !alerts.length) return '';
-  return '<div class="pbar-alert" role="alert"><strong>Token NASA tidak valid atau kedaluwarsa.</strong> ' +
-    'MODIS/GPM tidak bisa diunduh (' + alerts.map(x => escapeHTML(x.source)).join(', ') + '). ' +
-    'Perbarui <code>NASA_EARTHDATA_TOKEN</code> di .env lalu jalankan ulang server.</div>';
+  return '<div class="pbar-alert" role="alert"><strong>NASA token is invalid or expired.</strong> ' +
+    'MODIS/GPM cannot be downloaded (' + alerts.map(x => escapeHTML(x.source)).join(', ') + '). ' +
+    'Update <code>NASA_EARTHDATA_TOKEN</code> in .env and restart the server.</div>';
 }
 
 // "2 selesai · 1 gagal / 4 scene"
 function sceneCountText(ok, failed, total) {
-  return ok + ' selesai' + (failed ? ' · ' + failed + ' gagal' : '') + ' / ' + total + ' scene';
+  return ok + ' done' + (failed ? ' · ' + failed + ' failed' : '') + ' / ' + total + ' scenes';
 }
 
 // Ringkasan siklus terakhir (beberapa menit setelah selesai).
 function lmResultHTML(r) {
-  const at = r.at ? new Date(r.at).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }) : '';
+  const at = r.at ? new Date(r.at).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }) : '';
   return '<div class="pbar-result ' + escapeHTML(r.level || 'ok') + '" role="status">' +
     escapeHTML(r.text) + (at ? ' <span class="pbar-result-at">· ' + at + '</span>' : '') + '</div>';
 }
@@ -1926,30 +1964,30 @@ function renderLmMeta() {
     .map(n => '<option value="' + n + '"' + (n === a.retention ? ' selected' : '') + '>' + n + '</option>').join('');
   box.innerHTML =
     '<span class="lm-pill ' + (a.status === 'ERROR' ? 'lv-high' : a.running ? 'lv-warn' : 'lv-ok') + '">' +
-      escapeHTML(a.running ? (LM_STATUS_TEXT[a.status] || 'Memproses') + '…' : (LM_STATUS_TEXT[a.status] || a.status)) + '</span>' +
-    '<span class="lm-meta-item">' + a.scene_count + '/' + a.retention + ' scene</span>' +
+      escapeHTML(a.running ? (LM_STATUS_TEXT[a.status] || 'Processing') + '…' : (LM_STATUS_TEXT[a.status] || a.status)) + '</span>' +
+    '<span class="lm-meta-item">' + a.scene_count + '/' + a.retention + ' scenes</span>' +
     '<span class="lm-meta-item">' + humanBytes(a.total_size_bytes) + '</span>' +
-    '<span class="lm-meta-item">dicek ' + (a.last_checked_at ? new Date(a.last_checked_at).toLocaleString('id-ID') : 'belum') + '</span>' +
+    '<span class="lm-meta-item">checked ' + (a.last_checked_at ? new Date(a.last_checked_at).toLocaleString('en-GB') : 'never') + '</span>' +
     (a.status_message ? '<span class="lm-meta-item lm-meta-msg">' + escapeHTML(a.status_message) + '</span>' : '') +
     '<span class="lm-meta-actions">' +
-      '<label class="lm-ret">Simpan <select id="lmRetSelect">' + opts + '</select> scene</label>' +
-      '<button type="button" class="btn btn-ghost btn-sm" id="lmCheckBtn"' + (a.running ? ' disabled' : '') + '>Cek sekarang</button>' +
+      '<label class="lm-ret">Keep <select id="lmRetSelect">' + opts + '</select> scenes</label>' +
+      '<button type="button" class="btn btn-ghost btn-sm" id="lmCheckBtn"' + (a.running ? ' disabled' : '') + '>Check now</button>' +
       (a.dataset_id != null && a.scene_count > 0
-        ? '<a class="btn btn-ghost btn-sm" href="/api/datasets/' + a.dataset_id + '/report" target="_blank">Laporan</a>' +
+        ? '<a class="btn btn-ghost btn-sm" href="/api/datasets/' + a.dataset_id + '/report" target="_blank">Report</a>' +
           '<a class="btn btn-ghost btn-sm" href="/api/datasets/' + a.dataset_id + '/report/json" target="_blank">JSON</a>' +
-          '<a class="btn btn-ghost btn-sm" href="/api/datasets/' + a.dataset_id + '/report?force=true" target="_blank" title="Buat ulang laporan dari data terbaru">Buat ulang</a>'
+          '<a class="btn btn-ghost btn-sm" href="/api/datasets/' + a.dataset_id + '/report?force=true" target="_blank" title="Regenerate the report from the latest data">Regenerate</a>'
         : '') +
-      '<button type="button" class="btn btn-danger btn-sm" id="lmDeleteBtn">Hapus daerah</button>' +
+      '<button type="button" class="btn btn-danger btn-sm" id="lmDeleteBtn">Delete area</button>' +
     '</span>' +
     lmProgressHTML(a);
   document.getElementById('lmRetSelect').addEventListener('change', e => lmChangeRetention(a, parseInt(e.target.value, 10), e.target));
   document.getElementById('lmCheckBtn').addEventListener('click', lmCheckNow);
   document.getElementById('lmDeleteBtn').addEventListener('click', () => lmConfirm(
-    'Hapus daerah "' + a.name + '"?',
-    'Semua citra dan preview daerah ini dihapus permanen (' + humanBytes(a.total_size_bytes) + '). Log dan angka ringkas tetap disimpan untuk audit.',
+    'Delete area "' + a.name + '"?',
+    'All imagery and previews for this area will be permanently deleted (' + humanBytes(a.total_size_bytes) + '). Logs and summary figures are kept for auditing.',
     async () => {
       const r = await api('/api/live/areas/' + a.area_id, { method: 'DELETE' });
-      showToast('Daerah dihapus, ' + humanBytes(r.freed_bytes) + ' dibebaskan', 'success');
+      showToast('Area deleted, ' + humanBytes(r.freed_bytes) + ' freed', 'success');
       LM.areaId = null; await loadLive();
     }));
 }
@@ -1957,13 +1995,13 @@ function renderLmMeta() {
 async function lmChangeRetention(a, n, selectEl) {
   const apply = async () => {
     await api('/api/live/areas/' + a.area_id, { method: 'PATCH', body: JSON.stringify({ retention: n }) });
-    showToast('Retensi diubah ke ' + n + ' scene', 'success');
+    showToast('Retention changed to ' + n + ' scenes', 'success');
     await loadLive();
   };
   if (n < a.scene_count) {
     selectEl.value = a.retention;
-    lmConfirm('Turunkan retensi ke ' + n + '?',
-      (a.scene_count - n) + ' scene paling lama akan dihapus permanen sekarang juga. Log-nya tetap disimpan.', apply);
+    lmConfirm('Lower retention to ' + n + '?',
+      'The ' + (a.scene_count - n) + ' oldest scene(s) will be permanently deleted now. Their logs are kept.', apply);
     return;
   }
   try { await apply(); } catch (err) { showToast(err.message, 'error'); }
@@ -1980,8 +2018,8 @@ async function loadLmCard() {
   const box = document.getElementById('lmCard');
   const a = lmArea();
   if (!a) {
-    box.innerHTML = '<div class="lm-empty"><p>Belum ada Daerah Live.</p>' +
-      '<p class="lm-dim">Tambahkan daerah untuk memantau genangan &amp; hujan secara otomatis.</p></div>';
+    box.innerHTML = '<div class="lm-empty"><p>No Live Areas yet.</p>' +
+      '<p class="lm-dim">Add an area to monitor inundation &amp; rainfall automatically.</p></div>';
     return;
   }
   try {
@@ -1994,10 +2032,10 @@ function renderLmCard() {
   const box = document.getElementById('lmCard');
   const { area, scene, dates, forecast } = LM.card;
   if (!scene) {
-    box.innerHTML = '<div class="lm-empty"><p>' + escapeHTML(area.name) + ' sedang disiapkan.</p>' +
+    box.innerHTML = '<div class="lm-empty"><p>' + escapeHTML(area.name) + ' is being prepared.</p>' +
       '<p class="lm-dim">' + (area.running
-        ? 'Sistem sedang mengunduh dan memproses scene Sentinel-1 terbaru. Proses awal bisa memakan waktu 15–60 menit per scene.'
-        : escapeHTML(area.status_message || 'Belum ada scene Sentinel-1 yang berhasil diproses.')) + '</p>' +
+        ? 'The system is downloading and processing the latest Sentinel-1 scene. The first run can take 15–60 minutes per scene.'
+        : escapeHTML(area.status_message || 'No Sentinel-1 scene has been processed successfully yet.')) + '</p>' +
       lmProgressHTML(lmArea() || area, false) + '</div>';
     return;
   }
@@ -2005,9 +2043,9 @@ function renderLmCard() {
   const st = scene.area_status || {};
   let html =
     '<header class="lm-head">' +
-      '<h2>' + escapeHTML(area.name.toUpperCase()) + ' <span class="lm-dim">· scene terbaru: ' + lmDate(latest, true) + '</span></h2>' +
+      '<h2>' + escapeHTML(area.name.toUpperCase()) + ' <span class="lm-dim">· latest scene: ' + lmDate(latest, true) + '</span></h2>' +
       '<p class="lm-status ' + lmLevelClass(st.level) + '">' + escapeHTML(st.text || '-') + '</p>' +
-      (scene.date !== latest ? '<p class="lm-dim">Menampilkan scene ' + lmDate(scene.date, true) + '</p>' : '') +
+      (scene.date !== latest ? '<p class="lm-dim">Showing scene ' + lmDate(scene.date, true) + '</p>' : '') +
     '</header>';
 
   LM_ROWS.forEach((row, i) => {
@@ -2015,29 +2053,38 @@ function renderLmCard() {
       row.map(k => lmTile(k, scene)).join('') + '</div>';
   });
 
-  html += '<h3 class="lm-row-title">Tanggal tersimpan</h3><div class="lm-dates">' +
+  html += '<h3 class="lm-row-title">Stored dates</h3><div class="lm-dates">' +
     dates.map(d => '<button type="button" class="lm-date' + (d.date === scene.date ? ' active' : '') + '" data-date="' + d.date + '">' +
       '<i class="' + lmLevelClass(d.level) + '"></i>' + lmDate(d.date) + '<small>' + new Date(d.date + 'T00:00:00').getFullYear() + '</small></button>').join('') +
     '</div>';
 
   const series = (forecast && forecast.series) || {};
-  html += '<h3 class="lm-row-title">Tren &amp; perkiraan</h3><div class="lm-charts">' +
+  html += '<h3 class="lm-row-title">Trends &amp; forecast</h3><div class="lm-charts">' +
     [['sentinel1', 'Sentinel-1'], ['modis', 'MODIS'], ['gpm', 'GPM']].map(([k, t]) =>
       '<figure class="lm-chart"><figcaption>' + t + ' — ' + escapeHTML(series[k] ? series[k].label + ' (' + series[k].unit + ')' : '') +
-      '</figcaption>' + (series[k] ? lmChartSVG(series[k], scene.date) : '<div class="empty-small">Belum ada data</div>') + '</figure>').join('') +
-    '</div><p class="lm-dim lm-fc-note">Garis putus-putus dan pita = <b>perkiraan</b> (' + lmFcMethod(forecast) + '), bukan data pengamatan.</p>';
+      '</figcaption>' + (series[k] ? lmChartSVG(series[k], scene.date) : '<div class="empty-small">No data yet</div>') + '</figure>').join('') +
+    '</div><p class="lm-dim lm-fc-note">Dashed line and band = <b>forecast</b> (' + lmFcMethod(forecast) + '), not observed data.</p>';
   box.innerHTML = html;
 
   box.querySelectorAll('.lm-date').forEach(b => b.addEventListener('click', () => { LM.date = b.dataset.date; loadLmCard(); }));
-  box.querySelectorAll('.lm-tile img').forEach(img => img.addEventListener('click', () => {
-    document.getElementById('lmImageFull').src = img.src;
-    document.getElementById('lmImageCaption').textContent = img.dataset.caption;
-    document.getElementById('lmImageModal').classList.remove('hidden');
+  // Legenda & kalimat interpretasi hanya tampil di modal, bukan di tile.
+  const lbItems = LM_ROWS.flat().filter(k => scene.previews[k]).map(k => {
+    const p = scene.previews[k];
+    return {
+      url: p.url,
+      title: LM_KEY_LABEL[k],
+      source: lmDate(scene.date, true) + (p.source_date && p.source_date !== scene.date ? ' · nearest ' + lmDate(p.source_date) : ''),
+      legend: lmLegend(p.legend),
+      noteHTML: lmSentence((scene.interpretations || {})[k] || {}),
+    };
+  });
+  box.querySelectorAll('.lm-tile [data-lm-open]').forEach(btn => btn.addEventListener('click', () => {
+    openPreviewLightbox(lbItems, lbItems.findIndex(it => it.title === LM_KEY_LABEL[btn.dataset.lmOpen]));
   }));
   box.querySelectorAll('.lm-retry').forEach(b => b.addEventListener('click', async () => {
     try { const r = await api('/api/live/areas/' + area.area_id + '/scenes/' + scene.date + '/retry', { method: 'POST' });
-      if (r && r.started === false) showToast(r.message || 'Siklus daerah ini sedang berjalan');
-      else showToast('Mencoba ulang MODIS/GPM untuk ' + lmDate(scene.date, true), 'success'); }
+      if (r && r.started === false) showToast(r.message || 'A cycle for this area is already running');
+      else showToast('Retrying MODIS/GPM for ' + lmDate(scene.date, true), 'success'); }
     catch (err) { showToast(err.message, 'error'); }
   }));
   lmBindChartHover(box);
@@ -2045,27 +2092,28 @@ function renderLmCard() {
 
 function lmFcMethod(fc) {
   const m = fc && fc.series && fc.series.sentinel1 && fc.series.sentinel1.forecast.method;
-  return { holt: 'Holt exponential smoothing', ses: 'exponential smoothing sederhana', persistence: 'nilai terakhir — data belum cukup' }[m] || 'exponential smoothing';
+  return { holt: 'Holt exponential smoothing', ses: 'simple exponential smoothing', persistence: 'last value — not enough data yet' }[m] || 'exponential smoothing';
 }
 
 function lmTile(key, scene) {
   const p = scene.previews[key];
-  const it = (scene.interpretations || {})[key] || {};
   const src = key.startsWith('modis') ? 'modis' : key.startsWith('gpm') ? 'gpm' : 'sentinel1';
   const failed = (scene.source_status[src] || {}).status === 'FAILED';
   const nearest = p && p.source_date && p.source_date !== scene.date;
-  const sentence = it.text
+  return '<div class="lm-tile">' +
+    (p ? '<button type="button" class="lm-thumb" data-lm-open="' + key + '" title="Click for legend &amp; description">' +
+           '<img loading="lazy" src="' + p.url + '" alt="' + escapeHTML(LM_KEY_LABEL[key]) + '"></button>'
+       : '<div class="lm-noimg">not available</div>') +
+    '<div class="lm-tile-head"><span>' + LM_KEY_LABEL[key] + '</span>' +
+      (nearest ? '<span class="lm-badge" title="Source data from the nearest date">nearest ' + lmDate(p.source_date) + '</span>' : '') + '</div>' +
+    (failed && src !== 'sentinel1' ? '<button type="button" class="lm-link lm-retry">Retry download</button>' : '') +
+  '</div>';
+}
+
+function lmSentence(it) {
+  return it.text
     ? escapeHTML(it.text).replace(escapeHTML(it.category), '<b class="' + lmLevelClass(it.level) + '">' + escapeHTML(it.category) + '</b>')
     : '';
-  return '<div class="lm-tile">' +
-    (p ? '<img loading="lazy" src="' + p.url + '" alt="' + escapeHTML(LM_KEY_LABEL[key]) + '" data-caption="' + escapeHTML(LM_KEY_LABEL[key] + ' — ' + lmDate(scene.date, true)) + '">'
-       : '<div class="lm-noimg">tidak tersedia</div>') +
-    '<div class="lm-tile-head"><span>' + LM_KEY_LABEL[key] + '</span>' +
-      (nearest ? '<span class="lm-badge" title="Data sumber dari tanggal terdekat">terdekat ' + lmDate(p.source_date) + '</span>' : '') + '</div>' +
-    (p ? lmLegend(p.legend) : '') +
-    '<p class="lm-sentence">' + sentence + '</p>' +
-    (failed && src !== 'sentinel1' ? '<button type="button" class="lm-link lm-retry">Coba unduh ulang</button>' : '') +
-  '</div>';
 }
 
 function lmLegend(lg) {
@@ -2074,7 +2122,7 @@ function lmLegend(lg) {
     return '<div class="lm-legend lm-legend-cat">' + lg.categories.map(c =>
       '<span><i style="background:' + c.color + '"></i>' + escapeHTML(c.label) + '</span>').join('') + '</div>';
   }
-  const unit = lg.units && lg.units !== 'indeks' ? ' ' + lg.units : '';
+  const unit = lg.units && lg.units !== 'indeks' && lg.units !== 'index' ? ' ' + lg.units : '';
   return '<div class="lm-legend"><span>' + lmNum(lg.min, 2) + '</span>' +
     '<i class="lm-ramp" style="background:linear-gradient(90deg,' + lg.stops.join(',') + ')"></i>' +
     '<span>' + lmNum(lg.max, 2) + unit + '</span></div>';
@@ -2086,7 +2134,7 @@ function lmChartSVG(s, selected) {
   const W = 560, H = 190, L = 44, R = 12, T = 12, B = 26;
   const act = s.actual.filter(p => p.value != null);
   const fc = (s.forecast && s.forecast.points) || [];
-  if (!act.length) return '<div class="empty-small">Belum ada data</div>';
+  if (!act.length) return '<div class="empty-small">No data yet</div>';
   const t = d => new Date(d + 'T00:00:00').getTime();
   const xsAll = act.map(p => t(p.date)).concat(fc.map(p => t(p.date)));
   let x0 = Math.min(...xsAll), x1 = Math.max(...xsAll);
@@ -2111,9 +2159,9 @@ function lmChartSVG(s, selected) {
   if (selected && act.some(p => p.date === selected))
     g += '<line class="lm-sel" x1="' + X(t(selected)) + '" x2="' + X(t(selected)) + '" y1="' + T + '" y2="' + (H - B) + '"/>';
   Object.entries(thr).forEach(([name, v]) => {
-    const cls = name === 'tinggi' ? 'lv-high' : 'lv-warn';
+    const cls = LM_THRESHOLD_LABEL[name] === 'high' ? 'lv-high' : 'lv-warn';
     g += '<line class="lm-thr ' + cls + '" x1="' + L + '" x2="' + (W - R) + '" y1="' + Y(v) + '" y2="' + Y(v) + '"/>' +
-      '<text class="lm-thr-label" x="' + (L + 4) + '" y="' + (Y(v) - 4) + '">ambang ' + name + ' ' + lmNum(v, 0) + '</text>';
+      '<text class="lm-thr-label" x="' + (L + 4) + '" y="' + (Y(v) - 4) + '">' + (LM_THRESHOLD_LABEL[name] || name) + ' threshold ' + lmNum(v, 0) + '</text>';
   });
   const last = act[act.length - 1];
   if (fc.length) {
@@ -2122,7 +2170,7 @@ function lmChartSVG(s, selected) {
     g += '<polygon class="lm-band" points="' + band.map(q => q.join(',')).join(' ') + '"/>';
     g += '<polyline class="lm-fc" points="' + [[X(t(last.date)), Y(last.value)]].concat(fc.map(p => [X(t(p.date)), Y(p.mean)])).map(q => q.join(',')).join(' ') + '"/>';
     const lp = fc[fc.length - 1];
-    g += '<text class="lm-fc-label" x="' + (W - R - 2) + '" y="' + (T + 10) + '" text-anchor="end">perkiraan' +
+    g += '<text class="lm-fc-label" x="' + (W - R - 2) + '" y="' + (T + 10) + '" text-anchor="end">forecast' +
       (s.forecast.note ? ' (' + s.forecast.note + ')' : '') + ' →</text>';
   }
   const unit = ' ' + s.unit;
@@ -2137,11 +2185,11 @@ function lmChartSVG(s, selected) {
     act.forEach(p => { g += '<circle class="lm-dot' + (p.date === selected ? ' sel' : '') + '" cx="' + X(t(p.date)) + '" cy="' + Y(p.value) + '" r="4"/>'; });
   }
   // Area hover per titik, lebih besar dari marknya.
-  const pts = act.map(p => ({ d: p.date, v: p.value, kind: 'aktual' }))
-    .concat(fc.map(p => ({ d: p.date, v: p.mean, lo: p.lo, hi: p.hi, kind: 'perkiraan' })));
+  const pts = act.map(p => ({ d: p.date, v: p.value, kind: 'actual' }))
+    .concat(fc.map(p => ({ d: p.date, v: p.mean, lo: p.lo, hi: p.hi, kind: 'forecast' })));
   pts.forEach(p => {
     const tip = lmDate(p.d, true) + ' — ' + p.kind + ': ' + lmNum(p.v) + unit +
-      (p.kind === 'perkiraan' ? ' (rentang ' + lmNum(p.lo) + '–' + lmNum(p.hi) + ')' : '');
+      (p.kind === 'forecast' ? ' (range ' + lmNum(p.lo) + '–' + lmNum(p.hi) + ')' : '');
     g += '<circle class="lm-hit" cx="' + X(t(p.d)) + '" cy="' + Y(p.v) + '" r="14" data-tip="' + escapeHTML(tip) + '"/>';
   });
   return '<div class="lm-chart-box"><svg viewBox="0 0 ' + W + ' ' + H + '" role="img" aria-label="' + escapeHTML(s.label) + '">' + g + '</svg><div class="lm-tip hidden"></div></div>';
@@ -2185,7 +2233,6 @@ document.getElementById('lmConfirmOk').addEventListener('click', async () => {
   catch (err) { showToast(err.message, 'error'); }
   finally { btn.disabled = false; document.getElementById('lmConfirmModal').classList.add('hidden'); }
 });
-document.getElementById('lmImageClose').addEventListener('click', () => document.getElementById('lmImageModal').classList.add('hidden'));
 
 document.getElementById('lmAreaSelect').addEventListener('change', e => lmSelectArea(parseInt(e.target.value, 10) || null));
 
@@ -2207,7 +2254,7 @@ document.getElementById('lmNewLocation').addEventListener('click', () => {
 document.getElementById('lmAddConfirm').addEventListener('click', async () => {
   const btn = document.getElementById('lmAddConfirm');
   const retention = parseInt(document.getElementById('lmRetention').value, 10);
-  if (!(retention >= 1 && retention <= 12)) { showToast('Jumlah scene harus 1–12', 'error'); return; }
+  if (!(retention >= 1 && retention <= 12)) { showToast('Scene count must be 1–12', 'error'); return; }
   btn.disabled = true;
   try {
     const a = await api('/api/live/areas', { method: 'POST', body: JSON.stringify({
@@ -2215,7 +2262,7 @@ document.getElementById('lmAddConfirm').addEventListener('click', async () => {
       name: document.getElementById('lmName').value.trim() || null, retention }) });
     document.getElementById('lmAddModal').classList.add('hidden');
     document.getElementById('lmName').value = '';
-    showToast('Daerah "' + a.name + '" ditambahkan, pengisian awal dimulai', 'success');
+    showToast('Area "' + a.name + '" added, initial backfill started', 'success');
     // Daerah yang sudah punya scene tetap tampil; daerah baru muncul di daftar
     // dengan loading bar-nya sendiri.
     const cur = lmArea();
@@ -2229,7 +2276,7 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
     document.getElementById('deleteModal').classList.add('hidden');
     document.getElementById('cancelModal').classList.add('hidden');
-    ['lmAddModal', 'lmConfirmModal', 'lmImageModal'].forEach(id => document.getElementById(id).classList.add('hidden'));
+    ['lmAddModal', 'lmConfirmModal'].forEach(id => document.getElementById(id).classList.add('hidden'));
   }
 });
 
@@ -2257,7 +2304,7 @@ async function renderStructurePanel(box, id) {
   // tidak perlu disentuh sampai data baru benar-benar siap.
   const cached = state.structureHTML[id];
   if (!box.innerHTML) {
-    box.innerHTML = cached || '<div class="empty-small">Memuat struktur…</div>';
+    box.innerHTML = cached || '<div class="empty-small">Loading structure…</div>';
     if (cached) bindStructurePanel(box, id);
   }
 
@@ -2276,9 +2323,7 @@ async function renderStructurePanel(box, id) {
 
   const html =
     renderStorageBreakdown(id, storage, quality) +
-    '<div class="struct-files" id="structfiles-' + id + '"></div>' +
-    '<div class="mask-section" id="masks-' + id + '"></div>' +
-    '<div class="preview-section" id="preview-' + id + '"></div>';
+    '<div class="struct-files" id="structfiles-' + id + '"></div>';
   // Ganti langsung isinya kalau ada perubahan saja -- kalau datanya sama
   // persis dengan sebelumnya, DOM tidak disentuh sama sekali.
   if (html !== state.structureHTML[id]) {
@@ -2287,11 +2332,7 @@ async function renderStructurePanel(box, id) {
     bindStructurePanel(box, id);
   }
 
-  // Galeri di-fetch terpisah dan tidak di-await: rincian storage sudah bisa
-  // dibaca sementara daftar preview masih jalan, dan dataset yang tier
-  // preview-nya kosong tidak menahan apa pun.
-  renderPreviewGallery(id);
-  renderMaskLayers(id);
+  // Galeri preview dan layer mask ada di panel Preview (menu "⋯").
 }
 
 // ---------------------------------------------------------------------------
@@ -2326,52 +2367,76 @@ async function renderMaskLayers(id) {
     return;
   }
 
+  const withImg = data.layers.filter(l => l.image_url);
+  const lbItems = [];
   const cards = data.layers.map(l => {
     const st = l.statistics || {};
     let facts = [];
     if (st.pct_sea !== undefined) {
-      facts.push(['laut', st.pct_sea.toFixed(2) + '%']);
-      facts.push(['darat', st.pct_land.toFixed(2) + '%']);
-      if (st.clamp_m) facts.push(['batas jarak', '±' + (st.clamp_m / 1000) + ' km']);
+      facts.push(['sea', st.pct_sea.toFixed(2) + '%']);
+      facts.push(['land', st.pct_land.toFixed(2) + '%']);
+      if (st.clamp_m) facts.push(['distance clamp', '±' + (st.clamp_m / 1000) + ' km']);
     }
     if (st.pct_occurrence_ge_90 !== undefined) {
-      facts.push(['air permanen (≥90%)', st.pct_occurrence_ge_90.toFixed(2) + '%']);
-      facts.push(['musiman (≥50%)', st.pct_occurrence_ge_50.toFixed(2) + '%']);
-      if (st.source_resolution_m) facts.push(['sumber', st.source_resolution_m + ' m']);
+      facts.push(['permanent water (≥90%)', st.pct_occurrence_ge_90.toFixed(2) + '%']);
+      facts.push(['seasonal (≥50%)', st.pct_occurrence_ge_50.toFixed(2) + '%']);
+      if (st.source_resolution_m) facts.push(['source', st.source_resolution_m + ' m']);
     }
 
-    const img = l.image_url
-      ? '<img src="' + escapeHTML(l.image_url) + '" alt="' + escapeHTML(l.label) + '" loading="lazy">'
-      : '<div class="mask-noimg">tanpa preview</div>';
+    const idx = withImg.indexOf(l);
+    lbItems.push(null);
+    const legend = maskLegendHTML(l);
+    const desc = escapeHTML(l.interpretation || '') +
+      (facts.length ? '<span class="mask-facts">' + facts.map(f =>
+        '<span class="mask-fact"><b>' + escapeHTML(f[1]) + '</b>' + escapeHTML(f[0]) + '</span>').join('') + '</span>' : '') +
+      '<span class="mask-file">' + escapeHTML(l.data_file) + ' · ' + humanBytes(l.size_bytes) + '</span>';
+    if (idx >= 0) lbItems[idx] = { url: l.image_url, title: l.label, source: 'Reference layer · ' + (data.applies_to || ''), legend, noteHTML: desc };
 
-    return '<figure class="mask-card">' +
-      img +
-      '<figcaption>' +
-        '<span class="mask-title">' + escapeHTML(l.label) + '</span>' +
-        '<span class="mask-interp">' + escapeHTML(l.interpretation || '') + '</span>' +
-        '<div class="mask-facts">' +
-          facts.map(f =>
-            '<span class="mask-fact"><b>' + escapeHTML(f[1]) + '</b>' +
-            escapeHTML(f[0]) + '</span>').join('') +
-        '</div>' +
-        '<span class="mask-file">' + escapeHTML(l.data_file) + ' · ' +
-          humanBytes(l.size_bytes) + '</span>' +
-      '</figcaption>' +
-    '</figure>';
+    // Tampilan sama dengan tile Live/preview: gambar + judul saja; legenda,
+    // statistik, dan interpretasi ada di lightbox.
+    return '<div class="lm-tile">' +
+      (l.image_url
+        ? '<button type="button" class="lm-thumb" data-mask-open="' + idx + '" title="Click for legend &amp; description">' +
+            '<img src="' + escapeHTML(l.image_url) + '" alt="' + escapeHTML(l.label) + '" loading="lazy"></button>'
+        : '<div class="lm-noimg">no preview</div>') +
+      '<div class="lm-tile-head"><span>' + escapeHTML(l.label) + '</span></div>' +
+    '</div>';
   }).join('');
 
   const html =
     '<div class="mask-head">' +
-      '<h4>Layer Referensi</h4>' +
+      '<h4>Reference Layers</h4>' +
       '<span class="mask-sub">' + escapeHTML(data.applies_to) + ' · ' +
         humanBytes(data.total_size_bytes) + '</span>' +
     '</div>' +
-    '<p class="mask-note">Informasi tambahan, bukan penyaring — data mentah ' +
-      'dan fusion tidak diubah sama sekali. Sungai dan danau sengaja ' +
-      'dipertahankan karena luapannya justru sinyal banjir yang dicari.</p>' +
-    '<div class="mask-grid">' + cards + '</div>';
+    '<p class="mask-note">Supplementary information, not a filter — raw ' +
+      'and fusion data are not modified at all. Rivers and lakes are kept ' +
+      'on purpose, since their overflow is exactly the flood signal of interest.</p>' +
+    '<div class="mask-grid preview-grid lm-row">' + cards + '</div>';
 
   if (box._html !== html) { box._html = html; box.innerHTML = html; }
+  const items = lbItems.filter(Boolean);
+  box.querySelectorAll('[data-mask-open]').forEach(btn => {
+    btn.onclick = () => openPreviewLightbox(items, Number(btn.dataset.maskOpen));
+  });
+}
+
+// Legenda mask mengikuti warna render_preview di etl/land_mask.py dan
+// etl/water_occurrence.py (manifest tidak membawa colormap).
+function maskLegendHTML(l) {
+  const f = String(l.data_file || l.layer || '');
+  const ramp = (lo, stops, hi) => '<div class="lm-legend"><span>' + lo + '</span>' +
+    '<i class="lm-ramp" style="background:linear-gradient(90deg,' + stops.join(',') + ')"></i><span>' + hi + '</span></div>';
+  if (f.includes('land_distance')) {
+    const km = ((l.statistics || {}).clamp_m || 0) / 1000;
+    return ramp('sea (far)', ['#0000ff', '#000078', '#3c2800', '#ffb400'], 'land' + (km ? ' (≥' + km + ' km)' : '')) +
+      '<div class="lm-legend lm-legend-cat"><span>0 = coastline (blue ↔ orange boundary)</span></div>';
+  }
+  if (f.includes('water_occurrence')) {
+    return ramp('0%', ['#f0f0f0', '#0a5adc'], '100% water') +
+      '<div class="lm-legend lm-legend-cat"><span><i style="background:#808080"></i>no data</span></div>';
+  }
+  return '';
 }
 
 function bindStructurePanel(box, id) {
@@ -2428,8 +2493,8 @@ async function renderPreviewGallery(id) {
 // ternary itu akan diam-diam melabelinya "Berwarna".
 const PREVIEW_KIND_LABELS = {
   grayscale: 'Grayscale',
-  colored: 'Berwarna',
-  composite: 'Komposit & Overlay',
+  colored: 'Colored',
+  composite: 'Composite & Overlay',
 };
 
 // Tiga alasan berbeda kenapa galeri bisa kosong, dan ketiganya butuh kalimat
@@ -2443,16 +2508,16 @@ function renderPreviewEmpty(id) {
 
   let msg;
   if (ds && ds.generate_preview === false) {
-    msg = 'Preview dimatikan untuk dataset ini. Centang "Buat Preview" saat membuat dataset ' +
-          'untuk menghasilkannya, atau jalankan ulang render lewat CLI ' +
+    msg = 'Previews are disabled for this dataset. Select a preview option when creating a dataset ' +
+          'to generate them, or re-run the render via the CLI ' +
           'python -m etl.module10_generate_preview.';
   } else if (!reachesCog) {
-    msg = 'Preview dirender dari tier COG, sementara dataset ini berhenti sebelum COG. ' +
-          'Pilih tier COG atau FUSED untuk mendapatkannya.';
+    msg = 'Previews are rendered from the COG tier, but this dataset stops before COG. ' +
+          'Choose the COG or FUSED tier to get them.';
   } else {
-    msg = 'Belum ada preview untuk dataset ini. Preview dibuat otomatis setelah tahap ' +
-          'COG selesai; dataset yang dibuat sebelum fitur ini ada bisa dirender ulang ' +
-          'lewat CLI python -m etl.module10_generate_preview.';
+    msg = 'No previews for this dataset yet. Previews are generated automatically after the ' +
+          'COG stage finishes; datasets created before this feature existed can be re-rendered ' +
+          'via the CLI python -m etl.module10_generate_preview.';
   }
 
   return '<div class="struct-title preview-title">' +
@@ -2492,24 +2557,24 @@ function drawPreviewGallery(id) {
   // menutup seluruh AOI di tanggal itu (bukan bug, tapi perlu kelihatan
   // supaya tidak disalahartikan sebagai preview yang rusak).
   const isPartial = s => s.coverage_quality === 'partial';
-  const dateRow = filterRow('Tanggal', data.scenes.length > 1
+  const dateRow = filterRow('Date', data.scenes.length > 1
     ? '<div class="preview-dates">' + data.scenes.map(s =>
         '<button class="preview-date' + (s.scene === scene.scene ? ' active' : '') +
           (isPartial(s) ? ' preview-date-partial' : '') + '"' +
           ' data-preview-scene="' + escapeHTML(s.scene) + '"' +
-          (isPartial(s) ? ' title="Cakupan Sentinel-1 sebagian (partial swath)"' : '') + '>' +
+          (isPartial(s) ? ' title="Partial Sentinel-1 coverage (partial swath)"' : '') + '>' +
           formatDateKey(s.scene) + (isPartial(s) ? ' <span class="preview-date-flag">●</span>' : '') +
         '</button>'
       ).join('') + '</div>'
     : '<span class="preview-single-date">' + formatDateKey(scene.scene) +
-        (isPartial(scene) ? ' <span class="preview-date-flag" title="Cakupan Sentinel-1 sebagian (partial swath)">●</span>' : '') +
+        (isPartial(scene) ? ' <span class="preview-date-flag" title="Partial Sentinel-1 coverage (partial swath)">●</span>' : '') +
       '</span>');
 
   const coverageBadge = scene.coverage_quality === 'partial'
     ? '<span class="preview-coverage-badge" title="' +
         (scene.coverage_min_valid_fraction != null
-          ? 'Cakupan valid ~' + Math.round(scene.coverage_min_valid_fraction * 100) + '% dari AOI'
-          : 'Sentinel-1 tidak menutup seluruh AOI di tanggal ini') +
+          ? 'Valid coverage ~' + Math.round(scene.coverage_min_valid_fraction * 100) + '% of the AOI'
+          : 'Sentinel-1 does not cover the whole AOI on this date') +
       '">Partial Coverage</span>'
     : '';
 
@@ -2520,7 +2585,7 @@ function drawPreviewGallery(id) {
         '</button>').join('') + '</div>')
     : '';
 
-  const kindRow = filterRow('Jenis', '<div class="preview-kinds" role="tablist">' +
+  const kindRow = filterRow('Type', '<div class="preview-kinds" role="tablist">' +
     data.kinds.map(k =>
       '<button class="preview-kind' + (k === kind ? ' active' : '') + '" role="tab"' +
         ' aria-selected="' + (k === kind) + '" data-preview-kind="' + k + '">' +
@@ -2552,7 +2617,7 @@ function drawPreviewGallery(id) {
   const closedGroups = state.previewClosed[id] || (state.previewClosed[id] = new Set());
 
   const cards = block.images.length === 0
-    ? '<div class="empty-small">Tidak ada gambar ' + escapeHTML(kind) + ' untuk tanggal ini</div>'
+    ? '<div class="empty-small">No ' + escapeHTML(kind) + ' images for this date</div>'
     : groupKeys.map(src =>
         // <details> native: satelit dengan belasan gambar bisa dilipat tanpa
         // mengubah state di luar set `closedGroups` kecil ini.
@@ -2562,45 +2627,27 @@ function drawPreviewGallery(id) {
             '<span class="struct-swatch" style="background:' + sourceColor(src) + '"></span>' +
             '<span class="preview-group-name">' + escapeHTML(sourceLabel(src)) + '</span>' +
             (level ? '<span class="preview-group-level">' + escapeHTML(level) + '</span>' : '') +
-            '<span class="preview-group-count">' + groups[src].length + ' gambar</span>' +
+            '<span class="preview-group-count">' + groups[src].length + ' images</span>' +
           '</summary>' +
           previewCardsHTML(groups[src], src) +
         '</details>').join('');
 
-  function previewRange(img) {
-    return Array.isArray(img.value_range)
-      ? img.value_range[0] + ' – ' + img.value_range[1] + (img.units ? ' ' + img.units : '')
-      : '';
-  }
-
   function previewCardsHTML(images, src) {
-    return '<div class="preview-grid">' + images.map(img => {
-        const range = previewRange(img);
+    return '<div class="preview-grid lm-row">' + images.map(img => {
         const idx = flat.findIndex(f => f.img === img);
-        return '<figure class="preview-card">' +
-            // Tombol, bukan <div>: bisa difokus dengan keyboard dan membuka
-            // lightbox. Gambar ditampilkan utuh (contain) -- dulu dipotong
-            // persegi sehingga citra yang besar/lebar terpotong.
-            '<button type="button" class="preview-thumb" data-preview-open="' + idx + '"' +
-                ' title="Klik untuk memperbesar">' +
-              // loading=lazy + decoding=async: satu dataset bisa punya belasan
-              // tanggal x 8 PNG, dan panel ini sering dibuka sekadar untuk
-              // melihat angka storage-nya.
+        // Tampilan disamakan dengan tile Live: gambar + judul saja. Legenda,
+        // colormap/rentang, dan interpretasi hanya muncul di lightbox.
+        return '<div class="lm-tile">' +
+            // loading=lazy + decoding=async: satu dataset bisa punya belasan
+            // tanggal x 8 PNG, dan panel ini sering dibuka sekadar untuk
+            // melihat angka storage-nya.
+            '<button type="button" class="lm-thumb" data-preview-open="' + idx + '"' +
+                ' title="Click for legend &amp; description">' +
               '<img src="' + escapeHTML(img.url) + '" alt="' + escapeHTML(img.label || img.key) + '"' +
                 ' loading="lazy" decoding="async">' +
-              '<span class="preview-zoom" aria-hidden="true">⤢</span>' +
             '</button>' +
-            '<figcaption>' +
-              '<span class="preview-label">' + escapeHTML(img.label || img.key) + '</span>' +
-              '<span class="preview-tags">' +
-                (img.colormap ? '<span class="preview-tag">' + escapeHTML(img.colormap) + '</span>' : '') +
-                (range ? '<span class="preview-tag mono">' + escapeHTML(range) + '</span>' : '') +
-              '</span>' +
-              (img.interpretation
-                ? '<span class="preview-note" title="' + escapeHTML(img.interpretation) + '">' +
-                    escapeHTML(img.interpretation) + '</span>' : '') +
-            '</figcaption>' +
-          '</figure>';
+            '<div class="lm-tile-head"><span>' + escapeHTML(img.label || img.key) + '</span></div>' +
+          '</div>';
     }).join('') + '</div>';
   }
 
@@ -2608,7 +2655,7 @@ function drawPreviewGallery(id) {
   // disebut: galeri yang diam-diam kekurangan lima gambar akan terbaca
   // sebagai "cuma segini yang ada", bukan "ada yang gagal".
   const missing = (scene.skipped || []).length > 0
-    ? '<p class="preview-missing">' + scene.skipped.length + ' lapisan tidak dirender: ' +
+    ? '<p class="preview-missing">' + scene.skipped.length + ' layer(s) not rendered: ' +
         escapeHTML(scene.skipped.map(s => s.key).join(', ')) + '</p>'
     : '';
 
@@ -2659,12 +2706,36 @@ function drawPreviewGallery(id) {
         url: f.img.url,
         title: f.img.label || f.img.key,
         source: sourceLabel(f.src),
-        colormap: f.img.colormap || '',
-        range: previewRange(f.img),
-        note: f.img.interpretation || '',
+        legend: previewLegendHTML(f.img),
+        note: f.img.interpretation || f.img.note || '',
       })), Number(btn.dataset.previewOpen));
     });
   });
+}
+
+// Stop warna colormap matplotlib yang dipakai module10 -- sidecar katalog
+// hanya membawa nama colormap, sedangkan legenda Live membawa stop-nya.
+const CMAP_STOPS = {
+  viridis: ['#440154', '#3b528b', '#21918c', '#5ec962', '#fde725'],
+  RdYlGn: ['#a50026', '#f46d43', '#fee08b', '#d9ef8b', '#66bd63', '#006837'],
+  BrBG: ['#543005', '#bf812d', '#f6e8c3', '#c7eae5', '#35978f', '#003c30'],
+  YlGnBu: ['#ffffd9', '#c7e9b4', '#41b6c4', '#225ea8', '#081d58'],
+  gray: ['#000000', '#ffffff'], grey: ['#000000', '#ffffff'], greys_r: ['#000000', '#ffffff'],
+};
+
+// Legenda katalog dalam format yang sama dengan lmLegend (Live).
+function previewLegendHTML(img) {
+  if (Array.isArray(img.legend) && img.legend.length) {
+    return lmLegend({ type: 'categorical', categories: img.legend.map(c => ({ color: c.color, label: c.label })) });
+  }
+  if (img.channels) {
+    return '<div class="lm-legend lm-legend-cat">' + Object.entries(img.channels).map(([ch, band]) =>
+      '<span><i style="background:' + ({ R: '#ff3b3b', G: '#3bff6a', B: '#3b8bff' }[ch] || '#888') + '"></i>' +
+      escapeHTML(ch + ' = ' + band) + '</span>').join('') + '</div>';
+  }
+  const stops = CMAP_STOPS[String(img.colormap || '').split(' ')[0]];
+  if (!stops || !Array.isArray(img.value_range)) return '';
+  return lmLegend({ type: 'continuous', min: img.value_range[0], max: img.value_range[1], units: img.units, stops });
 }
 
 // Lightbox: satu elemen bersama untuk semua dataset, dibuat saat pertama
@@ -2675,6 +2746,9 @@ let previewLightbox = null;
 function openPreviewLightbox(items, index) {
   if (!items.length) return;
   let cur = Math.max(0, Math.min(index, items.length - 1));
+  // Zoom & geser: skala + translasi pada <img>, dibatasi 1x-8x.
+  const Z_MIN = 1, Z_MAX = 8;
+  let z = 1, tx = 0, ty = 0;
 
   if (!previewLightbox) {
     const el = document.createElement('div');
@@ -2684,30 +2758,59 @@ function openPreviewLightbox(items, index) {
     el.innerHTML =
       '<div class="lightbox-backdrop" data-lb="close"></div>' +
       '<div class="lightbox-panel">' +
-        '<button type="button" class="lightbox-btn lightbox-close" data-lb="close" aria-label="Tutup">✕</button>' +
-        '<button type="button" class="lightbox-btn lightbox-nav lightbox-prev" data-lb="prev" aria-label="Sebelumnya">‹</button>' +
-        '<div class="lightbox-stage"><img alt=""></div>' +
-        '<button type="button" class="lightbox-btn lightbox-nav lightbox-next" data-lb="next" aria-label="Berikutnya">›</button>' +
-        '<div class="lightbox-caption"></div>' +
+        '<div class="lightbox-view">' +
+          '<div class="lightbox-stage"><img alt="" draggable="false"></div>' +
+          '<button type="button" class="lightbox-btn lightbox-nav lightbox-prev" data-lb="prev" aria-label="Previous">‹</button>' +
+          '<button type="button" class="lightbox-btn lightbox-nav lightbox-next" data-lb="next" aria-label="Next">›</button>' +
+          '<div class="lightbox-zoom" role="toolbar" aria-label="Zoom">' +
+            '<button type="button" data-lb="zoom-out" aria-label="Zoom out">−</button>' +
+            '<button type="button" class="lightbox-zoom-val" data-lb="zoom-reset" title="Reset zoom">100%</button>' +
+            '<button type="button" data-lb="zoom-in" aria-label="Zoom in">+</button>' +
+          '</div>' +
+        '</div>' +
+        '<aside class="lightbox-info">' +
+          '<button type="button" class="lightbox-btn lightbox-close" data-lb="close" aria-label="Close">✕</button>' +
+          '<div class="lightbox-caption"></div>' +
+        '</aside>' +
       '</div>';
     document.body.appendChild(el);
     previewLightbox = el;
   }
   const lb = previewLightbox;
-  const img = lb.querySelector('.lightbox-stage img');
+  const stage = lb.querySelector('.lightbox-stage');
+  const img = stage.querySelector('img');
   const cap = lb.querySelector('.lightbox-caption');
+  const zval = lb.querySelector('.lightbox-zoom-val');
 
+  function apply() {
+    // Jaga agar gambar tidak bisa digeser keluar dari panggung.
+    const maxX = stage.clientWidth * (z - 1) / 2, maxY = stage.clientHeight * (z - 1) / 2;
+    tx = Math.max(-maxX, Math.min(maxX, tx));
+    ty = Math.max(-maxY, Math.min(maxY, ty));
+    img.style.transform = 'translate(' + tx + 'px,' + ty + 'px) scale(' + z + ')';
+    zval.textContent = Math.round(z * 100) + '%';
+    stage.classList.toggle('zoomed', z > 1);
+  }
+  function zoomTo(nz, cx, cy) {
+    nz = Math.max(Z_MIN, Math.min(Z_MAX, nz));
+    // Zoom ke arah titik kursor (cx, cy relatif ke tengah panggung).
+    if (cx != null) { tx = cx - (cx - tx) * nz / z; ty = cy - (cy - ty) * nz / z; }
+    z = nz; if (z === 1) { tx = 0; ty = 0; }
+    apply();
+  }
   function show() {
     const it = items[cur];
+    z = 1; tx = 0; ty = 0; apply();
     img.src = it.url;
     img.alt = it.title;
     cap.innerHTML =
-      '<span class="lightbox-title">' + escapeHTML(it.title) + '</span>' +
-      '<span class="lightbox-meta">' + escapeHTML(it.source) +
-        (it.colormap ? ' · ' + escapeHTML(it.colormap) : '') +
-        (it.range ? ' · ' + escapeHTML(it.range) : '') +
-        ' · ' + (cur + 1) + '/' + items.length + '</span>' +
-      (it.note ? '<span class="lightbox-note">' + escapeHTML(it.note) + '</span>' : '');
+      '<span class="lightbox-counter">' + (cur + 1) + ' / ' + items.length + '</span>' +
+      '<h3 class="lightbox-title">' + escapeHTML(it.title) + '</h3>' +
+      '<span class="lightbox-meta">' + escapeHTML(it.source) + '</span>' +
+      (it.legend ? '<div class="lightbox-section"><span class="lightbox-label">Legend</span>' +
+        '<div class="lightbox-legend">' + it.legend + '</div></div>' : '') +
+      ((it.noteHTML || it.note) ? '<div class="lightbox-section"><span class="lightbox-label">Description</span>' +
+        '<p class="lightbox-note">' + (it.noteHTML || escapeHTML(it.note)) + '</p></div>' : '');
     lb.classList.toggle('single', items.length < 2);
   }
   function step(d) { cur = (cur + d + items.length) % items.length; show(); }
@@ -2715,19 +2818,47 @@ function openPreviewLightbox(items, index) {
     lb.classList.add('hidden');
     document.body.classList.remove('lightbox-open');
     document.removeEventListener('keydown', onKey);
-    lb.onclick = null;
+    lb.onclick = null; stage.onwheel = null; stage.onpointerdown = null; stage.ondblclick = null;
     img.removeAttribute('src');
   }
   function onKey(e) {
     if (e.key === 'Escape') close();
     else if (e.key === 'ArrowLeft') step(-1);
     else if (e.key === 'ArrowRight') step(1);
+    else if (e.key === '+' || e.key === '=') zoomTo(z * 1.25);
+    else if (e.key === '-') zoomTo(z / 1.25);
+    else if (e.key === '0') zoomTo(1);
+  }
+  function rel(e) {
+    const r = stage.getBoundingClientRect();
+    return [e.clientX - r.left - r.width / 2, e.clientY - r.top - r.height / 2];
   }
   lb.onclick = e => {
     const t = e.target.closest('[data-lb]');
     if (!t) return;
-    if (t.dataset.lb === 'close') close();
-    else step(t.dataset.lb === 'next' ? 1 : -1);
+    const a = t.dataset.lb;
+    if (a === 'close') close();
+    else if (a === 'zoom-in') zoomTo(z * 1.25);
+    else if (a === 'zoom-out') zoomTo(z / 1.25);
+    else if (a === 'zoom-reset') zoomTo(1);
+    else step(a === 'next' ? 1 : -1);
+  };
+  stage.onwheel = e => {
+    e.preventDefault();
+    const [cx, cy] = rel(e);
+    zoomTo(z * (e.deltaY < 0 ? 1.15 : 1 / 1.15), cx, cy);
+  };
+  stage.ondblclick = e => { const [cx, cy] = rel(e); zoomTo(z > 1 ? 1 : 2.5, cx, cy); };
+  stage.onpointerdown = e => {
+    if (z <= 1) return;
+    const sx = e.clientX - tx, sy = e.clientY - ty;
+    stage.setPointerCapture(e.pointerId);
+    stage.classList.add('dragging');
+    stage.onpointermove = m => { tx = m.clientX - sx; ty = m.clientY - sy; apply(); };
+    stage.onpointerup = stage.onpointercancel = () => {
+      stage.classList.remove('dragging');
+      stage.onpointermove = stage.onpointerup = stage.onpointercancel = null;
+    };
   };
 
   document.addEventListener('keydown', onKey);
@@ -2742,7 +2873,7 @@ function formatDateKey(key) {
   if (!/^\d{8}$/.test(key)) return escapeHTML(key);
   const d = new Date(key.slice(0, 4) + '-' + key.slice(4, 6) + '-' + key.slice(6, 8) + 'T00:00:00Z');
   if (isNaN(d)) return escapeHTML(key);
-  return d.toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' });
+  return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' });
 }
 
 // Tata letak: satu kartu per satelit dalam grid responsif. Di dalam kartu,
@@ -2752,16 +2883,18 @@ function formatDateKey(key) {
 // dulu membuat indentasi tiga lapis. Kualitas per satelit jadi kaki kartu.
 function renderStorageBreakdown(id, storage, quality) {
   if (storage.legacy_layout) {
-    return '<div class="struct-title">Struktur penyimpanan</div>'
-      + '<div class="empty-small">Dataset ini memakai struktur folder lama dan '
-      + 'tidak bisa ditelusuri di sini. Berkasnya tetap utuh di disk. '
-      + '<a class="btn-link" href="/api/datasets/' + id + '/download">Unduh semua</a>'
+    return '<div class="struct-title">Storage structure</div>'
+      + '<div class="empty-small">This dataset uses the legacy folder layout and '
+      + 'cannot be browsed here. Its files are still intact on disk. '
+      + '<a class="btn-link" href="/api/datasets/' + id + '/download">Download all</a>'
       + '</div>';
   }
 
   const bySource = {};
   const crossSource = [];
   STORAGE_TIER_ORDER.forEach(tier => {
+    // Gambar preview punya panel sendiri (menu "⋯" > Preview images).
+    if (tier.toUpperCase() === 'PREVIEW') return;
     const info = storage.tiers[tier.toLowerCase()];
     if (!info || !info.file_count) return;
     const entries = Object.entries(info.sources || {});
@@ -2776,7 +2909,7 @@ function renderStorageBreakdown(id, storage, quality) {
   const sourceKeys = SOURCE_ORDER_KEYS.filter(k => bySource[k])
     .concat(Object.keys(bySource).filter(k => !SOURCE_ORDER_KEYS.includes(k)));
   if (!sourceKeys.length && !crossSource.length) {
-    return '<div class="struct-title">Struktur penyimpanan</div><div class="empty-small">Belum ada berkas di disk</div>';
+    return '<div class="struct-title">Storage structure</div><div class="empty-small">No files on disk yet</div>';
   }
 
   const sum = list => list.reduce((n, [, v]) => n + v.size_bytes, 0);
@@ -2790,10 +2923,10 @@ function renderStorageBreakdown(id, storage, quality) {
       '<span class="sg-name">' + escapeHTML(tier) + '</span>' +
       '<span class="sg-track"><span class="sg-bar" style="width:' + Math.max(pct, 1.5).toFixed(1) + '%;background:' + color + '"></span></span>' +
       '<span class="sg-size">' + humanBytes(v.size_bytes) + '</span>' +
-      '<span class="sg-meta">' + v.file_count + ' berkas · ' + v.scene_count + ' scene</span>' +
+      '<span class="sg-meta">' + v.file_count + ' files · ' + v.scene_count + ' scenes</span>' +
       '<span class="sg-actions">' +
-        '<button class="btn-link" data-tier-files="' + tier.toLowerCase() + '"' + (src ? ' data-source="' + src + '"' : '') + '>Berkas</button>' +
-        '<a class="btn-link" href="/api/datasets/' + id + '/download' + q + '">Unduh</a>' +
+        '<button class="btn-link" data-tier-files="' + tier.toLowerCase() + '"' + (src ? ' data-source="' + src + '"' : '') + '>Files</button>' +
+        '<a class="btn-link" href="/api/datasets/' + id + '/download' + q + '">Download</a>' +
       '</span>' +
     '</div>';
   }
@@ -2805,9 +2938,9 @@ function renderStorageBreakdown(id, storage, quality) {
     const bands = Object.entries(qd.bands || {})
       .map(([b, v]) => '<span class="qual-band">' + escapeHTML(b) + ' <b>' + v.toFixed(1) + '</b></span>').join('');
     return '<div class="sg-foot">' +
-      '<span class="sg-foot-label">Kualitas</span>' +
+      '<span class="sg-foot-label">Quality</span>' +
       '<span class="badge ' + cls + '">' + (qd.quality_score == null ? '-' : qd.quality_score.toFixed(1)) + '</span>' +
-      '<span class="qual-kind">' + (qd.kind === 'RADIOMETRIC' ? 'radiometrik' : 'kelengkapan') + '</span>' +
+      '<span class="qual-kind">' + (qd.kind === 'RADIOMETRIC' ? 'radiometric' : 'completeness') + '</span>' +
       (bands ? '<span class="qual-bands">' + bands + '</span>' : '') +
     '</div>';
   }
@@ -2834,10 +2967,10 @@ function renderStorageBreakdown(id, storage, quality) {
     return cardHTML(sourceLabel(src), sourceColor(src), total, groups, src);
   });
   if (crossSource.length) {
-    cards.push(cardHTML('Lintas-satelit', null, sum(crossSource), [[null, crossSource]], null));
+    cards.push(cardHTML('Cross-satellite', null, sum(crossSource), [[null, crossSource]], null));
   }
 
-  return '<div class="struct-title">Struktur penyimpanan' +
+  return '<div class="struct-title">Storage structure' +
       '<span class="struct-grand">' + humanBytes(storage.total_size_bytes) + '</span>' +
     '</div>' +
     '<div class="sg-grid">' + cards.join('') + '</div>';
@@ -2852,7 +2985,7 @@ function dateFromName(s) {
 }
 
 function formatDateKey(k) {
-  return k ? k.slice(0, 4) + '-' + k.slice(4, 6) + '-' + k.slice(6, 8) : 'di luar tanggal';
+  return k ? k.slice(0, 4) + '-' + k.slice(4, 6) + '-' + k.slice(6, 8) : 'undated';
 }
 
 async function loadTierFiles(id, tier, source) {
@@ -2861,7 +2994,7 @@ async function loadTierFiles(id, tier, source) {
   const key = tier + '/' + (source || '');
   if (box.dataset.tier === key) { box.innerHTML = ''; box.dataset.tier = ''; return; }
   box.dataset.tier = key;
-  box.innerHTML = '<div class="empty-small">Memuat berkas…</div>';
+  box.innerHTML = '<div class="empty-small">Loading files…</div>';
   try {
     // Source disaring di server: endpoint sudah menerima ?source=, jadi daun
     // pohon tidak perlu menarik seluruh tier lalu membuang sebagian besarnya.
@@ -2869,7 +3002,7 @@ async function loadTierFiles(id, tier, source) {
       + (source ? '?source=' + encodeURIComponent(source) : '');
     const data = await api(url);
     if (data.scenes.length === 0) {
-      box.innerHTML = '<div class="empty-small">Laci ini kosong</div>';
+      box.innerHTML = '<div class="empty-small">This folder is empty</div>';
       return;
     }
 
@@ -2884,11 +3017,11 @@ async function loadTierFiles(id, tier, source) {
     });
 
     const dates = Object.keys(byDate).sort();
-    box.innerHTML = '<div class="sg-files-head"><span>Berkas ' + escapeHTML(tier.toUpperCase()) +
+    box.innerHTML = '<div class="sg-files-head"><span>Files ' + escapeHTML(tier.toUpperCase()) +
       (source ? ' · ' + escapeHTML(sourceLabel(source)) : '') + '</span>' +
-      '<button class="btn-link" data-close-files>Tutup</button></div>' +
+      '<button class="btn-link" data-close-files>Close</button></div>' +
       '<table class="scene-table"><thead><tr>' +
-      '<th>Tanggal</th><th>Scene</th><th>Berkas</th><th>Ukuran</th>' +
+      '<th>Date</th><th>Scene</th><th>File</th><th>Size</th>' +
       '</tr></thead><tbody>' +
       dates.map(d => byDate[d].map(([sc, f], i) =>
         '<tr>' +
@@ -2952,8 +3085,8 @@ async function renderMergePanel() {
   const rows = mergeableCandidates.map(c => {
     const names = c.dataset_names.map(escapeHTML).join(' + ');
     const shape = c.output_shape[0] && c.output_shape[1]
-      ? c.output_shape[1].toLocaleString('id-ID') + ' x ' +
-        c.output_shape[0].toLocaleString('id-ID') + ' px'
+      ? c.output_shape[1].toLocaleString('en-US') + ' x ' +
+        c.output_shape[0].toLocaleString('en-US') + ' px'
       : '-';
 
     let action;
@@ -2963,23 +3096,23 @@ async function renderMergePanel() {
       // ulang belasan GB hanya untuk mendapat gambarnya.
       const needsPreview = !(c.preview_images || []).length;
       action =
-        '<span class="merge-done">Sudah digabung · ' +
+        '<span class="merge-done">Already merged · ' +
           humanBytes(c.output_size_bytes || 0) + '</span>' +
         (needsPreview
           ? '<button class="btn btn-ghost btn-sm" data-preview-date="' +
-              escapeHTML(c.date) + '">Buat Preview</button>'
+              escapeHTML(c.date) + '">Build Preview</button>'
           : '') +
         '<button class="btn btn-ghost btn-sm" data-merge-date="' +
           escapeHTML(c.date) + '" data-merge-ids="' + c.dataset_ids.join(',') +
-          '" data-merge-overwrite="1">Gabung Ulang</button>' +
+          '" data-merge-overwrite="1">Re-merge</button>' +
         '<button class="btn btn-ghost btn-sm btn-danger" data-delete-date="' +
           escapeHTML(c.date) + '" data-delete-size="' +
-          (c.output_size_bytes || 0) + '">Hapus</button>';
+          (c.output_size_bytes || 0) + '">Delete</button>';
     } else {
       action =
         '<button class="btn btn-accent btn-sm" data-merge-date="' +
           escapeHTML(c.date) + '" data-merge-ids="' + c.dataset_ids.join(',') +
-          '">Gabungkan</button>';
+          '">Merge</button>';
     }
 
     const notes = [];
@@ -3005,9 +3138,9 @@ async function renderMergePanel() {
           '<div class="merge-date">' + escapeHTML(formatDateKey(c.date)) + '</div>' +
           '<div class="merge-sources">' + names + '</div>' +
           '<div class="merge-facts">' +
-            '<span>' + c.stack_count + ' stack</span>' +
+            '<span>' + c.stack_count + ' stacks</span>' +
             '<span>' + shape + '</span>' +
-            '<span>' + c.layers.length + ' lapisan</span>' +
+            '<span>' + c.layers.length + ' layers</span>' +
             '<span>' + humanBytes(c.input_bytes) + '</span>' +
           '</div>' +
         '</div>' +
@@ -3021,12 +3154,12 @@ async function renderMergePanel() {
   const collapsed = state.mergeCollapsed;
   const html =
     '<div class="merge-head">' +
-      '<h4>Gabungkan Dataset</h4>' +
+      '<h4>Merge Datasets</h4>' +
       '<span class="merge-sub">' + mergeableCandidates.length +
-        ' tanggal siap digabung</span>' +
+        ' date(s) ready to merge</span>' +
       '<button type="button" class="card-collapse-btn' + (collapsed ? ' collapsed' : '') +
-        '" data-action="toggle-merge" title="' + (collapsed ? 'Buka panel' : 'Tutup panel') +
-        '" aria-label="' + (collapsed ? 'Buka panel' : 'Tutup panel') + '"><span class="chevron"></span></button>' +
+        '" data-action="toggle-merge" title="' + (collapsed ? 'Expand panel' : 'Collapse panel') +
+        '" aria-label="' + (collapsed ? 'Expand panel' : 'Collapse panel') + '"><span class="chevron"></span></button>' +
     '</div>' +
     '<div class="merge-body' + (collapsed ? ' hidden' : '') + '">' +
       '<p class="merge-note">' + escapeHTML(data.explanation) + '</p>' +
@@ -3073,20 +3206,20 @@ async function deleteMergeResult(btn) {
   // ini bisa digabung ulang -- dan kalimatnya mengatakan itu supaya user tidak
   // mengira sedang membuang hasil pemrosesan.
   if (!window.confirm(
-      'Hapus hasil gabungan ' + formatDateKey(date) + ' (' + humanBytes(size) +
-      ') beserta preview-nya?\n\n' +
-      'Stack fusion sumbernya tidak dihapus, jadi tanggal ini bisa digabung ulang.')) {
+      'Delete the merged output for ' + formatDateKey(date) + ' (' + humanBytes(size) +
+      ') and its previews?\n\n' +
+      'The source fusion stacks are not deleted, so this date can be merged again.')) {
     return;
   }
 
   const original = btn.textContent;
   btn.disabled = true;
-  btn.textContent = 'Menghapus...';
+  btn.textContent = 'Deleting...';
   try {
     const result = await api('/api/merge/result/' + encodeURIComponent(date),
                              { method: 'DELETE' });
-    showToast(result.removed.join(', ') + ' dihapus · ' +
-              humanBytes(result.freed_bytes) + ' dibebaskan', 'success');
+    showToast(result.removed.join(', ') + ' deleted · ' +
+              humanBytes(result.freed_bytes) + ' freed', 'success');
     box_refreshMerge();
   } catch (err) {
     showToast(err.message, 'error');
@@ -3101,12 +3234,12 @@ async function buildMergePreview(btn) {
   btn.disabled = true;
   // Seluruh isi HDF5 didekompresi, jadi ini menit-menitan untuk AOI sebesar
   // Jawa. Tombolnya mengatakan itu, supaya tidak dikira menggantung.
-  btn.textContent = 'Merender... (beberapa menit)';
+  btn.textContent = 'Rendering... (a few minutes)';
   try {
     const result = await api(
       '/api/merge/preview/' + encodeURIComponent(date) + '/rebuild',
       { method: 'POST' });
-    showToast(result.preview_images.length + ' gambar dibuat untuk ' +
+    showToast(result.preview_images.length + ' images created for ' +
               formatDateKey(date), 'success');
     box_refreshMerge();
   } catch (err) {
@@ -3124,14 +3257,14 @@ async function runMerge(btn) {
   // Konfirmasi eksplisit untuk gabung ulang: itu menimpa berkas yang sudah
   // ada. Penggabungan pertama tidak perlu ditanya -- tidak ada yang hilang.
   if (overwrite && !window.confirm(
-      'Berkas gabungan untuk ' + formatDateKey(date) +
-      ' sudah ada dan akan ditimpa. Lanjutkan?')) {
+      'A merged file for ' + formatDateKey(date) +
+      ' already exists and will be overwritten. Continue?')) {
     return;
   }
 
   const original = btn.textContent;
   btn.disabled = true;
-  btn.textContent = 'Menggabungkan...';
+  btn.textContent = 'Merging...';
   try {
     const result = await api('/api/merge/run', {
       method: 'POST',
@@ -3139,8 +3272,8 @@ async function runMerge(btn) {
       body: JSON.stringify({ date: date, dataset_ids: ids, overwrite: overwrite }),
     });
     showToast(
-      result.output_name + ' dibuat · ' + humanBytes(result.output_size_bytes) +
-      ' · sumber tidak diubah', 'success');
+      result.output_name + ' created · ' + humanBytes(result.output_size_bytes) +
+      ' · sources unchanged', 'success');
     box_refreshMerge();
   } catch (err) {
     showToast(err.message, 'error');
@@ -3156,3 +3289,11 @@ function box_refreshMerge() {
   if (box) box._html = null;
   renderMergePanel();
 }
+
+// Deep link dari landing page: /app#datasets atau /app#live membuka tab itu.
+function applyHashTab() {
+  const name = location.hash.replace('#', '');
+  if (['create', 'datasets', 'live'].includes(name)) switchTab(name);
+}
+window.addEventListener('hashchange', applyHashTab);
+applyHashTab();

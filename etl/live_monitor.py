@@ -144,7 +144,7 @@ class _LiveFiles:
     def __init__(self, dataset_id: int, dataset_name: str, dataset_kind: str) -> None:
         if dataset_kind != "LIVE_AREA":
             raise UnsafeDeletion(
-                f"dataset_id={dataset_id} berjenis {dataset_kind!r}, bukan LIVE_AREA"
+                f"dataset_id={dataset_id} is of kind {dataset_kind!r}, not LIVE_AREA"
             )
         self.dataset_id = dataset_id
         self.dataset_name = dataset_name
@@ -277,7 +277,7 @@ class LiveMonitor:
                 .select_from(LiveArea).where(LiveArea.deleted_at.is_(None))
             )
         if active >= MAX_AREAS:
-            raise ValueError(f"Maksimal {MAX_AREAS} Daerah Live. Hapus salah satu dulu.")
+            raise ValueError(f"Maximum of {MAX_AREAS} Live Areas reached. Delete one first.")
 
         bbox_wkt, region_id, label = resolve_region_id(self._db, region_id)
         name = (name or "").strip() or label
@@ -285,7 +285,7 @@ class LiveMonitor:
         dataset = self._db.create_dataset_with_sources(
             dict(
                 name=f"live_{name}",
-                description=f"Dataset Daerah Live '{name}' (dikelola Live Monitoring)",
+                description=f"Live Area dataset '{name}' (managed by Live Monitoring)",
                 location_label=label,
                 region_id=region_id,
                 bbox=f"SRID=4326;{bbox_wkt}",
@@ -313,7 +313,7 @@ class LiveMonitor:
             sess.flush()
             area_id = area.area_id
         self.log(area_id, "CREATE", "OK",
-                 f"Daerah '{name}' dibuat, retensi {retention} scene",
+                 f"Area '{name}' created, retention {retention} scenes",
                  dataset_id=dataset.dataset_id, region_id=region_id)
         if start:
             self.start_cycle(area_id)
@@ -331,7 +331,7 @@ class LiveMonitor:
         with self._db.session() as sess:
             a = sess.get(LiveArea, area_id)
             if a is None or a.deleted_at is not None:
-                raise LookupError(f"Daerah Live {area_id} tidak ditemukan")
+                raise LookupError(f"Live Area {area_id} not found")
             return self._area_dict(a)
 
     def update_area(self, area_id: int, retention: int | None = None,
@@ -340,7 +340,7 @@ class LiveMonitor:
         with self._db.session() as sess:
             a = sess.get(LiveArea, area_id)
             if a is None or a.deleted_at is not None:
-                raise LookupError(f"Daerah Live {area_id} tidak ditemukan")
+                raise LookupError(f"Live Area {area_id} not found")
             if name is not None and name.strip():
                 a.name = name.strip()
             if enabled is not None:
@@ -352,7 +352,7 @@ class LiveMonitor:
                 a.retention = retention
             a.updated_at = _now()
         if retention is not None:
-            self.log(area_id, "RETENTION", "OK", f"Retensi diubah {old} -> {retention}")
+            self.log(area_id, "RETENTION", "OK", f"Retention changed {old} -> {retention}")
             # Turun: kelebihan langsung dihapus. Naik: isi kekurangannya.
             self.enforce_retention(area_id, reason=f"retensi diturunkan ke {retention}")
             self.refresh_forecast(area_id)
@@ -366,7 +366,7 @@ class LiveMonitor:
         with self._db.session() as sess:
             a = sess.get(LiveArea, area_id)
             if a is None or a.deleted_at is not None:
-                raise LookupError(f"Daerah Live {area_id} tidak ditemukan")
+                raise LookupError(f"Live Area {area_id} not found")
             a.enabled = False
             dataset_id = a.dataset_id
             name = a.name
@@ -379,7 +379,7 @@ class LiveMonitor:
                                         LiveScene.deleted_at.is_(None))
             ).all()]
         for d in dates:
-            total_freed += self.delete_scene(area_id, d, reason="daerah dihapus")
+            total_freed += self.delete_scene(area_id, d, reason="area deleted")
 
         # Sisa berkas (cache granule, metadata.json, scratch) + baris dataset.
         # DeletionManager bekerja di root dataset ini saja.
@@ -403,8 +403,8 @@ class LiveMonitor:
             a.status = "DELETED"
             a.deleted_at = _now()
         self.log(area_id, "DELETE_AREA", "OK",
-                 f"Daerah '{name}' dihapus, {len(dates)} scene, "
-                 f"{total_freed / 1e6:.1f} MB dibebaskan",
+                 f"Area '{name}' deleted, {len(dates)} scenes, "
+                 f"{total_freed / 1e6:.1f} MB freed",
                  freed_bytes=total_freed, scenes=[d.isoformat() for d in dates],
                  leftover_files=leftover.get("deleted_count"))
         return {"area_id": area_id, "status": "DELETED", "freed_bytes": total_freed,
@@ -412,7 +412,7 @@ class LiveMonitor:
 
     # --- retensi ------------------------------------------------------------
 
-    def enforce_retention(self, area_id: int, reason: str = "melebihi retensi") -> int:
+    def enforce_retention(self, area_id: int, reason: str = "exceeds retention") -> int:
         """Hapus scene tertua sampai jumlah scene tersimpan <= retensi."""
         with self._db.session() as sess:
             a = sess.get(LiveArea, area_id)
@@ -458,7 +458,7 @@ class LiveMonitor:
                 s.freed_bytes = int(s.freed_bytes or 0) + freed
                 s.previews = {}
         self.log(area_id, "DELETE_SCENE", "OK",
-                 f"Scene {scene_date} dihapus ({reason}): {len(deleted)} berkas, "
+                 f"Scene {scene_date} deleted ({reason}): {len(deleted)} files, "
                  f"{freed / 1e6:.1f} MB", scene_date=scene_date,
                  files=len(deleted), freed_bytes=freed)
         return freed
@@ -473,7 +473,7 @@ class LiveMonitor:
         deleted, freed = files.delete(files.stale_granules(keep_from))
         if deleted:
             self.log(area_id, "PRUNE_CACHE", "OK",
-                     f"{len(deleted)} granule cache lama dihapus ({freed / 1e6:.1f} MB)",
+                     f"{len(deleted)} old granule cache file(s) deleted ({freed / 1e6:.1f} MB)",
                      freed_bytes=freed, files=deleted)
 
     def _drop_product_rows(self, dataset_id: int, paths: list[str]) -> None:
@@ -601,13 +601,13 @@ class LiveMonitor:
         with self._db.session() as sess:
             a = sess.get(LiveArea, area_id)
             if a is None or a.deleted_at is not None:
-                raise LookupError(f"Daerah Live {area_id} tidak ditemukan")
+                raise LookupError(f"Live Area {area_id} not found")
             dataset_id = a.dataset_id
             evs = sess.scalars(select(LiveEvent).where(LiveEvent.area_id == area_id)
                                .order_by(LiveEvent.event_id.desc()).limit(limit)).all()
             rows = [{
                 "timestamp": e.created_at,
-                "scene_id": e.scene_date.isoformat() if e.scene_date else "SIKLUS",
+                "scene_id": e.scene_date.isoformat() if e.scene_date else "CYCLE",
                 "stage": e.step,
                 "status": self._EVENT_STATUS.get(e.status, e.status),
                 "message": e.message,
@@ -672,16 +672,16 @@ class LiveMonitor:
     # tahap unduh+proses (counter job LIVE_INGEST); tahap lain tidak punya
     # ukuran yang jujur, jadi bar-nya indeterminate (percent None).
     _PHASES = {
-        "RECOVER": "Memeriksa scene baru",
-        "CYCLE": "Memeriksa scene baru",
-        "DISCOVER": "Memeriksa scene baru",
-        "INGEST": "Mengunduh & memproses",
-        "SCENE": "Menyusun metrik & preview",
-        "PREVIEW": "Menyusun metrik & preview",
-        "RETRY": "Mencoba ulang MODIS/GPM",
-        "DELETE_SCENE": "Merapikan scene lama",
-        "PRUNE_CACHE": "Merapikan scene lama",
-        "FORECAST": "Menghitung forecast",
+        "RECOVER": "Checking for new scenes",
+        "CYCLE": "Checking for new scenes",
+        "DISCOVER": "Checking for new scenes",
+        "INGEST": "Downloading & processing",
+        "SCENE": "Building metrics & previews",
+        "PREVIEW": "Building metrics & previews",
+        "RETRY": "Retrying MODIS/GPM",
+        "DELETE_SCENE": "Tidying up old scenes",
+        "PRUNE_CACHE": "Tidying up old scenes",
+        "FORECAST": "Computing forecast",
     }
 
     @staticmethod
@@ -742,14 +742,14 @@ class LiveMonitor:
     def _progress_phase(self, a: LiveArea) -> dict | None:
         running = self.is_running(a.area_id)
         if a.status == "WAITING":
-            return {"phase": "Menunggu giliran", "percent": None}
+            return {"phase": "Waiting its turn", "percent": None}
         if not running:
             return None
         with self._db.session() as sess:
             ev = sess.scalar(select(LiveEvent).where(LiveEvent.area_id == a.area_id)
                              .order_by(LiveEvent.event_id.desc()).limit(1))
             step, status = (ev.step, ev.status) if ev is not None else ("CYCLE", "STARTED")
-        phase = self._PHASES.get(step, "Memproses")
+        phase = self._PHASES.get(step, "Processing")
         if step == "INGEST" and status == "STARTED" and a.dataset_id is not None:
             from etl.dataset_manager import DatasetManager
             try:
@@ -837,9 +837,9 @@ def _check_retention(value) -> int:
     try:
         n = int(value)
     except (TypeError, ValueError):
-        raise ValueError("Retensi harus bilangan bulat 1-12")
+        raise ValueError("Retention must be a whole number from 1 to 12")
     if not MIN_RETENTION <= n <= MAX_RETENTION:
-        raise ValueError(f"Retensi harus {MIN_RETENTION}-{MAX_RETENTION} scene")
+        raise ValueError(f"Retention must be {MIN_RETENTION}-{MAX_RETENTION} scenes")
     return n
 
 

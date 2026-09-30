@@ -24,7 +24,7 @@ def test_missing_pyhdf_fails_before_download(monkeypatch):
     monkeypatch.setattr(m7, "_download_with_retry", lambda *a, **k: called.append(a))
     monkeypatch.setattr(m7, "_discover_tile_files_with_fallback", lambda *a, **k: called.append(a))
 
-    with pytest.raises(RuntimeError, match="pyhdf tidak terpasang"):
+    with pytest.raises(RuntimeError, match="pyhdf is not installed"):
         m7.download_modis_scene(1, "x", datetime(2025, 1, 1), datetime(2025, 1, 1))
     assert called == []
 

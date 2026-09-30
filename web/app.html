@@ -1,0 +1,387 @@
+<!-- web/app.html -->
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The Trinity · Satellite Data Platform</title>
+<link rel="icon" type="image/webp" href="logo.webp">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<link rel="stylesheet" href="style.css?v=ux2">
+</head>
+<body>
+
+<div id="bgMap"></div>
+<div id="bgOverlay"></div>
+
+<!-- Penutup peta: satu path SVG "layar penuh dikurangi persegi panjang rounded".
+     Karena fill-rule=evenodd, lubangnya tidak ikut ter-hit-test, jadi path ini
+     sekaligus memblokir drag/zoom peta di luar jendela dengan sudut yang membulat
+     persis mengikuti border jendela. -->
+<svg id="mapMask" class="hidden" aria-hidden="true"><path id="mapMaskPath" fill-rule="evenodd"></path></svg>
+
+<div class="map-ui hidden" id="mapUI">
+  <div class="map-hint-chip" id="mapHintChip">
+    <span class="map-hint-title">Region Map</span>
+    <span class="map-hint-sub" id="mapBboxReadout">Pick a location or drag the map to change the area</span>
+  </div>
+  <!-- Dipos oleh JS tepat di atas jendela peta; overflow:hidden + radius yang sama
+       membuat kotak seleksi terpotong rapi di sudut membulat. -->
+  <div class="map-clip" id="mapClip">
+    <div class="map-selection-box" id="mapSelectionBox"></div>
+    <button type="button" class="map-zoom-btn" id="mapZoomOut" title="Zoom out" aria-label="Zoom out">&minus;</button>
+    <button type="button" class="map-zoom-btn" id="mapZoomIn" title="Zoom in" aria-label="Zoom in">+</button>
+  </div>
+</div>
+
+<div class="floatnav-zone" id="floatNavZone">
+  <nav class="floatnav" id="floatNav" tabindex="0">
+    <div class="floatnav-brand">
+      <img class="brand-mark" src="logo.webp" alt="The Trinity">
+      <div class="brand-text">
+        <span class="brand-name">THE TRINITY</span>
+        <span class="brand-sub">SENTINEL / MODIS / GPM</span>
+      </div>
+    </div>
+    <div class="floatnav-tabs">
+      <a class="tab" href="./">Home</a>
+      <button class="tab active" data-tab="create">Create Dataset</button>
+      <button class="tab" data-tab="datasets">Dataset Catalog</button>
+      <button class="tab" data-tab="live">Live Monitoring</button>
+    </div>
+    <div class="status">
+      <span class="status-dot" id="statusDot"></span>
+      <span id="statusLabel" class="status-label-text">Connecting...</span>
+    </div>
+  </nav>
+</div>
+
+<main>
+
+  <section class="view" id="view-create">
+    <div class="create-grid">
+
+      <section class="loc-section">
+        <!-- Border/latar ada di .loc-section (tidak ikut menggulung); hanya .panel-scroll
+             yang menggulung, sehingga bingkai tetap membingkai panel, bukan kontennya. -->
+        <div class="panel-scroll">
+          <p class="section-title">Choose Location</p>
+          <button type="button" class="btn btn-add-loc" id="addLocationBtn">
+            <span class="btn-icon" id="addLocationIcon"></span>Add Location
+          </button>
+          <div class="loc-search">
+            <span class="loc-search-icon" id="locSearchIcon"></span>
+            <input type="search" id="locSearch" autocomplete="off" placeholder="Search saved locations...">
+          </div>
+          <div class="region-grid" id="regionGrid"></div>
+        </div>
+      </section>
+
+      <div class="map-gap" id="mapGap"></div>
+
+      <section class="config-section">
+        <div class="panel-scroll">
+          <p class="section-title">Configuration</p>
+          <!-- novalidate: validasi bawaan browser berjalan SEBELUM event submit dan
+               ikut memeriksa field di langkah yang sedang disembunyikan. Field wajib
+               yang tak terlihat akan memblokir submit tanpa pesan yang bisa dilihat
+               user ("not focusable"), jadi aturan wajibnya ditegakkan per langkah oleh
+               validateWizardStep() yang pesannya menunjuk langkah yang benar. Atribut
+               `required` dibiarkan sebagai penanda semantik untuk pembaca layar. -->
+          <form id="createForm" novalidate>
+
+            <!-- Pra-wisaya: klon konfigurasi dataset terakhir (DOCS/DECISIONS.md D13).
+                 Disembunyikan sampai diketahui ada dataset sebelumnya -- tombol yang
+                 selalu tampil lalu selalu gagal untuk pengguna baru hanya jadi jebakan. -->
+            <div class="clone-block hidden" id="cloneBlock">
+              <button type="button" class="btn btn-clone" id="cloneConfigBtn">
+                <span class="btn-icon" id="cloneConfigIcon"></span>Reuse Previous Config
+              </button>
+              <div class="clone-preview hidden" id="clonePreview"></div>
+              <p class="clone-error hidden" id="cloneError" role="alert"></p>
+            </div>
+
+            <ol class="wizard-steps" id="wizardSteps">
+              <li class="wizard-step-pip active" data-pip="1"><span>1</span>Region</li>
+              <li class="wizard-step-pip" data-pip="2"><span>2</span>Satellites</li>
+              <li class="wizard-step-pip" data-pip="3"><span>3</span>Fusion</li>
+              <li class="wizard-step-pip" data-pip="4"><span>4</span>Review</li>
+            </ol>
+
+            <!-- Langkah 1: wilayah (dipilih di panel kiri) + rentang tanggal -->
+            <section class="wizard-panel" data-step="1">
+              <p class="wizard-title">Region &amp; Dates</p>
+              <div class="wizard-region" id="wizardRegion">No location selected yet</div>
+              <div class="field-row">
+                <div class="field">
+                  <label for="fDateStart">Start date</label>
+                  <input type="date" id="fDateStart" required>
+                </div>
+                <div class="field">
+                  <label for="fDateEnd">End date</label>
+                  <input type="date" id="fDateEnd" required>
+                </div>
+              </div>
+              <details class="advanced">
+                <summary>Advanced settings (optional)</summary>
+                <div class="field-row-3">
+                  <div class="field">
+                    <label for="fMinCloud">Max. cloud cover (%)</label>
+                    <input type="number" id="fMinCloud" min="0" max="100" step="1">
+                  </div>
+                  <div class="field">
+                    <label for="fMinQuality">Minimum quality score (0–100)</label>
+                    <input type="number" id="fMinQuality" min="0" max="100" step="1">
+                  </div>
+                  <div class="field">
+                    <label for="fResolution">Resolution (m)</label>
+                    <input type="number" id="fResolution" min="1" step="1">
+                  </div>
+                </div>
+              </details>
+            </section>
+
+            <!-- Langkah 2: sumber satelit + level pemrosesan PER satelit.
+                 Kartunya dirender app.js dari SATELLITE_SOURCES supaya label,
+                 deskripsi, dan arti RAW/PROCESSED tiap sensor hidup di satu tempat. -->
+            <section class="wizard-panel hidden" data-step="2">
+              <div class="wizard-title-row">
+                <p class="wizard-title">Satellite Data Sources</p>
+                <label class="master-toggle" for="masterAll">
+                  <input type="checkbox" id="masterAll">Select All
+                </label>
+              </div>
+              <div class="satellite-list" id="satelliteList"></div>
+            </section>
+
+            <!-- Langkah 3: strategi fusi (hanya kalau >1 sumber) + opsi preview -->
+            <section class="wizard-panel hidden" data-step="3">
+              <div id="fusionGroup">
+                <p class="wizard-title">Fusion Strategy</p>
+                <div class="fusion-list" id="fusionList"></div>
+
+                <!-- Hanya relevan untuk FULL_COVERAGE: strategi itu merakit
+                     satu berkas per hari termasuk hari tanpa scene S1, jadi
+                     harus tahu seberapa jauh boleh meminjam scene. -->
+                <div class="fusion-extra hidden" id="toleranceGroup">
+                  <label class="fusion-extra-row" for="s1Tolerance">
+                    <span>Sentinel-1 pairing tolerance</span>
+                    <span class="fusion-extra-input">
+                      <input type="number" id="s1Tolerance" min="0" max="14" value="2" />
+                      <span class="fusion-extra-unit">days</span>
+                    </span>
+                  </label>
+                  <p class="fusion-extra-hint">
+                    0 = same day only. Days without a pair within range still
+                    get a file, with an empty Sentinel-1 layer.
+                  </p>
+                </div>
+
+                <label class="fusion-extra-row">
+                  <input type="checkbox" id="fusionOutputOnly" />
+                  <span>Keep fusion output only</span>
+                </label>
+                <p class="fusion-extra-hint">
+                  Per-satellite files are deleted once the HDF5 stack is written.
+                  Processing still runs in full &mdash; fusion needs it.
+                </p>
+              </div>
+              <p class="wizard-title">Preview Options (optional)</p>
+              <div class="preview-opts" id="previewOptions"></div>
+            </section>
+
+            <!-- Langkah 4: nama + ringkasan sebelum dikirim -->
+            <section class="wizard-panel hidden" data-step="4">
+              <p class="wizard-title">Review &amp; Create</p>
+              <div class="field">
+                <label for="fName">Dataset name</label>
+                <input type="text" id="fName" placeholder="e.g. Nov–Feb flood season" required>
+              </div>
+              <div class="field">
+                <label for="fDescription">Description (optional)</label>
+                <textarea id="fDescription" placeholder="Additional notes about this dataset"></textarea>
+              </div>
+              <div class="wizard-review" id="wizardReview"></div>
+            </section>
+
+            <p class="wizard-error hidden" id="wizardError" role="alert"></p>
+
+            <div class="wizard-nav">
+              <button type="button" class="btn btn-ghost hidden" id="wizardBack">Back</button>
+              <button type="button" class="btn btn-primary btn-block" id="wizardNext">Next</button>
+              <button type="submit" class="btn btn-primary btn-block hidden" id="createSubmit">Create Dataset</button>
+            </div>
+          </form>
+        </div>
+      </section>
+
+    </div>
+  </section>
+
+  <section class="view hidden" id="view-datasets">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:18px;">
+      <p class="panel-title" style="margin:0">Dataset Catalog</p>
+      <button class="btn btn-ghost" id="refreshDatasets">Refresh</button>
+    </div>
+    <!-- Tawaran penggabungan. Sengaja duduk DI ATAS daftar dataset, bukan di
+         dalam kartu salah satunya: yang digabung adalah beberapa dataset
+         sekaligus, jadi menempelkannya pada satu kartu akan menyesatkan soal
+         siapa subjeknya. Kosong dan tak terlihat kalau tidak ada yang bisa
+         digabung. -->
+    <div class="merge-panel hidden" id="mergePanel"></div>
+    <div class="card-list" id="datasetList"></div>
+  </section>
+
+  <!-- Live Monitoring (LIVE_MONITORING.md): dropdown Daerah Live -> satu kartu
+       berisi 8 preview + kalimat kondisi, daftar tanggal, dan 3 grafik tren.
+       Semua isi kartu dirender app.js dari GET /api/live/areas/{id}/card. -->
+  <section class="view hidden" id="view-live">
+    <div class="lm-wrap">
+      <div class="panel lm-top">
+        <div class="lm-select-row">
+          <label class="lm-label" for="lmAreaSelect">Live Area</label>
+          <select id="lmAreaSelect"></select>
+          <button type="button" class="btn btn-primary" id="lmAddBtn">+ Add Area</button>
+        </div>
+        <div class="lm-area-list" id="lmAreaList"></div>
+        <div class="lm-area-meta" id="lmAreaMeta"></div>
+      </div>
+      <div class="panel lm-card" id="lmCard">
+        <div class="empty-small">Loading...</div>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<div class="modal-overlay hidden" id="addLocationModal">
+  <div class="modal modal-wide">
+    <h3>Add New Location</h3>
+    <div class="modal-tabs" role="tablist">
+      <button type="button" class="modal-tab active" data-loctab="search" role="tab">Search by Name</button>
+      <button type="button" class="modal-tab" data-loctab="manual" role="tab">Manual Coordinates</button>
+    </div>
+
+    <!-- Bagian A: cari nama lewat OpenStreetMap. Memilih hasil akan mengisi
+         bagian koordinat, jadi pengguna selalu sempat memeriksa bbox sebelum simpan. -->
+    <div class="loctab-panel" id="loctabSearch">
+      <label class="mini-label" for="geoSearchInput">Search location name (OpenStreetMap)</label>
+      <input type="search" id="geoSearchInput" autocomplete="off" placeholder="e.g. Lampung, Semarang, Cikarang">
+      <div class="geo-results" id="geoResults">
+        <p class="geo-hint">Type at least 2 letters, then pick a result.</p>
+      </div>
+    </div>
+
+    <!-- Bagian B: input koordinat manual, sekaligus tahap konfirmasi hasil pencarian. -->
+    <div class="loctab-panel hidden" id="loctabManual">
+      <div class="field">
+        <label for="alName">Location name</label>
+        <input type="text" id="alName" placeholder="e.g. North Cikarang" maxlength="100">
+      </div>
+      <div class="field">
+        <label for="alPaste">Paste bounding box (optional)</label>
+        <input type="text" id="alPaste" placeholder="min_lon, min_lat, max_lon, max_lat">
+      </div>
+      <div class="coord-grid">
+        <div class="field"><label for="alMinLon">Min longitude</label><input type="number" id="alMinLon" step="any" placeholder="106.78"></div>
+        <div class="field"><label for="alMinLat">Min latitude</label><input type="number" id="alMinLat" step="any" placeholder="-6.22"></div>
+        <div class="field"><label for="alMaxLon">Max longitude</label><input type="number" id="alMaxLon" step="any" placeholder="106.87"></div>
+        <div class="field"><label for="alMaxLat">Max latitude</label><input type="number" id="alMaxLat" step="any" placeholder="-6.07"></div>
+      </div>
+      <div class="field">
+        <label for="alDesc">Description (optional)</label>
+        <input type="text" id="alDesc" placeholder="Short note about this area">
+      </div>
+    </div>
+
+    <p class="modal-error hidden" id="alError"></p>
+    <div class="modal-actions">
+      <button type="button" class="btn btn-ghost" id="alCancel">Cancel</button>
+      <button type="button" class="btn btn-primary" id="alSave">Save Location</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay hidden" id="deleteLocationModal">
+  <div class="modal">
+    <h3>Delete this location?</h3>
+    <p id="deleteLocationText">The location will be removed from the list.</p>
+    <p class="modal-note">Datasets already created with this location remain accessible.</p>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="deleteLocationCancel">Cancel</button>
+      <button class="btn btn-danger" id="deleteLocationConfirm">Yes, Delete</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay hidden" id="deleteModal">
+  <div class="modal">
+    <h3>Delete this dataset?</h3>
+    <p>All files stored for this dataset will be permanently deleted. This cannot be undone.</p>
+    <label class="modal-check"><input type="checkbox" id="deleteForce"> Force-stop any running process</label>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="deleteCancel">Cancel</button>
+      <button class="btn btn-danger" id="deleteConfirm">Yes, Delete</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay hidden" id="cancelModal">
+  <div class="modal">
+    <h3>Cancel this dataset?</h3>
+    <p>Processing will stop and intermediate data (RAW, ALIGNED, DESPECKLED/INDICES/ACCUMULATED) will be deleted. Completed COG and FUSED data are kept.</p>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="cancelModalCancel">Keep Running</button>
+      <button class="btn btn-danger" id="cancelModalConfirm">Yes, Cancel It</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay hidden" id="lmAddModal">
+  <div class="modal">
+    <h3>Add Live Area</h3>
+    <p class="lm-modal-hint">Choose a saved location (the same ones used in Create Dataset). The system will
+      automatically download the latest Sentinel-1 scene with matching MODIS &amp; GPM data, and keep it updated.</p>
+    <div class="field">
+      <label for="lmRegion">Location</label>
+      <select id="lmRegion"></select>
+      <button type="button" class="lm-link" id="lmNewLocation">Location not listed? Add a new one</button>
+    </div>
+    <div class="field">
+      <label for="lmName">Area name (optional)</label>
+      <input type="text" id="lmName" maxlength="200" placeholder="e.g. Padang">
+    </div>
+    <div class="field">
+      <label for="lmRetention">Scenes to keep (1&ndash;12)</label>
+      <input type="number" id="lmRetention" min="1" max="12" value="6">
+      <p class="lm-modal-hint">One scene = one Sentinel-1 pass (every ~6&ndash;12 days). Older scenes are deleted automatically.</p>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="lmAddCancel">Cancel</button>
+      <button class="btn btn-primary" id="lmAddConfirm">Save &amp; Start</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay hidden" id="lmConfirmModal">
+  <div class="modal">
+    <h3 id="lmConfirmTitle">Are you sure?</h3>
+    <p id="lmConfirmText"></p>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="lmConfirmCancel">Cancel</button>
+      <button class="btn btn-danger" id="lmConfirmOk">Yes, continue</button>
+    </div>
+  </div>
+</div>
+
+
+<div class="toast-stack" id="toastStack"></div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="icons.js"></script>
+<script src="app.js?v=ux3"></script>
+</body>
+</html>

@@ -98,7 +98,7 @@ def test_strip_bersebelahan_layak_digabung(two_strips):
 def test_satu_stack_saja_bukan_kandidat(two_strips):
     cand = check_mergeable([two_strips[0]])
     assert not cand.mergeable
-    assert "minimal dua" in cand.blocked_reason
+    assert "At least two" in cand.blocked_reason
 
 
 def test_grid_tidak_sejajar_ditolak(tmp_path):
@@ -113,7 +113,7 @@ def test_grid_tidak_sejajar_ditolak(tmp_path):
     )
     cand = check_mergeable([info_for(a, 1, "A"), info_for(b, 2, "B")])
     assert not cand.mergeable
-    assert "tidak sejajar" in cand.blocked_reason
+    assert "not aligned" in cand.blocked_reason
     assert "resample" in cand.blocked_reason
 
 
@@ -145,7 +145,7 @@ def test_lapisan_beda_ditolak_bukan_diisi_nodata(tmp_path):
                     height=10, width=10, layers=("s1_vv",))
     cand = check_mergeable([info_for(a, 1, "A"), info_for(b, 2, "B")])
     assert not cand.mergeable
-    assert "lapisan" in cand.blocked_reason.lower()
+    assert "layers" in cand.blocked_reason.lower()
 
 
 def test_strategi_fusion_beda_ditolak(tmp_path):
@@ -285,7 +285,7 @@ def test_merge_menolak_kandidat_terhalang(tmp_path):
     a = write_stack(tmp_path / "a.h5", west=WEST0, north=NORTH0, height=10, width=10)
     b = write_stack(tmp_path / "b.h5", west=WEST0 + 10 * RES + RES / 2,
                     north=NORTH0, height=10, width=10)
-    with pytest.raises(ValueError, match="tidak sejajar"):
+    with pytest.raises(ValueError, match="not aligned"):
         merge_stacks([info_for(a, 1, "A"), info_for(b, 2, "B")], tmp_path / "m.h5")
 
 

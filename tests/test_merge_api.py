@@ -95,7 +95,7 @@ def test_run_menggabungkan_dan_tidak_mengubah_sumber(client, merge_env):
 def test_run_menolak_tanpa_dataset_ids(client):
     r = client.post("/api/merge/run", json={"date": "20251201"})
     assert r.status_code == 400
-    assert "minimal dua" in r.json()["detail"]
+    assert "At least two" in r.json()["detail"]
 
 
 def test_run_menolak_satu_dataset(client):

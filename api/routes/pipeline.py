@@ -17,8 +17,8 @@ logger = logging.getLogger(__name__)
 
 @router.get(
     "/status/current",
-    summary="Status pipeline saat ini",
-    description="Status tahap pipeline untuk scene yang paling baru diproses, dipakai untuk progress rail di beranda.",
+    summary="Current pipeline status",
+    description="Pipeline stage status for the most recently processed scene, used for the progress rail on the home page.",
 )
 async def current_pipeline_status(db: DatabaseClient = Depends(get_db)) -> dict:
     with db.session() as sess:
@@ -56,8 +56,8 @@ async def current_pipeline_status(db: DatabaseClient = Depends(get_db)) -> dict:
 
 @router.post(
     "/trigger",
-    summary="Retry job dataset yang gagal",
-    description="Menjalankan ulang job pipeline terakhir untuk sebuah dataset, hanya jika job tersebut berstatus FAILED.",
+    summary="Retry a failed dataset job",
+    description="Re-runs the latest pipeline job for a dataset, only if that job has status FAILED.",
 )
 async def trigger_pipeline(dataset_id: int, db: DatabaseClient = Depends(get_db)) -> dict:
     mgr = DatasetManager(db)

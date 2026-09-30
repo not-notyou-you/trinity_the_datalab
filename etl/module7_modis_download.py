@@ -203,7 +203,7 @@ def _reflectance_family(product: str) -> str:
     """Nama produk (termasuk varian _NRT / arsip standar) -> kunci REFLECTANCE_SDS."""
     family = product.removesuffix("_NRT")
     if family not in REFLECTANCE_SDS:
-        raise ValueError(f"produk reflectance tidak dikenal: {product!r}")
+        raise ValueError(f"unknown reflectance product: {product!r}")
     return family
 
 
@@ -250,7 +250,7 @@ def _auth_headers() -> dict:
     token = os.getenv("NASA_EARTHDATA_TOKEN")
     if not token:
         raise RuntimeError(
-            "NASA_EARTHDATA_TOKEN belum diset. Generate app token di "
+            "NASA_EARTHDATA_TOKEN is not set. Generate an app token at "
             "urs.earthdata.nasa.gov -> Generate Token."
         )
     return {"Authorization": f"Bearer {token}"}
@@ -343,15 +343,15 @@ def _discover_tile_files(
             )
             dg.backoff_wait(
                 dg.LAADS, attempt,
-                "server membatasi (429/503)" if retry_after else "gagal, dicoba ulang",
+                "server rate-limiting (429/503)" if retry_after else "failed, retrying",
                 retry_after=retry_after, max_attempts=MAX_RETRIES,
             )
     if resp is None:
         raise RuntimeError(
-            f"gagal listing LAADS setelah {MAX_RETRIES} percobaan ({last_error}): {url}"
+            f"LAADS listing failed after {MAX_RETRIES} attempts ({last_error}): {url}"
         )
     if resp.status_code != 200:
-        raise RuntimeError(f"gagal listing LAADS ({resp.status_code}): {url}")
+        raise RuntimeError(f"LAADS listing failed ({resp.status_code}): {url}")
     dg.clear_auth_failure("LAADS")
 
     found = []
@@ -385,7 +385,7 @@ def _discover_tile_files_with_fallback(
         items = _discover_tile_files(date, tiles, product, base=LAADS_STANDARD_BASE)
         if not items:
             raise RuntimeError(
-                f"tidak ada granule {product} untuk {date.date().isoformat()}"
+                f"no granule {product} for {date.date().isoformat()}"
             )
         return items, product
 
@@ -396,7 +396,7 @@ def _discover_tile_files_with_fallback(
     except RuntimeError as exc:
         nrt_error = exc
     else:
-        nrt_error = RuntimeError(f"tidak ada granule NRT {product} untuk {date.date().isoformat()}")
+        nrt_error = RuntimeError(f"no NRT granule {product} for {date.date().isoformat()}")
 
     std_product = MODIS_STANDARD_PRODUCT.get(product)
     if not std_product:
@@ -409,7 +409,7 @@ def _discover_tile_files_with_fallback(
     else:
         if items:
             return items, std_product
-        std_error = RuntimeError(f"tidak ada granule {std_product}")
+        std_error = RuntimeError(f"no granule {std_product}")
 
     # Celah antara retensi NRT (~7 hari di nrt3) dan terbitnya produk standar
     # (MCDWD_L3 baru sampai 2025): ladsweb menyimpan salinan NRT jangka panjang.
@@ -420,11 +420,11 @@ def _discover_tile_files_with_fallback(
     else:
         if items:
             return items, product
-        archive_error = RuntimeError(f"tidak ada granule arsip {product}")
+        archive_error = RuntimeError(f"no archive granule {product}")
 
     raise RuntimeError(
-        f"{nrt_error}; fallback standar {std_product} gagal: {std_error}; "
-        f"arsip NRT ladsweb gagal: {archive_error}"
+        f"{nrt_error}; standard fallback {std_product} failed: {std_error}; "
+        f"ladsweb NRT archive failed: {archive_error}"
     )
 
 
@@ -496,7 +496,7 @@ def _download_with_retry(
 
             if expected_size and downloaded != expected_size:
                 raise IOError(
-                    f"ukuran file tidak sesuai: got {downloaded} bytes, expected {expected_size}"
+                    f"file size mismatch: got {downloaded} bytes, expected {expected_size}"
                 )
 
             # os.replace: atomic-overwrite di Windows maupun POSIX (Path.rename
@@ -540,11 +540,11 @@ def _download_with_retry(
                 # Retry-After (429/503, dibatasi) atau backoff + jitter.
                 dg.backoff_wait(
                 dg.LAADS, attempt,
-                "server membatasi (429/503)" if retry_after else "gagal, dicoba ulang",
+                "server rate-limiting (429/503)" if retry_after else "failed, retrying",
                 retry_after=retry_after, max_attempts=MAX_RETRIES,
             )
 
-    raise RuntimeError(f"gagal download {url} setelah {MAX_RETRIES} percobaan: {last_exc}")
+    raise RuntimeError(f"download failed for {url} after {MAX_RETRIES} attempts: {last_exc}")
 
 
 def modis_tiles_for_bbox(
@@ -605,7 +605,7 @@ def _eos_grid_georef(struct_meta: str, field: str) -> dict:
             if not m:
                 if default is not None:
                     return default
-                raise RuntimeError(f"StructMetadata grid untuk {field} tidak punya {key}")
+                raise RuntimeError(f"StructMetadata grid for {field} has no {key}")
             return m.group(1).strip()
 
         xdim, ydim = int(value("XDim")), int(value("YDim"))
@@ -615,7 +615,7 @@ def _eos_grid_georef(struct_meta: str, field: str) -> dict:
         # memang tidak menuliskannya (MOD09GA/MCDWD menulis eksplisit).
         origin = value("GridOrigin", "HDFE_GD_UL")
         if origin != "HDFE_GD_UL":
-            raise RuntimeError(f"GridOrigin {origin} belum didukung ({field})")
+            raise RuntimeError(f"GridOrigin {origin} is not supported yet ({field})")
         projection = value("Projection")
         if projection == "GCTP_SNSOID":
             crs = CRS.from_user_input(MODIS_SINUSOIDAL_CRS)
@@ -623,7 +623,7 @@ def _eos_grid_georef(struct_meta: str, field: str) -> dict:
             crs = CRS.from_epsg(4326)
             ulx, uly, lrx, lry = (_dms_to_deg(c) for c in (ulx, uly, lrx, lry))
         else:
-            raise RuntimeError(f"proyeksi grid {projection} belum didukung ({field})")
+            raise RuntimeError(f"grid projection {projection} is not supported yet ({field})")
         return {
             "crs": crs,
             "transform": from_bounds(ulx, lry, lrx, uly, xdim, ydim),
@@ -631,7 +631,7 @@ def _eos_grid_georef(struct_meta: str, field: str) -> dict:
             "height": ydim,
             "bounds": BoundingBox(ulx, lry, lrx, uly),
         }
-    raise RuntimeError(f"field {field} tidak ditemukan di StructMetadata")
+    raise RuntimeError(f"field {field} not found in StructMetadata")
 
 
 def _require_hdf4_reader() -> None:
@@ -641,8 +641,8 @@ def _require_hdf4_reader() -> None:
         import pyhdf.SD  # noqa: F401
     except ImportError as exc:
         raise RuntimeError(
-            "pyhdf tidak terpasang (dibutuhkan untuk membaca HDF4 MODIS) — "
-            "jalankan `pip install -r requirements.txt`"
+            "pyhdf is not installed (needed to read MODIS HDF4) — "
+            "run `pip install -r requirements.txt`"
         ) from exc
 
 
@@ -661,7 +661,7 @@ def _read_eos_grid_field(hdf_path: Path, subdataset: str) -> tuple[np.ndarray, d
         names = list(sd.datasets())
         match = next((n for n in names if _norm_name(n) == _norm_name(field)), None)
         if match is None:
-            raise RuntimeError(f"SDS {field!r} tidak ada di {hdf_path.name} (tersedia: {names})")
+            raise RuntimeError(f"SDS {field!r} is not in {hdf_path.name} (available: {names})")
         sds = sd.select(match)
         try:
             data = sds.get()
@@ -678,8 +678,8 @@ def _read_eos_grid_field(hdf_path: Path, subdataset: str) -> tuple[np.ndarray, d
     grid = _eos_grid_georef(struct_meta, match)
     if data.shape != (grid["height"], grid["width"]):
         raise RuntimeError(
-            f"ukuran {match} {data.shape} tidak cocok dengan grid "
-            f"{(grid['height'], grid['width'])} di {hdf_path.name}"
+            f"size {match} {data.shape} does not match grid "
+            f"{(grid['height'], grid['width'])} in {hdf_path.name}"
         )
     grid["nodata"] = attrs.get("_FillValue")
     return data, grid
@@ -750,8 +750,8 @@ def _cloud_mask(hdf_path: Path, shape: tuple[int, int], state_sds: str) -> np.nd
     fx, rx = divmod(shape[1], state.shape[1])
     if ry or rx or not fy or not fx:
         raise RuntimeError(
-            f"grid {state_sds} {state.shape} tidak kelipatan grid reflectance {shape} "
-            f"di {hdf_path.name}"
+            f"grid {state_sds} {state.shape} is not a multiple of the reflectance grid {shape} "
+            f"in {hdf_path.name}"
         )
     state = state.astype(np.uint16)
     cloud_state = state & _STATE_CLOUD_MASK
@@ -934,7 +934,7 @@ def _build_source_mosaic(
     (environment) selalu diteruskan."""
     items, product_used = _discover_tile_files_with_fallback(query_date, tiles, product)
     if not items:
-        raise RuntimeError(f"tidak ada granule {product} untuk {query_date.date().isoformat()}")
+        raise RuntimeError(f"no granule {product} for {query_date.date().isoformat()}")
     if product_used != product:
         logger.info(
             "[M7] %s tanggal %s: NRT tidak tersedia, pakai arsip standar %s",
@@ -972,7 +972,7 @@ def _build_source_mosaic(
                     hdf_path.name, exc,
                 )
                 hdf_path.unlink(missing_ok=True)
-                info = _fetch_and_build(" (unduh ulang)")
+                info = _fetch_and_build(" (re-download)")
 
             tile_info.append(info)
             tile_tifs.append(tile_tif)
@@ -987,7 +987,7 @@ def _build_source_mosaic(
             failed_tiles.append(item["tile"])
 
     if not tile_tifs:
-        raise RuntimeError(f"semua tile {band} {product_used} gagal ({', '.join(failed_tiles)})")
+        raise RuntimeError(f"all {band} {product_used} tiles failed ({', '.join(failed_tiles)})")
 
     _mosaic_and_crop(tile_tifs, aoi_bbox, out_path)
     return {
@@ -1163,7 +1163,7 @@ def _build_index_for_date(
         used.append({**built, "period_start": period_start.date().isoformat()})
 
     if not period_paths:
-        raise RuntimeError("; ".join(errors) or f"tidak ada periode {band} yang bisa dibangun")
+        raise RuntimeError("; ".join(errors) or f"no {band} period could be built")
 
     try:
         ages = _composite_latest_clear(period_paths, date, out_path, INDEX_LOOKBACK_DAYS)
@@ -1183,12 +1183,12 @@ def _build_index_for_date(
     }
     tags = {
         "COMPOSITE_RULE": (
-            f"observasi cerah terbaru <= {date.date().isoformat()}, "
-            f"maksimal {INDEX_LOOKBACK_DAYS} hari"
+            f"latest clear observation <= {date.date().isoformat()}, "
+            f"at most {INDEX_LOOKBACK_DAYS} days"
         ),
         "LOOKBACK_DAYS": str(INDEX_LOOKBACK_DAYS),
         "PERIODS_USED": ",".join(u["period_start"] for u in used),
-        "BAND_2": "AGE_DAYS: umur observasi (hari) terhadap tanggal fitur",
+        "BAND_2": "AGE_DAYS: age of the observation (days) relative to the feature date",
         **({"AGE_DAYS_MEDIAN": f"{ages['age_days_median']:.1f}"} if ages["age_days_median"] is not None else {}),
     }
     return merged, {
@@ -1238,7 +1238,7 @@ def _build_band_for_date(
         logging.WARNING if low_coverage else logging.INFO,
         "[M7] %s tanggal %s: %.1f%% piksel AOI valid%s",
         band, date.date().isoformat(), valid_fraction * 100,
-        " (sisanya awan/tanpa data)" if band != "FLOOD" else " (sisanya insufficient data)",
+        " (the rest is cloud/no data)" if band != "FLOOD" else " (the rest is insufficient data)",
     )
 
     tags = {
@@ -1478,7 +1478,7 @@ def download_modis_scene(
                 band_errors[band] = str(exc)
                 _plog_event(
                     plog, dataset_id, scene_label, "DOWNLOAD", "RUNNING",
-                    f"MODIS {date_key}: band {band} gagal ({exc})",
+                    f"MODIS {date_key}: band {band} failed ({exc})",
                     {
                         "date": date.date().isoformat(), "band": band,
                         "error_type": type(exc).__name__, "error_message": str(exc),
@@ -1488,7 +1488,7 @@ def download_modis_scene(
         if not bands:
             _plog_event(
                 plog, dataset_id, scene_label, "DOWNLOAD", "FAILED",
-                f"MODIS {date_key}: semua band gagal",
+                f"MODIS {date_key}: all bands failed",
                 {"date": date.date().isoformat(), "band_errors": band_errors},
             )
             failed_days.append({
@@ -1513,7 +1513,7 @@ def download_modis_scene(
         })
         _plog_event(
             plog, dataset_id, scene_label, "DOWNLOAD", "COMPLETED",
-            f"MODIS {date_key}: {'selesai (degraded)' if degraded else 'selesai'} "
+            f"MODIS {date_key}: {'done (degraded)' if degraded else 'done'} "
             f"({len(bands)}/{len(wanted_bands)} band)",
             {
                 "date": date.date().isoformat(),
@@ -1531,9 +1531,9 @@ def download_modis_scene(
 
     if not daily_outputs:
         raise RuntimeError(
-            f"tidak ada produk MODIS ditemukan untuk rentang "
-            f"{date_start.date()}..{date_end.date()} di tiles {tiles_by_product}"
-            + (f" (gagal: {failed_days})" if failed_days else "")
+            f"no MODIS products found for the range "
+            f"{date_start.date()}..{date_end.date()} in tiles {tiles_by_product}"
+            + (f" (failed: {failed_days})" if failed_days else "")
         )
 
     degraded_days = sum(1 for d in daily_outputs if d.get("degraded"))
@@ -1542,8 +1542,8 @@ def download_modis_scene(
     _plog_event(
         plog, dataset_id, f"MODIS_{date_start.strftime('%Y%m%d')}_{date_end.strftime('%Y%m%d')}",
         "DOWNLOAD_SUMMARY", "COMPLETED",
-        f"MODIS selesai: {len(daily_outputs)}/{total_days} hari berhasil"
-        + (f", {len(failed_days)} gagal" if failed_days else "")
+        f"MODIS done: {len(daily_outputs)}/{total_days} days succeeded"
+        + (f", {len(failed_days)} failed" if failed_days else "")
         + (f", {degraded_days} degraded" if degraded_days else ""),
         {
             "days_ok": len(daily_outputs), "days_degraded": degraded_days,

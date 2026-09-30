@@ -89,7 +89,7 @@ class TestPathConstruction:
         di nama berkas), jadi get_scene_dir tidak lagi memanggilnya di sana.
         Tapi kontraknya sendiri masih berlaku untuk pemanggil yang memang
         butuh tanggalnya."""
-        with pytest.raises(ValueError, match="tidak mengandung tanggal"):
+        with pytest.raises(ValueError, match="does not contain a YYYYMMDD date"):
             fm.scene_date_key("SCENE_A")
         with pytest.raises(ValueError):
             fm.scene_date_key("TEST_SCENE_1788773879.392203")
@@ -193,16 +193,16 @@ class TestPathConstruction:
 # ---------------------------------------------------------------------------
 class TestValidation:
     def test_unknown_tier_rejected(self):
-        with pytest.raises(ValueError, match="Tier tidak valid"):
+        with pytest.raises(ValueError, match="Invalid tier"):
             fm.get_tier_dir(DATASET_ID, DATASET_NAME, "20260712", "platinum")
 
     def test_unknown_source_rejected(self):
-        with pytest.raises(ValueError, match="Source tidak valid"):
+        with pytest.raises(ValueError, match="Invalid source"):
             fm.get_source_dir(DATASET_ID, DATASET_NAME, "20260712", "silver", "landsat")
 
     def test_fusion_tier_rejects_source(self):
         """Tier fusion gabungan semua source, jadi tidak boleh diberi satu."""
-        with pytest.raises(ValueError, match="tidak punya level source"):
+        with pytest.raises(ValueError, match="has no per-source level"):
             fm.get_source_dir(DATASET_ID, DATASET_NAME, "20260712", "fusion", "modis")
 
     def test_bronze_accepts_every_source(self):
@@ -215,7 +215,7 @@ class TestValidation:
 
     def test_granule_cache_rejects_sentinel1(self):
         """Sentinel-1 disimpan per-scene, bukan sebagai cache granule flat."""
-        with pytest.raises(ValueError, match="cache granule flat"):
+        with pytest.raises(ValueError, match="flat granule cache"):
             fm.get_granule_cache_dir(DATASET_ID, DATASET_NAME, "sentinel1")
 
     def test_db_source_mapping(self):

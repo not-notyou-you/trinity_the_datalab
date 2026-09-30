@@ -47,9 +47,9 @@ def _derive_region_code(sess, name: str, explicit: str | None) -> str:
     if explicit:
         base = re.sub(r"[^A-Z0-9_]", "", explicit.strip().upper())[:20]
         if not base:
-            raise HTTPException(400, "region_code hanya boleh huruf, angka, dan underscore")
+            raise HTTPException(400, "region_code may only contain letters, digits, and underscores")
         if sess.scalar(select(RegionOfInterest.region_id).where(RegionOfInterest.region_code == base)):
-            raise HTTPException(409, f"Kode wilayah {base} sudah dipakai")
+            raise HTTPException(409, f"Region code {base} is already in use")
         return base
 
     # Sisakan ruang untuk sufiks angka supaya tetap muat di VARCHAR(20).
@@ -62,14 +62,14 @@ def _derive_region_code(sess, name: str, explicit: str | None) -> str:
         if not taken:
             return candidate
         candidate = f"{base}_{suffix}"
-    raise HTTPException(409, "Tidak bisa membuat kode wilayah unik, ganti nama lokasi")
+    raise HTTPException(409, "Could not create a unique region code, please rename the location")
 
 
-@router.get("", response_model=RegionListResponse, summary="Daftar lokasi")
+@router.get("", response_model=RegionListResponse, summary="List locations")
 async def list_regions(
     db: DatabaseClient = Depends(get_db),
-    q: str | None = Query(None, description="Filter nama/kode lokasi (case-insensitive)"),
-    include_deleted: bool = Query(False, description="Ikut sertakan lokasi yang sudah dihapus"),
+    q: str | None = Query(None, description="Filter by location name/code (case-insensitive)"),
+    include_deleted: bool = Query(False, description="Also include locations that have been deleted"),
     limit: int = Query(200, ge=1, le=1000),
     offset: int = Query(0, ge=0),
 ) -> RegionListResponse:
@@ -94,11 +94,11 @@ async def list_regions(
     return RegionListResponse(items=items, total=total)
 
 
-@router.get("/geocode", response_model=GeocodeSearchResponse, summary="Cari lokasi via OpenStreetMap")
+@router.get("/geocode", response_model=GeocodeSearchResponse, summary="Search locations via OpenStreetMap")
 async def search_geocode(
-    q: str = Query(..., min_length=2, description="Nama lokasi yang dicari"),
+    q: str = Query(..., min_length=2, description="Location name to search for"),
     limit: int = Query(5, ge=1, le=20),
-    country: str = Query("id", description="Kode negara ISO-2, kosongkan untuk global"),
+    country: str = Query("id", description="ISO-2 country code, leave empty for global"),
 ) -> GeocodeSearchResponse:
     try:
         results = geocode_search(q, limit=limit, country_codes=country.strip())
@@ -106,11 +106,11 @@ async def search_geocode(
         raise HTTPException(502, str(exc))
     except Exception as exc:
         logger.exception("[REGIONS] geocoding gagal untuk q=%r", q)
-        raise HTTPException(502, f"Layanan pencarian lokasi tidak bisa dihubungi: {exc}")
+        raise HTTPException(502, f"The location search service could not be reached: {exc}")
     return GeocodeSearchResponse(items=[GeocodeItem(**r) for r in results])
 
 
-@router.post("", response_model=RegionItem, status_code=201, summary="Tambah lokasi")
+@router.post("", response_model=RegionItem, status_code=201, summary="Add a location")
 async def create_region(
     req: RegionCreateRequest,
     db: DatabaseClient = Depends(get_db),
@@ -125,7 +125,7 @@ async def create_region(
             )
         )
         if duplicate:
-            raise HTTPException(409, f"Lokasi bernama {req.name} sudah ada")
+            raise HTTPException(409, f"A location named {req.name} already exists")
 
         region_code = _derive_region_code(sess, req.name, req.region_code)
         # Luas dihitung PostGIS (geography = meter sungguhan), bukan aproksimasi derajat.
@@ -152,7 +152,7 @@ async def create_region(
     return item
 
 
-@router.patch("/{region_id}", response_model=RegionItem, summary="Ubah lokasi")
+@router.patch("/{region_id}", response_model=RegionItem, summary="Update a location")
 async def update_region(
     region_id: int,
     req: RegionUpdateRequest,
@@ -161,9 +161,9 @@ async def update_region(
     with db.session() as sess:
         region = sess.get(RegionOfInterest, region_id)
         if region is None or region.deleted_at is not None:
-            raise HTTPException(404, f"Lokasi {region_id} tidak ditemukan")
+            raise HTTPException(404, f"Location {region_id} not found")
         if (region.source or "SEEDER") == "SEEDER":
-            raise HTTPException(403, "Lokasi bawaan sistem tidak bisa diubah")
+            raise HTTPException(403, "Built-in system locations cannot be modified")
         if req.name is not None and req.name.lower() != region.name.lower():
             clash = sess.scalar(
                 select(RegionOfInterest.region_id).where(
@@ -173,7 +173,7 @@ async def update_region(
                 )
             )
             if clash:
-                raise HTTPException(409, f"Lokasi bernama {req.name} sudah ada")
+                raise HTTPException(409, f"A location named {req.name} already exists")
         if req.name is not None:
             region.name = req.name
         if req.description is not None:
@@ -184,31 +184,31 @@ async def update_region(
     return item
 
 
-@router.delete("/{region_id}", response_model=OkResponse, summary="Hapus lokasi (soft-delete)")
+@router.delete("/{region_id}", response_model=OkResponse, summary="Delete a location (soft delete)")
 async def delete_region(region_id: int, db: DatabaseClient = Depends(get_db)) -> OkResponse:
     with db.session() as sess:
         region = sess.get(RegionOfInterest, region_id)
         if region is None:
-            raise HTTPException(404, f"Lokasi {region_id} tidak ditemukan")
+            raise HTTPException(404, f"Location {region_id} not found")
         if region.deleted_at is not None:
-            return OkResponse(message=f"Lokasi {region.name} memang sudah dihapus")
+            return OkResponse(message=f"Location {region.name} was already deleted")
         if (region.source or "SEEDER") == "SEEDER":
-            raise HTTPException(403, "Lokasi bawaan sistem tidak bisa dihapus")
+            raise HTTPException(403, "Built-in system locations cannot be deleted")
         # Soft-delete: baris tetap ada supaya dataset/scene lama yang menunjuk
         # region_id ini tetap bisa dibuka (FK-nya ON DELETE RESTRICT).
         region.is_active = False
         region.deleted_at = datetime.now(timezone.utc)
         name = region.name
     logger.info("[REGIONS] soft-delete lokasi id=%d name=%s", region_id, name)
-    return OkResponse(message=f"Lokasi {name} dihapus")
+    return OkResponse(message=f"Location {name} deleted")
 
 
-@router.post("/{region_id}/restore", response_model=RegionItem, summary="Pulihkan lokasi terhapus")
+@router.post("/{region_id}/restore", response_model=RegionItem, summary="Restore a deleted location")
 async def restore_region(region_id: int, db: DatabaseClient = Depends(get_db)) -> RegionItem:
     with db.session() as sess:
         region = sess.get(RegionOfInterest, region_id)
         if region is None:
-            raise HTTPException(404, f"Lokasi {region_id} tidak ditemukan")
+            raise HTTPException(404, f"Location {region_id} not found")
         region.is_active = True
         region.deleted_at = None
         sess.flush()

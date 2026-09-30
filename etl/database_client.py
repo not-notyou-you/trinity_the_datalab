@@ -267,7 +267,7 @@ def normalize_source_configs(sources: dict) -> dict[str, list[str]]:
             dikenal, atau daftar level kosong.
     """
     if not isinstance(sources, dict) or not sources:
-        raise ValueError("sources wajib berisi minimal 1 sumber")
+        raise ValueError("sources must contain at least 1 source")
 
     valid_levels = {level.value for level in ProcessingLevelEnum}
     normalized: dict[str, list[str]] = {}
@@ -277,11 +277,11 @@ def normalize_source_configs(sources: dict) -> dict[str, list[str]]:
         source_name = API_KEY_TO_SOURCE_NAME.get(key.lower())
         if source_name is None:
             raise ValueError(
-                f"source tidak dikenal: {raw_key!r} "
-                f"(pilihan: {', '.join(sorted(API_KEY_TO_SOURCE_NAME))})"
+                f"unknown source: {raw_key!r} "
+                f"(options: {', '.join(sorted(API_KEY_TO_SOURCE_NAME))})"
             )
         if source_name in normalized:
-            raise ValueError(f"source ganda dalam payload: {source_name}")
+            raise ValueError(f"duplicate source in payload: {source_name}")
 
         if isinstance(raw_value, dict):
             levels = raw_value.get("processing")
@@ -300,9 +300,9 @@ def normalize_source_configs(sources: dict) -> dict[str, list[str]]:
             level = str(raw_level).strip().upper()
             if level not in valid_levels:
                 raise ValueError(
-                    f"processing level tidak dikenal untuk "
+                    f"unknown processing level for "
                     f"{SOURCE_NAME_TO_API_KEY[source_name]}: {raw_level!r} "
-                    f"(pilihan: {', '.join(sorted(valid_levels))})"
+                    f"(options: {', '.join(sorted(valid_levels))})"
                 )
             if level not in seen:      # duplikat dibuang, bukan ditolak
                 seen.append(level)
@@ -395,11 +395,11 @@ def _validate_s1_tolerance(value) -> int | None:
         days = int(value)
     except (TypeError, ValueError):
         raise ValueError(
-            f"s1_match_tolerance_days harus bilangan bulat, bukan {value!r}"
+            f"s1_match_tolerance_days must be a whole number, not {value!r}"
         ) from None
     if not 0 <= days <= 14:
         raise ValueError(
-            f"s1_match_tolerance_days di luar jangkauan: {days} (0-14)"
+            f"s1_match_tolerance_days out of range: {days} (0-14)"
         )
     return days
 
@@ -414,8 +414,8 @@ def _validate_fusion_output_only(value, fusion_strategy: "str | None") -> bool:
     enabled = bool(value)
     if enabled and fusion_strategy is None:
         raise ValueError(
-            "fusion_output_only butuh fusion_strategy: tanpa fusi, menghapus "
-            "artefak per-satelit tidak menyisakan output apa pun"
+            "fusion_output_only needs fusion_strategy: without fusion, deleting "
+            "the per-satellite artefacts would leave no output at all"
         )
     return enabled
 
@@ -447,7 +447,7 @@ def _validate_fusion_strategy(value, source_count: int) -> "str | None":
     valid = {s.value for s in FusionStrategyEnum}
     if strategy is not None and strategy not in valid:
         raise ValueError(
-            f"fusion_strategy tidak dikenal: {value!r} (pilihan: {', '.join(sorted(valid))})"
+            f"unknown fusion_strategy: {value!r} (options: {', '.join(sorted(valid))})"
         )
     return strategy
 
@@ -471,7 +471,7 @@ def _validate_preview_options(value) -> list[str]:
         option = str(raw).strip().upper()
         if option not in valid:
             raise ValueError(
-                f"preview option tidak dikenal: {raw!r} (pilihan: {', '.join(sorted(valid))})"
+                f"unknown preview option: {raw!r} (options: {', '.join(sorted(valid))})"
             )
         if option not in seen:
             seen.append(option)
@@ -1482,7 +1482,7 @@ class DatabaseClient:
         payload = dict(dataset_dict or {})
         unknown = set(payload) - set(Dataset.__table__.columns.keys())
         if unknown:
-            raise ValueError(f"kolom dataset tidak dikenal: {sorted(unknown)}")
+            raise ValueError(f"unknown dataset column(s): {sorted(unknown)}")
 
         fusion_strategy = _validate_fusion_strategy(
             payload.get("fusion_strategy"), source_count=len(configs)

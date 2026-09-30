@@ -150,15 +150,15 @@ _EXPECTED_BANDS: dict[str, tuple[str, ...]] = {
 @router.get(
     "/dataset/{dataset_id}/by-source",
     response_model=DatasetQualityBySourceResponse,
-    summary="Kualitas per source untuk satu dataset",
+    summary="Quality per source for one dataset",
     description=(
-        "Kualitas dataset dipecah per sensor. SENTINEL1 melaporkan skor "
-        "radiometrik sungguhan dari tabel quality_metrics (module6_analytics, "
-        "atas band VV/VH). MODIS dan GPM tidak punya padanan radiometrik - "
-        "speckle index dan backscatter tidak berarti untuk curah hujan atau "
-        "indeks vegetasi - jadi yang dilaporkan adalah coverage: berapa persen "
-        "band yang diharapkan benar-benar ada. Bedanya ditandai lewat field "
-        "`kind` (RADIOMETRIC vs COVERAGE), jangan dibandingkan langsung."
+        "Dataset quality broken down per sensor. SENTINEL1 reports a genuine "
+        "radiometric score from the quality_metrics table (module6_analytics, "
+        "over the VV/VH bands). MODIS and GPM have no radiometric equivalent - "
+        "speckle index and backscatter are meaningless for rainfall or "
+        "vegetation indices - so what is reported is coverage: the percentage "
+        "of expected bands that are actually present. The difference is marked "
+        "by the `kind` field (RADIOMETRIC vs COVERAGE); do not compare them directly."
     ),
 )
 async def get_dataset_quality_by_source(
@@ -168,7 +168,7 @@ async def get_dataset_quality_by_source(
     from etl.dataset_manager import DatasetManager
 
     if DatasetManager(db).get_dataset(dataset_id) is None:
-        raise HTTPException(404, f"Dataset {dataset_id} tidak ditemukan")
+        raise HTTPException(404, f"Dataset {dataset_id} not found")
 
     sources = compute_quality_by_source(db, dataset_id)
     return DatasetQualityBySourceResponse(dataset_id=dataset_id, sources=sources)

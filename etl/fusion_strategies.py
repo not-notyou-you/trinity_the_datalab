@@ -211,7 +211,7 @@ def plan_fusion(
 
     else:
         raise ValueError(
-            f"fusion_strategy tidak dikenal: {strategy!r} "
+            f"unknown fusion_strategy: {strategy!r} "
             f"(pilihan: {CO_OCCURRENCE}, {FULL_COVERAGE}, {HYBRID})"
         )
 

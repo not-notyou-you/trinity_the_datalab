@@ -129,8 +129,8 @@ class CleanupResponse(BaseModel):
 
 @router.get(
     "/summary",
-    summary="Ringkasan storage",
-    description="Menampilkan penggunaan disk per tier lengkap dengan jumlah file.",
+    summary="Storage summary",
+    description="Shows disk usage per tier, including file counts.",
 )
 async def storage_summary() -> JSONResponse:
     tier_paths = _get_tier_paths()
@@ -195,28 +195,28 @@ async def storage_summary() -> JSONResponse:
         "tiers": {
             "raw": {
                 **tiers["raw"],
-                "description": "File ZIP download asli + TIF hasil ekstrak",
-                "note":        "Hapus ini setelah pipeline selesai (keep_raw=false)",
+                "description": "Original downloaded ZIP files + extracted TIFs",
+                "note":        "Delete this after the pipeline finishes (keep_raw=false)",
             },
             "bronze": {
                 **tiers["bronze"],
-                "description": "Setelah dipotong ke area AOI (Module 2)",
+                "description": "After cropping to the AOI (Module 2)",
                 "note":        "±50 MB per scene per band",
             },
             "silver": {
                 **tiers["silver"],
-                "description": "Setelah Lee Filter noise (Module 3)",
+                "description": "After Lee-filter noise reduction (Module 3)",
                 "note":        "±45 MB per scene per band",
             },
             "gold": {
                 **tiers["gold"],
-                "description": "COG analysis-ready per source (Module 4) — ini yang terpenting",
-                "note":        "JANGAN hapus ini kecuali scene sudah tidak diperlukan",
+                "description": "Analysis-ready COG per source (Module 4) — the most important one",
+                "note":        "DO NOT delete this unless the scene is no longer needed",
             },
             "fusion": {
                 **tiers["fusion"],
-                "description": "HDF5 multi-modal gabungan semua source (Module 9)",
-                "note":        "Deliverable akhir — tidak ikut terhapus oleh tier 'all'",
+                "description": "Multi-modal HDF5 combining all sources (Module 9)",
+                "note":        "Final deliverable — not deleted by tier 'all'",
             },
         },
         "by_source": {
@@ -231,7 +231,7 @@ async def storage_summary() -> JSONResponse:
             "size_mb":    round(partial_mb, 2),
             "size_human": _human(partial_mb),
             "file_count": partial_count,
-            "note":       "File .part = download terputus di tengah jalan, bisa dilanjutkan otomatis",
+            "note":       "A .part file is an interrupted download, which can be resumed automatically",
         },
         "total": {
             "size_mb":    round(total_mb, 2),
@@ -243,11 +243,11 @@ async def storage_summary() -> JSONResponse:
 @router.get(
     "/files/{tier}",
     summary="List file per tier",
-    description="Tampilkan daftar file lengkap di tier tertentu (raw/bronze/silver/gold).",
+    description="List all files in a given tier (raw/bronze/silver/gold).",
 )
 async def list_files(tier: StorageTier) -> JSONResponse:
     if tier == "all":
-        raise HTTPException(400, "Tier 'all' hanya untuk cleanup, bukan listing")
+        raise HTTPException(400, "Tier 'all' is only for cleanup, not for listing")
 
     tier_paths = _get_tier_paths()
     paths = tier_paths.get(tier, [])
@@ -264,16 +264,16 @@ async def list_files(tier: StorageTier) -> JSONResponse:
 @router.post(
     "/cleanup",
     response_model=CleanupResponse,
-    summary="Hapus file per tier",
+    summary="Delete files per tier",
     description=(
-        "Hapus semua file di tier tertentu untuk membebaskan storage.\n\n"
-        "- **raw**: hapus ZIP dan TIF mentah (hemat ±800 MB per scene)\n"
-        "- **bronze**: hapus hasil crop (hemat ±50 MB per scene per band)\n"
-        "- **silver**: hapus hasil Lee filter (hemat ±45 MB per scene per band)\n"
-        "- **gold**: ⚠️ hapus COG production-ready (data utama!)\n"
-        "- **partial**: hapus file .part (download terputus)\n"
-        "- **all**: hapus semua kecuali gold\n\n"
-        "Gunakan `dry_run=true` untuk melihat apa yang akan dihapus tanpa benar-benar menghapus."
+        "Delete all files in a given tier to free up storage.\n\n"
+        "- **raw**: delete raw ZIPs and TIFs (saves ~800 MB per scene)\n"
+        "- **bronze**: delete cropped output (saves ~50 MB per scene per band)\n"
+        "- **silver**: delete Lee-filter output (saves ~45 MB per scene per band)\n"
+        "- **gold**: ⚠️ delete production-ready COGs (the main data!)\n"
+        "- **partial**: delete .part files (interrupted downloads)\n"
+        "- **all**: delete everything except gold\n\n"
+        "Use `dry_run=true` to see what would be deleted without actually deleting."
     ),
 )
 async def cleanup_storage(req: CleanupRequest) -> CleanupResponse:
@@ -330,11 +330,11 @@ async def cleanup_storage(req: CleanupRequest) -> CleanupResponse:
                     except OSError:
                         pass  # tidak kosong, skip
 
-    verb = "Akan dihapus" if req.dry_run else "Dihapus"
+    verb = "Would be deleted" if req.dry_run else "Deleted"
     msg  = (
-        f"{verb}: {deleted} file ({_human(freed_mb)}) "
-        f"dari tier '{req.tier}'"
-        + (" [DRY RUN - tidak ada yang dihapus]" if req.dry_run else "")
+        f"{verb}: {deleted} file(s) ({_human(freed_mb)}) "
+        f"from tier '{req.tier}'"
+        + (" [DRY RUN - nothing was deleted]" if req.dry_run else "")
         + (f" — {len(errors)} error" if errors else "")
     )
 
@@ -353,12 +353,12 @@ async def cleanup_storage(req: CleanupRequest) -> CleanupResponse:
 
 @router.post(
     "/cleanup/partial",
-    summary="Hapus file download terputus (.part)",
+    summary="Delete interrupted download files (.part)",
     description=(
-        "Hapus semua file `.part` yang merupakan sisa download yang terputus. "
-        "File ini tidak bisa dipakai tapi bisa makan storage. "
-        "**Catatan:** download yang sedang berjalan juga punya file .part — "
-        "jangan jalankan ini saat pipeline sedang aktif download."
+        "Delete all `.part` files left over from interrupted downloads. "
+        "These files are unusable but can take up storage. "
+        "**Note:** a download in progress also has a .part file — "
+        "do not run this while the pipeline is actively downloading."
     ),
 )
 async def cleanup_partial(dry_run: bool = False) -> CleanupResponse:

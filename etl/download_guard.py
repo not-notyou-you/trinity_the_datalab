@@ -80,7 +80,7 @@ class StallGuard:
         rate = self._window_bytes / elapsed
         if rate < self.min_bps:
             raise DownloadStalledError(
-                f"download macet: {rate / 1024:.1f} KB/s selama {elapsed:.0f} s "
+                f"download stalled: {rate / 1024:.1f} KB/s over {elapsed:.0f} s "
                 f"(minimum {self.min_bps / 1024:.0f} KB/s)"
             )
         self._window_start = self._clock()
@@ -271,6 +271,79 @@ def retry_delay(attempt: int, retry_after: str | None = None) -> float:
     return min(60.0, 2.0 ** attempt) + random.uniform(0, 1.0)
 
 
+# Koneksi yang diputus server (SSL EOF, RemoteDisconnected, IncompleteRead)
+# biasanya berarti CDSE sedang gangguan beberapa menit, bukan file rusak.
+# Jeda 2 s/4 s (retry_delay) menghabiskan jatah dalam <10 detik -- dataset 54
+# 2026-09-30: 24 scene gagal dalam 2 menit selama outage ~4 menit. Di sini
+# 5, 10, 20, 40, 80 s (maks 120 s): total ~2.5 menit sebelum menyerah.
+CONNECTION_RETRY_BASE_S = float(os.getenv("CONNECTION_RETRY_BASE_S", "2.5"))
+CONNECTION_RETRY_MAX_S = 120.0
+
+
+def connection_retry_delay(attempt: int) -> float:
+    delay = min(CONNECTION_RETRY_MAX_S, CONNECTION_RETRY_BASE_S * 2.0 ** attempt)
+    return delay + random.uniform(0, 2.0)
+
+
+# ---------------------------------------------------------------------------
+# Circuit breaker per sumber
+# ---------------------------------------------------------------------------
+#
+# Kalau beberapa worker kehilangan koneksi ke sumber yang sama dalam waktu
+# berdekatan, masalahnya ada di server, bukan di scene. Semua worker sumber
+# itu dijeda dulu (tanpa memakan jatah retry) supaya antrean tidak habis
+# terbakar satu per satu selama server down.
+
+BREAKER_WINDOW_S = float(os.getenv("DOWNLOAD_BREAKER_WINDOW_S", "30"))
+BREAKER_THRESHOLD = int(os.getenv("DOWNLOAD_BREAKER_THRESHOLD", "2"))
+BREAKER_COOLDOWN_S = float(os.getenv("DOWNLOAD_BREAKER_COOLDOWN_S", "90"))
+
+_breaker_lock = threading.Lock()
+# source -> daftar (waktu, thread_id) kegagalan koneksi terbaru
+_breaker_failures: dict[str, list[tuple[float, int]]] = {}
+_breaker_open_until: dict[str, float] = {}
+
+
+def record_connection_failure(source: str) -> bool:
+    """Catat koneksi putus. True kalau ini membuka breaker sumber tsb."""
+    now = time.monotonic()
+    me = threading.get_ident()
+    with _breaker_lock:
+        recent = [(t, tid) for t, tid in _breaker_failures.get(source, [])
+                  if now - t <= BREAKER_WINDOW_S]
+        recent.append((now, me))
+        _breaker_failures[source] = recent
+        if len({tid for _, tid in recent}) < BREAKER_THRESHOLD:
+            return False
+        if _breaker_open_until.get(source, 0.0) > now:
+            return False
+        _breaker_open_until[source] = now + BREAKER_COOLDOWN_S
+        _breaker_failures[source] = []
+    logger.warning(
+        "[GUARD] %s: %d worker kehilangan koneksi dalam %.0f s -- semua unduhan "
+        "%s dijeda %.0f s.", source, BREAKER_THRESHOLD, BREAKER_WINDOW_S,
+        source, BREAKER_COOLDOWN_S,
+    )
+    return True
+
+
+def record_connection_success(source: str) -> None:
+    with _breaker_lock:
+        _breaker_failures.pop(source, None)
+
+
+def breaker_remaining(source: str) -> float:
+    with _breaker_lock:
+        return max(0.0, _breaker_open_until.get(source, 0.0) - time.monotonic())
+
+
+def wait_for_breaker(source: str, cancel_event: threading.Event | None = None) -> None:
+    """Tahan worker selama breaker sumber terbuka (bisa dibatalkan)."""
+    while (left := breaker_remaining(source)) > 0:
+        note_wait(source, left, "source unreachable, pausing all downloads")
+        sleep_or_cancel(left, cancel_event)
+
+
 def sleep_or_cancel(delay: float, cancel_event: threading.Event | None = None) -> None:
     """Tidur `delay` detik, tapi bangun dan lempar DownloadCancelled begitu
     job dibatalkan -- jeda 429 bisa sampai 5 menit."""
@@ -278,14 +351,14 @@ def sleep_or_cancel(delay: float, cancel_event: threading.Event | None = None) -
         time.sleep(delay)
         return
     if cancel_event.wait(delay):
-        raise DownloadCancelled("job dibatalkan saat menunggu retry")
+        raise DownloadCancelled("job cancelled while waiting to retry")
 
 
 # ---------------------------------------------------------------------------
 # Kegagalan otentikasi NASA Earthdata
 # ---------------------------------------------------------------------------
 
-NASA_AUTH_MESSAGE = "NASA_EARTHDATA_TOKEN tidak valid atau kedaluwarsa"
+NASA_AUTH_MESSAGE = "NASA_EARTHDATA_TOKEN is invalid or expired"
 
 
 class NasaAuthError(RuntimeError):
@@ -312,7 +385,7 @@ def auth_failures_since(ts: float) -> dict[str, str]:
 
 def raise_for_nasa_auth(resp, source: str, url: str) -> None:
     if resp.status_code in (401, 403):
-        msg = f"{NASA_AUTH_MESSAGE} (HTTP {resp.status_code} dari {source})"
+        msg = f"{NASA_AUTH_MESSAGE} (HTTP {resp.status_code} from {source})"
         record_auth_failure(source, msg)
         raise NasaAuthError(f"{msg}: {url}")
 

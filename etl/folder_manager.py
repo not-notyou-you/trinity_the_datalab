@@ -209,7 +209,7 @@ def normalize_level(level: str) -> str:
     pernah dilihat siapa pun."""
     lv = str(level).strip().upper()
     if lv not in LEVELS:
-        raise ValueError(f"Level tidak valid: {level!r}. Valid: {LEVELS}")
+        raise ValueError(f"Invalid level: {level!r}. Valid: {LEVELS}")
     return lv
 
 
@@ -293,8 +293,8 @@ def date_key(d: date | datetime | str) -> str:
     s = str(d).replace("-", "")
     if len(s) != 8 or not s.isdigit():
         raise ValueError(
-            f"tanggal tidak valid: {d!r}. Gunakan objek date/datetime atau "
-            "string 'YYYYMMDD'/'YYYY-MM-DD'."
+            f"invalid date: {d!r}. Use a date/datetime object or a "
+            "'YYYYMMDD'/'YYYY-MM-DD' string."
         )
     return s
 
@@ -318,22 +318,22 @@ def scene_date_key(scene_key: str) -> str:
         if _valid_date(candidate):
             return candidate
     raise ValueError(
-        f"Kunci scene {scene_key!r} tidak mengandung tanggal YYYYMMDD — "
-        "folder tanggalnya tidak bisa ditentukan."
+        f"Scene key {scene_key!r} does not contain a YYYYMMDD date — "
+        "its date folder cannot be determined."
     )
 
 
 def normalize_tier(tier: str) -> str:
     t = str(tier).lower()
     if t not in ALL_TIERS:
-        raise ValueError(f"Tier tidak valid: {tier!r}. Valid: {ALL_TIERS}")
+        raise ValueError(f"Invalid tier: {tier!r}. Valid: {ALL_TIERS}")
     return t
 
 
 def normalize_source(source: str) -> str:
     s = str(source).lower()
     if s not in SOURCES:
-        raise ValueError(f"Source tidak valid: {source!r}. Valid: {SOURCES}")
+        raise ValueError(f"Invalid source: {source!r}. Valid: {SOURCES}")
     return s
 
 
@@ -350,12 +350,12 @@ def validate_tier_source(tier: str, source: str) -> tuple[str, str]:
     allowed = TIER_SOURCES[tier]
     if not allowed:
         raise ValueError(
-            f"Tier {tier!r} tidak punya level source (dia gabungan semua "
-            f"source). Pakai get_fusion_dir()/get_preview_dir()."
+            f"Tier {tier!r} has no per-source level (it combines all "
+            f"sources). Use get_fusion_dir()/get_preview_dir()."
         )
     if source not in allowed:
         raise ValueError(
-            f"Source {source!r} tidak dipakai di tier {tier!r}. Valid: {allowed}"
+            f"Source {source!r} is not used in tier {tier!r}. Valid: {allowed}"
         )
     return tier, source
 
@@ -544,7 +544,7 @@ def normalize_preview_level(processing_level: str | None) -> str:
     level = str(processing_level).strip().upper()
     if level not in PREVIEW_LEVELS:
         raise ValueError(
-            f"Level preview tidak valid: {processing_level!r}. Valid: {PREVIEW_LEVELS}"
+            f"Invalid preview level: {processing_level!r}. Valid: {PREVIEW_LEVELS}"
         )
     return level
 
@@ -572,7 +572,7 @@ def get_preview_kind_dir(
     """Subfolder satu jenis render:
     {YYYYMMDD}/preview/{RAW|PROCESSED}/{grayscale|colored|composite}/."""
     if kind not in PREVIEW_KINDS:
-        raise ValueError(f"Jenis preview tidak valid: {kind!r}. Valid: {PREVIEW_KINDS}")
+        raise ValueError(f"Invalid preview kind: {kind!r}. Valid: {PREVIEW_KINDS}")
     return get_preview_level_dir(
         dataset_id, dataset_name, scene_key, processing_level
     ) / kind
@@ -652,7 +652,7 @@ def get_granule_cache_dir(dataset_id: int, dataset_name: str, source: str) -> Pa
     source = normalize_source(source)
     if source not in FLAT_RAW_SOURCES:
         raise ValueError(
-            f"Source {source!r} tidak pakai cache granule flat. "
+            f"Source {source!r} does not use the flat granule cache. "
             f"Valid: {sorted(FLAT_RAW_SOURCES)}"
         )
     return get_granule_cache_root(get_dataset_root(dataset_id, dataset_name)) / source
@@ -786,7 +786,7 @@ def list_sourceless_scenes(dataset_id: int, dataset_name: str, tier: str) -> lis
     tier = normalize_tier(tier)
     if TIER_SOURCES[tier]:
         raise ValueError(
-            f"Tier {tier!r} punya level source — pakai list_scenes(tier, source)."
+            f"Tier {tier!r} has a per-source level — use list_scenes(tier, source)."
         )
     root = get_dataset_root(dataset_id, dataset_name)
 
@@ -887,7 +887,7 @@ def get_sourceless_scene_files(
     pemanggil yang tier-nya baru diketahui saat runtime (mis. API listing)."""
     tier = normalize_tier(tier)
     if TIER_SOURCES[tier]:
-        raise ValueError(f"Tier {tier!r} punya level source — pakai get_scene_files().")
+        raise ValueError(f"Tier {tier!r} has a per-source level — use get_scene_files().")
     root = get_dataset_root(dataset_id, dataset_name)
     legacy_dir = root / scene_date_key(scene_key) / tier
     if legacy_dir.is_dir():

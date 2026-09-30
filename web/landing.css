@@ -1,0 +1,84 @@
+/* web/landing.css — Home page layout only. Colors, glass panels, buttons and the
+   navbar come from style.css so Home matches the app. One screen, no scrolling:
+   headline + compact actions on top, the three satellite sources below. */
+
+/* style.css disables pointer-events on body (so drags reach the map); on Home the
+   map is decoration only, so content may receive clicks & selection. */
+.lp, .lp-footer { pointer-events: auto; }
+
+/* Map is dimmed evenly so text does not compete with map labels. */
+body.landing #bgOverlay {
+  background:
+    radial-gradient(circle at 15% -10%, rgba(0,240,255,0.10), transparent 45%),
+    linear-gradient(180deg, rgba(6,9,16,0.70), rgba(6,9,16,0.82));
+}
+
+body.landing { display: flex; flex-direction: column; min-height: 100vh; }
+main.lp {
+  flex: 1;
+  width: 100%;
+  max-width: 1120px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 48px;
+  padding-bottom: 24px;
+}
+
+/* ---- Headline & actions ---- */
+.lp-hero { max-width: 720px; }
+.lp-h1 {
+  font-family: var(--font-mono);
+  font-size: clamp(28px, 4vw, 48px);
+  line-height: 1.12;
+  margin: 0 0 18px;
+  color: var(--text);
+}
+.lp-h1 span { color: var(--cyan); }
+.lp-lead { font-size: 16px; line-height: 1.65; color: var(--text); opacity: 0.85; margin: 0 0 26px; max-width: 620px; }
+.lp-cta { display: flex; flex-wrap: wrap; gap: 10px; }
+.lp-cta .btn { padding: 11px 20px; font-size: 13px; }
+.lp-pulse {
+  display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+  background: var(--cyan); box-shadow: 0 0 8px var(--cyan);
+  animation: lp-pulse 1.6s ease-in-out infinite;
+}
+@keyframes lp-pulse { 50% { opacity: 0.3; } }
+
+/* ---- Three satellite sources ---- */
+.lp-sources { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; }
+.lp-src { padding: 22px 24px; }
+.lp-src-s1 { --sat: var(--cyan); }
+.lp-src-modis { --sat: var(--amber); }
+.lp-src-gpm { --sat: #35D0C0; }
+.lp-src-kind { margin: 0 0 6px; font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--sat); }
+.lp-src-name { margin: 0 0 8px; font-family: var(--font-mono); font-size: 22px; font-weight: 700; color: var(--text); }
+.lp-src-desc { margin: 0 0 16px; font-size: 14px; line-height: 1.6; color: var(--text); opacity: 0.8; }
+.lp-specs { display: flex; gap: 28px; margin: 0; padding-top: 14px; border-top: 1px solid var(--glass-border); }
+.lp-specs dt { font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; opacity: 0.6; }
+.lp-specs dd { margin: 2px 0 0; font-family: var(--font-mono); font-size: 14px; font-weight: 600; color: var(--text); }
+
+.lp-footer {
+  width: 100%; max-width: 1120px; margin: 0 auto; padding: 16px 28px 24px;
+  display: flex; flex-wrap: wrap; gap: 8px 24px; justify-content: space-between;
+  font-family: var(--font-mono); font-size: 12px; color: var(--text); opacity: 0.6;
+}
+
+/* ---- Responsive: stack on small screens, normal scrolling. ---- */
+@media (max-width: 900px) {
+  main.lp { gap: 32px; padding-left: 16px; padding-right: 16px; }
+  .lp-sources { grid-template-columns: 1fr; }
+  .lp-footer { padding-left: 16px; padding-right: 16px; }
+}
+@media (max-width: 480px) {
+  .lp-cta .btn { flex: 1 1 100%; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .lp-pulse { animation: none; }
+}
+
+/* Home: navbar stays expanded (no hover needed) so first-time visitors see the menu. */
+body.landing .floatnav { max-width: 920px; gap: 26px; cursor: default; }
+body.landing .brand-text,
+body.landing .floatnav-tabs,
+body.landing .status-label-text { opacity: 1; }

@@ -1,41 +1,24 @@
-<!-- web/index.html -->
+<!-- web/index.html — Home (landing page). Uses the same style.css & navbar as the
+     app (web/app.html) so both look consistent. -->
 <!doctype html>
-<html lang="id">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>The Trinity</title>
+<title>The Trinity · Satellite Data Platform</title>
+<meta name="description" content="Build ML-ready multi-satellite datasets (Sentinel-1, MODIS, GPM) with every processing step configurable and traceable.">
 <link rel="icon" type="image/webp" href="logo.webp">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
-<link rel="stylesheet" href="style.css?v=live-monitor2">
+<link rel="stylesheet" href="style.css?v=ux1">
+<link rel="stylesheet" href="landing.css?v=ux1">
 </head>
-<body>
+<body class="landing">
 
 <div id="bgMap"></div>
 <div id="bgOverlay"></div>
-
-<!-- Penutup peta: satu path SVG "layar penuh dikurangi persegi panjang rounded".
-     Karena fill-rule=evenodd, lubangnya tidak ikut ter-hit-test, jadi path ini
-     sekaligus memblokir drag/zoom peta di luar jendela dengan sudut yang membulat
-     persis mengikuti border jendela. -->
-<svg id="mapMask" class="hidden" aria-hidden="true"><path id="mapMaskPath" fill-rule="evenodd"></path></svg>
-
-<div class="map-ui hidden" id="mapUI">
-  <div class="map-hint-chip" id="mapHintChip">
-    <span class="map-hint-title">Peta Wilayah</span>
-    <span class="map-hint-sub" id="mapBboxReadout">Pilih lokasi atau seret peta untuk mengubah area</span>
-  </div>
-  <!-- Dipos oleh JS tepat di atas jendela peta; overflow:hidden + radius yang sama
-       membuat kotak seleksi terpotong rapi di sudut membulat. -->
-  <div class="map-clip" id="mapClip">
-    <div class="map-selection-box" id="mapSelectionBox"></div>
-    <button type="button" class="map-zoom-btn" id="mapZoomOut" title="Perkecil" aria-label="Perkecil">&minus;</button>
-    <button type="button" class="map-zoom-btn" id="mapZoomIn" title="Perbesar" aria-label="Perbesar">+</button>
-  </div>
-</div>
 
 <div class="floatnav-zone" id="floatNavZone">
   <nav class="floatnav" id="floatNav" tabindex="0">
@@ -47,347 +30,87 @@
       </div>
     </div>
     <div class="floatnav-tabs">
-      <button class="tab active" data-tab="create">Buat Dataset</button>
-      <button class="tab" data-tab="datasets">Dataset Saya</button>
-      <button class="tab" data-tab="live">Live</button>
+      <a class="tab active" href="./" aria-current="page">Home</a>
+      <a class="tab" href="app.html#create">Create Dataset</a>
+      <a class="tab" href="app.html#datasets">Dataset Catalog</a>
+      <a class="tab" href="app.html#live">Live Monitoring</a>
     </div>
     <div class="status">
       <span class="status-dot" id="statusDot"></span>
-      <span id="statusLabel" class="status-label-text">Menghubungkan...</span>
+      <span id="statusLabel" class="status-label-text">Connecting...</span>
     </div>
   </nav>
 </div>
 
-<main>
+<main class="lp">
 
-  <section class="view" id="view-create">
-    <div class="create-grid">
-
-      <section class="loc-section">
-        <!-- Border/latar ada di .loc-section (tidak ikut menggulung); hanya .panel-scroll
-             yang menggulung, sehingga bingkai tetap membingkai panel, bukan kontennya. -->
-        <div class="panel-scroll">
-          <p class="section-title">Pilih Lokasi</p>
-          <button type="button" class="btn btn-add-loc" id="addLocationBtn">
-            <span class="btn-icon" id="addLocationIcon"></span>Tambah Lokasi
-          </button>
-          <div class="loc-search">
-            <span class="loc-search-icon" id="locSearchIcon"></span>
-            <input type="search" id="locSearch" autocomplete="off" placeholder="Cari lokasi tersimpan...">
-          </div>
-          <div class="region-grid" id="regionGrid"></div>
-        </div>
-      </section>
-
-      <div class="map-gap" id="mapGap"></div>
-
-      <section class="config-section">
-        <div class="panel-scroll">
-          <p class="section-title">Konfigurasi</p>
-          <!-- novalidate: validasi bawaan browser berjalan SEBELUM event submit dan
-               ikut memeriksa field di langkah yang sedang disembunyikan. Field wajib
-               yang tak terlihat akan memblokir submit tanpa pesan yang bisa dilihat
-               user ("not focusable"), jadi aturan wajibnya ditegakkan per langkah oleh
-               validateWizardStep() yang pesannya menunjuk langkah yang benar. Atribut
-               `required` dibiarkan sebagai penanda semantik untuk pembaca layar. -->
-          <form id="createForm" novalidate>
-
-            <!-- Pra-wisaya: klon konfigurasi dataset terakhir (DOCS/DECISIONS.md D13).
-                 Disembunyikan sampai diketahui ada dataset sebelumnya -- tombol yang
-                 selalu tampil lalu selalu gagal untuk pengguna baru hanya jadi jebakan. -->
-            <div class="clone-block hidden" id="cloneBlock">
-              <button type="button" class="btn btn-clone" id="cloneConfigBtn">
-                <span class="btn-icon" id="cloneConfigIcon"></span>Pakai Config Sebelumnya
-              </button>
-              <div class="clone-preview hidden" id="clonePreview"></div>
-              <p class="clone-error hidden" id="cloneError" role="alert"></p>
-            </div>
-
-            <ol class="wizard-steps" id="wizardSteps">
-              <li class="wizard-step-pip active" data-pip="1"><span>1</span>Wilayah</li>
-              <li class="wizard-step-pip" data-pip="2"><span>2</span>Satelit</li>
-              <li class="wizard-step-pip" data-pip="3"><span>3</span>Fusi</li>
-              <li class="wizard-step-pip" data-pip="4"><span>4</span>Selesai</li>
-            </ol>
-
-            <!-- Langkah 1: wilayah (dipilih di panel kiri) + rentang tanggal -->
-            <section class="wizard-panel" data-step="1">
-              <p class="wizard-title">Wilayah &amp; Tanggal</p>
-              <div class="wizard-region" id="wizardRegion">Belum ada lokasi dipilih</div>
-              <div class="field-row">
-                <div class="field">
-                  <label for="fDateStart">Dari tanggal</label>
-                  <input type="date" id="fDateStart" required>
-                </div>
-                <div class="field">
-                  <label for="fDateEnd">Sampai tanggal</label>
-                  <input type="date" id="fDateEnd" required>
-                </div>
-              </div>
-              <details class="advanced">
-                <summary>Pengaturan lanjutan (opsional)</summary>
-                <div class="field-row-3">
-                  <div class="field">
-                    <label for="fMinCloud">Maks. tutupan awan (%)</label>
-                    <input type="number" id="fMinCloud" min="0" max="100" step="1">
-                  </div>
-                  <div class="field">
-                    <label for="fMinQuality">Skor kualitas minimum</label>
-                    <input type="number" id="fMinQuality" min="0" max="100" step="1">
-                  </div>
-                  <div class="field">
-                    <label for="fResolution">Resolusi (m)</label>
-                    <input type="number" id="fResolution" min="1" step="1">
-                  </div>
-                </div>
-              </details>
-            </section>
-
-            <!-- Langkah 2: sumber satelit + level pemrosesan PER satelit.
-                 Kartunya dirender app.js dari SATELLITE_SOURCES supaya label,
-                 deskripsi, dan arti RAW/PROCESSED tiap sensor hidup di satu tempat. -->
-            <section class="wizard-panel hidden" data-step="2">
-              <div class="wizard-title-row">
-                <p class="wizard-title">Sumber Data Satelit</p>
-                <label class="master-toggle" for="masterAll">
-                  <input type="checkbox" id="masterAll">Pilih Semua
-                </label>
-              </div>
-              <div class="satellite-list" id="satelliteList"></div>
-            </section>
-
-            <!-- Langkah 3: strategi fusi (hanya kalau >1 sumber) + opsi preview -->
-            <section class="wizard-panel hidden" data-step="3">
-              <div id="fusionGroup">
-                <p class="wizard-title">Strategi Fusi</p>
-                <div class="fusion-list" id="fusionList"></div>
-
-                <!-- Hanya relevan untuk FULL_COVERAGE: strategi itu merakit
-                     satu berkas per hari termasuk hari tanpa scene S1, jadi
-                     harus tahu seberapa jauh boleh meminjam scene. -->
-                <div class="fusion-extra hidden" id="toleranceGroup">
-                  <label class="fusion-extra-row" for="s1Tolerance">
-                    <span>Toleransi pasangan Sentinel-1</span>
-                    <span class="fusion-extra-input">
-                      <input type="number" id="s1Tolerance" min="0" max="14" value="2" />
-                      <span class="fusion-extra-unit">hari</span>
-                    </span>
-                  </label>
-                  <p class="fusion-extra-hint">
-                    0 = hanya hari yang sama. Hari tanpa pasangan dalam jangkauan
-                    tetap dibuatkan berkas, dengan lapisan Sentinel-1 kosong.
-                  </p>
-                </div>
-
-                <label class="fusion-extra-row">
-                  <input type="checkbox" id="fusionOutputOnly" />
-                  <span>Simpan hasil fusi saja</span>
-                </label>
-                <p class="fusion-extra-hint">
-                  Berkas per-satelit dihapus setelah stack HDF5 selesai ditulis.
-                  Pemrosesannya tetap berjalan penuh &mdash; fusi membutuhkannya.
-                </p>
-              </div>
-              <p class="wizard-title">Opsi Preview (opsional)</p>
-              <div class="preview-opts" id="previewOptions"></div>
-            </section>
-
-            <!-- Langkah 4: nama + ringkasan sebelum dikirim -->
-            <section class="wizard-panel hidden" data-step="4">
-              <p class="wizard-title">Tinjau &amp; Buat</p>
-              <div class="field">
-                <label for="fName">Nama dataset</label>
-                <input type="text" id="fName" placeholder="dataset nov ke feb" required>
-              </div>
-              <div class="field">
-                <label for="fDescription">Deskripsi (opsional)</label>
-                <textarea id="fDescription" placeholder="Catatan tambahan tentang dataset ini"></textarea>
-              </div>
-              <div class="wizard-review" id="wizardReview"></div>
-            </section>
-
-            <p class="wizard-error hidden" id="wizardError" role="alert"></p>
-
-            <div class="wizard-nav">
-              <button type="button" class="btn btn-ghost hidden" id="wizardBack">Kembali</button>
-              <button type="button" class="btn btn-primary btn-block" id="wizardNext">Lanjut</button>
-              <button type="submit" class="btn btn-primary btn-block hidden" id="createSubmit">Buat Dataset</button>
-            </div>
-          </form>
-        </div>
-      </section>
-
-    </div>
+  <!-- One screen: short headline + actions on top, three satellite sources below. -->
+  <section class="lp-hero">
+    <h1 class="lp-h1">Trinity: The Monitor<br><span>Three satellites. One dataset.</span></h1>
+    <p class="lp-lead">
+      Download, clean, quality-check, and fuse satellite data into one ML-ready file per date,
+      with the provenance of every file recorded.
+    </p>
+    <nav class="lp-cta" aria-label="Get started">
+      <a class="btn btn-accent" href="app.html#create">Create Dataset</a>
+      <a class="btn btn-accent" href="app.html#datasets">Dataset Catalog</a>
+      <a class="btn btn-accent" href="app.html#live"><span class="lp-pulse"></span>Live Monitoring</a>
+    </nav>
   </section>
 
-  <section class="view hidden" id="view-datasets">
-    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:18px;">
-      <p class="panel-title" style="margin:0">Dataset Saya</p>
-      <button class="btn btn-ghost" id="refreshDatasets">Segarkan</button>
-    </div>
-    <!-- Tawaran penggabungan. Sengaja duduk DI ATAS daftar dataset, bukan di
-         dalam kartu salah satunya: yang digabung adalah beberapa dataset
-         sekaligus, jadi menempelkannya pada satu kartu akan menyesatkan soal
-         siapa subjeknya. Kosong dan tak terlihat kalau tidak ada yang bisa
-         digabung. -->
-    <div class="merge-panel hidden" id="mergePanel"></div>
-    <div class="card-list" id="datasetList"></div>
-  </section>
-
-  <!-- Live Monitoring (LIVE_MONITORING.md): dropdown Daerah Live -> satu kartu
-       berisi 8 preview + kalimat kondisi, daftar tanggal, dan 3 grafik tren.
-       Semua isi kartu dirender app.js dari GET /api/live/areas/{id}/card. -->
-  <section class="view hidden" id="view-live">
-    <div class="lm-wrap">
-      <div class="panel lm-top">
-        <div class="lm-select-row">
-          <label class="lm-label" for="lmAreaSelect">Daerah Live</label>
-          <select id="lmAreaSelect"></select>
-          <button type="button" class="btn btn-primary" id="lmAddBtn">+ Tambah Daerah</button>
-        </div>
-        <div class="lm-area-list" id="lmAreaList"></div>
-        <div class="lm-area-meta" id="lmAreaMeta"></div>
-      </div>
-      <div class="panel lm-card" id="lmCard">
-        <div class="empty-small">Memuat...</div>
-      </div>
-    </div>
+  <section class="lp-sources" aria-label="Data sources">
+    <article class="panel lp-src lp-src-s1">
+      <p class="lp-src-kind">01 · Radar</p>
+      <h2 class="lp-src-name">Sentinel-1</h2>
+      <p class="lp-src-desc">C-band SAR that sees through clouds and at night, reliable for detecting inundation.</p>
+      <dl class="lp-specs"><div><dt>Resolution</dt><dd>10 m</dd></div><div><dt>Revisit</dt><dd>~7–8 days</dd></div></dl>
+    </article>
+    <article class="panel lp-src lp-src-modis">
+      <p class="lp-src-kind">02 · Optical</p>
+      <h2 class="lp-src-name">MODIS</h2>
+      <p class="lp-src-desc">Surface reflectance for indices such as NDWI and NDVI, with cloud masking.</p>
+      <dl class="lp-specs"><div><dt>Resolution</dt><dd>250 m</dd></div><div><dt>Revisit</dt><dd>Daily</dd></div></dl>
+    </article>
+    <article class="panel lp-src lp-src-gpm">
+      <p class="lp-src-kind">03 · Rainfall</p>
+      <h2 class="lp-src-name">GPM</h2>
+      <p class="lp-src-desc">IMERG precipitation estimates, the flood-trigger variable for your model.</p>
+      <dl class="lp-specs"><div><dt>Resolution</dt><dd>~10 km</dd></div><div><dt>Revisit</dt><dd>Daily</dd></div></dl>
+    </article>
   </section>
 
 </main>
 
-<div class="modal-overlay hidden" id="addLocationModal">
-  <div class="modal modal-wide">
-    <h3>Tambah Lokasi Baru</h3>
-    <div class="modal-tabs" role="tablist">
-      <button type="button" class="modal-tab active" data-loctab="search" role="tab">Cari Nama</button>
-      <button type="button" class="modal-tab" data-loctab="manual" role="tab">Koordinat Manual</button>
-    </div>
-
-    <!-- Bagian A: cari nama lewat OpenStreetMap. Memilih hasil akan mengisi
-         bagian koordinat, jadi pengguna selalu sempat memeriksa bbox sebelum simpan. -->
-    <div class="loctab-panel" id="loctabSearch">
-      <label class="mini-label" for="geoSearchInput">Cari nama lokasi (OpenStreetMap)</label>
-      <input type="search" id="geoSearchInput" autocomplete="off" placeholder="mis. Lampung, Semarang, Cikarang">
-      <div class="geo-results" id="geoResults">
-        <p class="geo-hint">Ketik minimal 2 huruf lalu pilih salah satu hasil.</p>
-      </div>
-    </div>
-
-    <!-- Bagian B: input koordinat manual, sekaligus tahap konfirmasi hasil pencarian. -->
-    <div class="loctab-panel hidden" id="loctabManual">
-      <div class="field">
-        <label for="alName">Nama lokasi</label>
-        <input type="text" id="alName" placeholder="mis. Cikarang Utara" maxlength="100">
-      </div>
-      <div class="field">
-        <label for="alPaste">Tempel bbox (opsional)</label>
-        <input type="text" id="alPaste" placeholder="min_lon, min_lat, max_lon, max_lat">
-      </div>
-      <div class="coord-grid">
-        <div class="field"><label for="alMinLon">Longitude min</label><input type="number" id="alMinLon" step="any" placeholder="106.78"></div>
-        <div class="field"><label for="alMinLat">Latitude min</label><input type="number" id="alMinLat" step="any" placeholder="-6.22"></div>
-        <div class="field"><label for="alMaxLon">Longitude maks</label><input type="number" id="alMaxLon" step="any" placeholder="106.87"></div>
-        <div class="field"><label for="alMaxLat">Latitude maks</label><input type="number" id="alMaxLat" step="any" placeholder="-6.07"></div>
-      </div>
-      <div class="field">
-        <label for="alDesc">Deskripsi (opsional)</label>
-        <input type="text" id="alDesc" placeholder="Catatan singkat tentang area ini">
-      </div>
-    </div>
-
-    <p class="modal-error hidden" id="alError"></p>
-    <div class="modal-actions">
-      <button type="button" class="btn btn-ghost" id="alCancel">Batal</button>
-      <button type="button" class="btn btn-primary" id="alSave">Simpan Lokasi</button>
-    </div>
-  </div>
-</div>
-
-<div class="modal-overlay hidden" id="deleteLocationModal">
-  <div class="modal">
-    <h3>Hapus lokasi ini?</h3>
-    <p id="deleteLocationText">Lokasi akan dihilangkan dari daftar pilihan.</p>
-    <p class="modal-note">Dataset yang sudah pernah dibuat dengan lokasi ini tetap bisa dibuka.</p>
-    <div class="modal-actions">
-      <button class="btn btn-ghost" id="deleteLocationCancel">Batal</button>
-      <button class="btn btn-danger" id="deleteLocationConfirm">Ya, Hapus</button>
-    </div>
-  </div>
-</div>
-
-<div class="modal-overlay hidden" id="deleteModal">
-  <div class="modal">
-    <h3>Hapus dataset ini?</h3>
-    <p>Semua file yang tersimpan untuk dataset ini akan dihapus total dan tidak bisa dikembalikan.</p>
-    <label class="modal-check"><input type="checkbox" id="deleteForce"> Paksa hentikan proses yang sedang berjalan</label>
-    <div class="modal-actions">
-      <button class="btn btn-ghost" id="deleteCancel">Batal</button>
-      <button class="btn btn-danger" id="deleteConfirm">Ya, Hapus</button>
-    </div>
-  </div>
-</div>
-
-<div class="modal-overlay hidden" id="cancelModal">
-  <div class="modal">
-    <h3>Batalkan dataset ini?</h3>
-    <p>Proses akan dihentikan dan data sementara (RAW, ALIGNED, DESPECKLED/INDICES/ACCUMULATED) akan dihapus. Data COG dan FUSED yang sudah selesai tetap disimpan.</p>
-    <div class="modal-actions">
-      <button class="btn btn-ghost" id="cancelModalCancel">Batal</button>
-      <button class="btn btn-danger" id="cancelModalConfirm">Ya, Batalkan</button>
-    </div>
-  </div>
-</div>
-
-<div class="modal-overlay hidden" id="lmAddModal">
-  <div class="modal">
-    <h3>Tambah Daerah Live</h3>
-    <p class="lm-modal-hint">Pilih lokasi tersimpan (sama dengan lokasi di Buat Dataset). Sistem akan otomatis
-      mengunduh scene Sentinel-1 terakhir beserta MODIS &amp; GPM yang cocok, lalu memperbaruinya sendiri.</p>
-    <div class="field">
-      <label for="lmRegion">Lokasi</label>
-      <select id="lmRegion"></select>
-      <button type="button" class="lm-link" id="lmNewLocation">Lokasi belum ada? Tambah lokasi baru</button>
-    </div>
-    <div class="field">
-      <label for="lmName">Nama daerah (opsional)</label>
-      <input type="text" id="lmName" maxlength="200" placeholder="mis. Padang">
-    </div>
-    <div class="field">
-      <label for="lmRetention">Jumlah scene disimpan (1&ndash;12)</label>
-      <input type="number" id="lmRetention" min="1" max="12" value="6">
-      <p class="lm-modal-hint">Satu scene = satu lintasan Sentinel-1 (~6&ndash;12 hari sekali). Scene lebih lama dihapus otomatis.</p>
-    </div>
-    <div class="modal-actions">
-      <button class="btn btn-ghost" id="lmAddCancel">Batal</button>
-      <button class="btn btn-primary" id="lmAddConfirm">Simpan &amp; Mulai</button>
-    </div>
-  </div>
-</div>
-
-<div class="modal-overlay hidden" id="lmConfirmModal">
-  <div class="modal">
-    <h3 id="lmConfirmTitle">Yakin?</h3>
-    <p id="lmConfirmText"></p>
-    <div class="modal-actions">
-      <button class="btn btn-ghost" id="lmConfirmCancel">Batal</button>
-      <button class="btn btn-danger" id="lmConfirmOk">Ya, lanjutkan</button>
-    </div>
-  </div>
-</div>
-
-<div class="modal-overlay hidden" id="lmImageModal">
-  <div class="modal modal-wide lm-image-modal">
-    <img id="lmImageFull" alt="">
-    <p id="lmImageCaption"></p>
-    <div class="modal-actions"><button class="btn btn-ghost" id="lmImageClose">Tutup</button></div>
-  </div>
-</div>
-
-<div class="toast-stack" id="toastStack"></div>
+<footer class="lp-footer">
+  <span>© The Trinity · The DataLab</span>
+  <span>Data: ESA Copernicus · NASA MODIS · NASA GPM</span>
+  <a href="/docs">API Docs</a>
+</footer>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="icons.js"></script>
-<script src="app.js?v=live-monitor3"></script>
+<script>
+// Same background map as the app, static and dimmed (decoration only).
+L.map('bgMap', { zoomControl: false, attributionControl: false, dragging: false,
+  scrollWheelZoom: false, doubleClickZoom: false, boxZoom: false, keyboard: false, touchZoom: false
+}).setView([-6.2, 106.85], 11).addLayer(L.tileLayer(
+  'https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}', { maxZoom: 19 }));
+
+document.querySelector('.floatnav-brand').addEventListener('click', () =>
+  document.getElementById('floatNav').classList.toggle('expanded'));
+
+async function checkHealth() {
+  const dot = document.getElementById('statusDot'), label = document.getElementById('statusLabel');
+  try {
+    const h = await (await fetch('/api/health')).json();
+    dot.className = 'status-dot ' + (h.db_connected ? 'ok' : 'degraded');
+    label.textContent = h.db_connected ? 'Connected' : 'Database issue';
+  } catch (e) {
+    dot.className = 'status-dot down';
+    label.textContent = 'Disconnected';
+  }
+}
+checkHealth();
+setInterval(checkHealth, 15000);
+</script>
 </body>
 </html>

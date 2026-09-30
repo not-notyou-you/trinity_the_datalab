@@ -49,7 +49,7 @@ def _slugify(name: str) -> str:
     return fm.slugify(name)
 
 
-@router.post("", status_code=201, response_model=DatasetCreateResponse, summary="Buat dataset baru")
+@router.post("", status_code=201, response_model=DatasetCreateResponse, summary="Create a new dataset")
 async def create_dataset(
     req: CreateDatasetRequest,
     db: DatabaseClient = Depends(get_db),
@@ -85,7 +85,7 @@ async def create_dataset(
 @router.get(
     "/last-config",
     response_model=DatasetLastConfigResponse,
-    summary="Konfigurasi dataset terakhir (tombol 'Pakai Config Sebelumnya')",
+    summary="Last dataset configuration ('Reuse Previous Config' button)",
 )
 async def get_last_dataset_config(
     db: DatabaseClient = Depends(get_db),
@@ -117,7 +117,7 @@ async def list_datasets(
 async def get_dataset(dataset_id: int, db: DatabaseClient = Depends(get_db)) -> DatasetDetail:
     result = _mgr(db).get_dataset(dataset_id)
     if result is None:
-        raise HTTPException(404, f"Dataset {dataset_id} tidak ditemukan")
+        raise HTTPException(404, f"Dataset {dataset_id} not found")
     return DatasetDetail(**result)
 
 
@@ -125,7 +125,7 @@ async def get_dataset(dataset_id: int, db: DatabaseClient = Depends(get_db)) -> 
 async def get_dataset_status(dataset_id: int, db: DatabaseClient = Depends(get_db)) -> DatasetProgressResponse:
     result = _mgr(db).get_progress(dataset_id)
     if result is None:
-        raise HTTPException(404, f"Dataset {dataset_id} tidak ditemukan")
+        raise HTTPException(404, f"Dataset {dataset_id} not found")
     return DatasetProgressResponse(**result)
 
 
@@ -151,7 +151,7 @@ async def resume_dataset(dataset_id: int, db: DatabaseClient = Depends(get_db)) 
     return DatasetResumeResponse(**result)
 
 
-@router.post("/{dataset_id}/cancel", response_model=DatasetCancelResponse, summary="Batalkan dataset yang sedang berjalan")
+@router.post("/{dataset_id}/cancel", response_model=DatasetCancelResponse, summary="Cancel a running dataset")
 async def cancel_dataset(
     dataset_id: int,
     req: DatasetCancelRequest = DatasetCancelRequest(),
@@ -168,14 +168,14 @@ async def cancel_dataset(
 async def get_dataset_logs(
     dataset_id: int,
     stage: str | None = Query(None, description="Filter stage, mis. DOWNLOAD, CROP, FUSION"),
-    status: str | None = Query(None, description="Filter status: STARTED, RUNNING, COMPLETED, FAILED"),
+    status: str | None = Query(None, description="Filter by status: STARTED, RUNNING, COMPLETED, FAILED"),
     scene_id: str | None = Query(None, description="Filter product_identifier scene"),
     limit: int = Query(50, ge=1, le=1000),
     order: str = Query("desc", pattern="^(asc|desc)$"),
     db: DatabaseClient = Depends(get_db),
 ) -> DatasetLogsResponse:
     if _mgr(db).get_dataset(dataset_id) is None:
-        raise HTTPException(404, f"Dataset {dataset_id} tidak ditemukan")
+        raise HTTPException(404, f"Dataset {dataset_id} not found")
     logs, total = PipelineLogManager(db).query_logs(
         dataset_id, stage=stage, status=status, scene_id=scene_id, limit=limit, order=order,
     )
@@ -185,7 +185,7 @@ async def get_dataset_logs(
 @router.delete("/{dataset_id}", response_model=DatasetDeleteResponse, summary="Hapus dataset")
 async def delete_dataset(
     dataset_id: int,
-    force: bool = Query(False, description="Paksa hentikan proses yang sedang berjalan lalu hapus"),
+    force: bool = Query(False, description="Force-stop any running process, then delete"),
     db: DatabaseClient = Depends(get_db),
 ) -> DatasetDeleteResponse:
     try:
@@ -195,11 +195,11 @@ async def delete_dataset(
     return DatasetDeleteResponse(**result)
 
 
-@router.get("/{dataset_id}/deletion-progress", response_model=DeletionProgressResponse, summary="Progres penghapusan")
+@router.get("/{dataset_id}/deletion-progress", response_model=DeletionProgressResponse, summary="Deletion progress")
 async def get_deletion_progress(dataset_id: int, db: DatabaseClient = Depends(get_db)) -> DeletionProgressResponse:
     result = _mgr(db).get_deletion_progress(dataset_id)
     if result is None:
-        raise HTTPException(404, "Tidak ada proses penghapusan untuk dataset ini")
+        raise HTTPException(404, "There is no deletion in progress for this dataset")
     return DeletionProgressResponse(**result)
 
 
@@ -225,12 +225,12 @@ def _resolve_tier_source(tier: str, source: str | None) -> tuple[str, str | None
     if not allowed:
         raise HTTPException(
             400,
-            f"Tier {tier_l} tidak punya level source (dia gabungan semua "
-            f"source) - hilangkan parameter source",
+            f"Tier {tier_l} has no per-source level (it combines all "
+            f"sources) - remove the source parameter",
         )
     if source_l not in allowed:
         raise HTTPException(
-            400, f"Source {source_l} tidak dipakai di tier {tier_l}. Valid: {list(allowed)}"
+            400, f"Source {source_l} is not used in tier {tier_l}. Valid: {list(allowed)}"
         )
     return tier_l, source_l
 
@@ -238,8 +238,8 @@ def _resolve_tier_source(tier: str, source: str | None) -> tuple[str, str | None
 @router.get("/{dataset_id}/download", summary="Unduh dataset (ZIP)")
 async def download_dataset(
     dataset_id: int,
-    tier: str | None = Query(None, description="Batasi ke satu tier, mis. gold"),
-    source: str | None = Query(None, description="Batasi ke satu source, mis. modis"),
+    tier: str | None = Query(None, description="Limit to one tier, e.g. gold"),
+    source: str | None = Query(None, description="Limit to one source, e.g. modis"),
     db: DatabaseClient = Depends(get_db),
 ) -> FileResponse:
     """ZIP isi dataset. Tanpa filter: seluruh dataset. Dengan `tier` dan/atau
@@ -247,10 +247,10 @@ async def download_dataset(
     tanpa ikut menarik puluhan GB tier RAW."""
     info = _mgr(db).get_dataset(dataset_id)
     if info is None:
-        raise HTTPException(404, f"Dataset {dataset_id} tidak ditemukan")
+        raise HTTPException(404, f"Dataset {dataset_id} not found")
 
     if source is not None and tier is None:
-        raise HTTPException(400, "Parameter source hanya bisa dipakai bersama tier")
+        raise HTTPException(400, "The source parameter can only be used together with tier")
 
     base_dir = fm.get_dataset_root(dataset_id, info["name"])
     if tier is None:
@@ -265,7 +265,7 @@ async def download_dataset(
         )
 
     if not files:
-        raise HTTPException(404, "Tidak ada file untuk diunduh dengan filter ini")
+        raise HTTPException(404, "There are no files to download with this filter")
 
     tmp = tempfile.NamedTemporaryFile(suffix=".zip", delete=False)
     tmp.close()
@@ -294,14 +294,14 @@ async def get_dataset_metadata(dataset_id: int, db: DatabaseClient = Depends(get
     untuk melihat kondisi dataset persis seperti yang terekam di disk."""
     info = _mgr(db).get_dataset(dataset_id)
     if info is None:
-        raise HTTPException(404, f"Dataset {dataset_id} tidak ditemukan")
+        raise HTTPException(404, f"Dataset {dataset_id} not found")
 
     metadata = fm.read_dataset_metadata(dataset_id, info["name"])
     if metadata is None:
         raise HTTPException(
             404,
-            "metadata.json belum ada untuk dataset ini - file ini baru ditulis "
-            "saat job pertama selesai (COMPLETED/CANCELLED/PAUSED).",
+            "metadata.json does not exist yet for this dataset - this file is only written "
+            "when the first job finishes (COMPLETED/CANCELLED/PAUSED).",
         )
     return metadata
 
@@ -501,11 +501,11 @@ def _preview_scene_payload(dataset_id: int, name: str, scene: str) -> dict:
 
 @router.get(
     "/{dataset_id}/preview",
-    summary="Galeri preview dataset (grayscale + colored per tanggal)",
+    summary="Dataset preview gallery (grayscale + colored per date)",
 )
 async def list_dataset_previews(
     dataset_id: int,
-    scene: str | None = Query(None, description="Batasi ke satu tanggal (YYYYMMDD)"),
+    scene: str | None = Query(None, description="Limit to one date (YYYYMMDD)"),
     db: DatabaseClient = Depends(get_db),
 ) -> dict:
     """
@@ -519,13 +519,13 @@ async def list_dataset_previews(
     """
     info = _mgr(db).get_dataset(dataset_id)
     if info is None:
-        raise HTTPException(404, f"Dataset {dataset_id} tidak ditemukan")
+        raise HTTPException(404, f"Dataset {dataset_id} not found")
 
     name = info["name"]
     available = fm.list_preview_scenes(dataset_id, name)
     if scene is not None:
         if scene not in available:
-            raise HTTPException(404, f"Tidak ada preview untuk tanggal {scene}")
+            raise HTTPException(404, f"No preview for date {scene}")
         available = [scene]
 
     scenes = [_preview_scene_payload(dataset_id, name, sc) for sc in available]
@@ -552,23 +552,23 @@ def _resolve_preview_image(
     """
     if kind not in fm.PREVIEW_KINDS:
         raise HTTPException(
-            400, f"Jenis preview tidak valid: {kind}. Valid: {list(fm.PREVIEW_KINDS)}"
+            400, f"Invalid preview kind: {kind}. Valid: {list(fm.PREVIEW_KINDS)}"
         )
     try:
         level = fm.normalize_preview_level(level)
     except ValueError:
         raise HTTPException(
             400,
-            f"Level preview tidak valid: {level}. Valid: {list(fm.PREVIEW_LEVELS)}",
+            f"Invalid preview level: {level}. Valid: {list(fm.PREVIEW_LEVELS)}",
         )
     if not filename.endswith(".png") or Path(filename).name != filename:
-        raise HTTPException(400, "Nama berkas preview harus satu nama .png tanpa path")
+        raise HTTPException(400, "The preview file name must be a single .png name without a path")
 
     kind_dir = fm.get_preview_kind_dir(dataset_id, name, scene, kind, level).resolve()
     path = (kind_dir / filename).resolve()
     if not path.is_relative_to(kind_dir) or not path.is_file():
         raise HTTPException(
-            404, f"Preview tidak ditemukan: {scene}/{level}/{kind}/{filename}"
+            404, f"Preview not found: {scene}/{level}/{kind}/{filename}"
         )
     return path
 
@@ -576,7 +576,7 @@ def _resolve_preview_image(
 @router.get(
     "/{dataset_id}/preview/{scene}/{level}/{kind}/{filename}",
     response_class=FileResponse,
-    summary="Satu berkas PNG preview pada satu level pemrosesan",
+    summary="A single preview PNG at one processing level",
 )
 async def get_preview_image_at_level(
     dataset_id: int,
@@ -589,7 +589,7 @@ async def get_preview_image_at_level(
     """Kirim satu PNG dari preview/{scene}/{LEVEL}/{kind}/."""
     info = _mgr(db).get_dataset(dataset_id)
     if info is None:
-        raise HTTPException(404, f"Dataset {dataset_id} tidak ditemukan")
+        raise HTTPException(404, f"Dataset {dataset_id} not found")
 
     path = _resolve_preview_image(
         dataset_id, info["name"], scene, level, kind, filename
@@ -604,7 +604,7 @@ async def get_preview_image_at_level(
 @router.get(
     "/{dataset_id}/preview/{scene}/{kind}/{filename}",
     response_class=FileResponse,
-    summary="Satu berkas PNG preview (level default)",
+    summary="A single preview PNG (default level)",
 )
 async def get_preview_image(
     dataset_id: int,
@@ -620,7 +620,7 @@ async def get_preview_image(
     """
     info = _mgr(db).get_dataset(dataset_id)
     if info is None:
-        raise HTTPException(404, f"Dataset {dataset_id} tidak ditemukan")
+        raise HTTPException(404, f"Dataset {dataset_id} not found")
 
     level = preferred_preview_level(
         fm.list_preview_levels(dataset_id, info["name"], scene)
@@ -653,14 +653,14 @@ _DETAIL_STAGES: tuple[tuple[str, str], ...] = (
 
 @router.get(
     "/{dataset_id}/storage/by-source",
-    summary="Data per satelit: scene yang sudah diunduh/diproses + storage per tahap",
+    summary="Per-satellite data: downloaded/processed scenes + storage per stage",
 )
 async def get_dataset_storage_by_source(
     dataset_id: int, db: DatabaseClient = Depends(get_db)
 ) -> dict:
     info = _mgr(db).get_dataset(dataset_id)
     if info is None:
-        raise HTTPException(404, f"Dataset {dataset_id} tidak ditemukan")
+        raise HTTPException(404, f"Dataset {dataset_id} not found")
     name = info["name"]
 
     def _scene_items(files_by_scene: dict[str, list]) -> list[dict]:
@@ -716,14 +716,14 @@ async def get_dataset_storage_by_source(
 @router.get(
     "/{dataset_id}/storage/summary",
     response_model=DatasetStorageSummary,
-    summary="Ringkasan storage per tier dan per source untuk dataset ini",
+    summary="Storage summary per tier and per source for this dataset",
 )
 async def get_dataset_storage_summary(
     dataset_id: int, db: DatabaseClient = Depends(get_db)
 ) -> DatasetStorageSummary:
     info = _mgr(db).get_dataset(dataset_id)
     if info is None:
-        raise HTTPException(404, f"Dataset {dataset_id} tidak ditemukan")
+        raise HTTPException(404, f"Dataset {dataset_id} not found")
 
     breakdown = fm.storage_breakdown(dataset_id, info["name"])
     return DatasetStorageSummary(
@@ -765,18 +765,18 @@ async def get_dataset_storage_summary(
 @router.get(
     "/{dataset_id}/storage/files/{tier}",
     response_model=DatasetTierFilesResponse,
-    summary="List file dataset ini per tier, dikelompokkan per source dan scene",
+    summary="List this dataset's files per tier, grouped by source and scene",
 )
 async def list_dataset_tier_files(
     dataset_id: int,
     tier: str,
     source: str | None = Query(None, description="Filter satu source: sentinel1 | modis | gpm"),
-    scene: str | None = Query(None, description="Filter satu scene (product_identifier atau YYYYMMDD)"),
+    scene: str | None = Query(None, description="Filter to one scene (product_identifier or YYYYMMDD)"),
     db: DatabaseClient = Depends(get_db),
 ) -> DatasetTierFilesResponse:
     info = _mgr(db).get_dataset(dataset_id)
     if info is None:
-        raise HTTPException(404, f"Dataset {dataset_id} tidak ditemukan")
+        raise HTTPException(404, f"Dataset {dataset_id} not found")
 
     tier_l, source_l = _resolve_tier_source(tier, source)
     name = info["name"]
@@ -830,19 +830,19 @@ async def list_dataset_tier_files(
 MASK_LAYERS: tuple[tuple[str, str, str, str], ...] = (
     (
         "land_distance",
-        "Jarak ke Garis Pantai",
+        "Distance to Coastline",
         "manifest.json",
-        "Jarak bertanda dalam meter: positif di darat, negatif di laut, nol "
-        "tepat di garis pantai. Sungai dan danau TIDAK dibuang — luapannya "
-        "justru sinyal yang dicari. Konsumen menentukan sendiri buffernya.",
+        "Signed distance in metres: positive on land, negative at sea, zero "
+        "exactly on the coastline. Rivers and lakes are NOT removed — their "
+        "overflow is precisely the signal of interest. Consumers choose their own buffer.",
     ),
     (
         "water_occurrence",
-        "Frekuensi Air Permanen",
+        "Permanent Water Frequency",
         "manifest_water_occurrence.json",
-        "Persentase 1984-2021 seberapa sering piksel tampak berair (JRC "
-        "Global Surface Water). Bukan mask: ini pembanding 'selebar apa air "
-        "ini biasanya', supaya luapan bisa dibedakan dari aliran normal.",
+        "Percentage of 1984-2021 during which a pixel appeared as water (JRC "
+        "Global Surface Water). Not a mask: it is a reference for 'how wide "
+        "the water usually is', so that overflow can be told apart from normal flow.",
     ),
 )
 
@@ -855,7 +855,7 @@ def _masks_dir(dataset_id: int, name: str) -> Path:
 
 @router.get(
     "/{dataset_id}/masks",
-    summary="Layer referensi dataset (darat/laut dan air permanen)",
+    summary="Dataset reference layers (land/sea and permanent water)",
 )
 async def list_dataset_masks(
     dataset_id: int,
@@ -871,7 +871,7 @@ async def list_dataset_masks(
     """
     info = _mgr(db).get_dataset(dataset_id)
     if info is None:
-        raise HTTPException(404, f"Dataset {dataset_id} tidak ditemukan")
+        raise HTTPException(404, f"Dataset {dataset_id} not found")
 
     name = info["name"]
     masks_dir = _masks_dir(dataset_id, name)
@@ -901,7 +901,7 @@ async def list_dataset_masks(
         "dataset_id": dataset_id,
         "layer_count": len(layers),
         "total_size_bytes": sum(l["size_bytes"] for l in layers),
-        "applies_to": "semua tanggal dataset ini (grid sama dengan stack fusion)",
+        "applies_to": "all dates of this dataset (same grid as the fusion stack)",
         "layers": layers,
     }
 
@@ -909,7 +909,7 @@ async def list_dataset_masks(
 @router.get(
     "/{dataset_id}/masks/{filename}",
     response_class=FileResponse,
-    summary="Satu berkas PNG layer referensi",
+    summary="A single reference-layer PNG",
 )
 async def get_mask_image(
     dataset_id: int,
@@ -924,15 +924,15 @@ async def get_mask_image(
     """
     info = _mgr(db).get_dataset(dataset_id)
     if info is None:
-        raise HTTPException(404, f"Dataset {dataset_id} tidak ditemukan")
+        raise HTTPException(404, f"Dataset {dataset_id} not found")
 
     if not filename.endswith(".png") or Path(filename).name != filename:
-        raise HTTPException(400, "Nama berkas mask harus satu nama .png tanpa path")
+        raise HTTPException(400, "The mask file name must be a single .png name without a path")
 
     masks_dir = _masks_dir(dataset_id, info["name"]).resolve()
     path = (masks_dir / filename).resolve()
     if not path.is_relative_to(masks_dir) or not path.is_file():
-        raise HTTPException(404, f"Layer referensi tidak ditemukan: {filename}")
+        raise HTTPException(404, f"Reference layer not found: {filename}")
 
     return FileResponse(
         path,

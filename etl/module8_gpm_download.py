@@ -120,7 +120,7 @@ def _auth_headers() -> dict:
     token = os.getenv("NASA_EARTHDATA_TOKEN")
     if not token:
         raise RuntimeError(
-            "NASA_EARTHDATA_TOKEN belum diset. Generate app token di "
+            "NASA_EARTHDATA_TOKEN is not set. Generate an app token at "
             "urs.earthdata.nasa.gov -> Generate Token."
         )
     return {"Authorization": f"Bearer {token}"}
@@ -230,7 +230,7 @@ def _list_month_granules(run: str, year: int, month: int) -> frozenset[str]:
                        url, attempt, MAX_RETRIES)
         dg.backoff_wait(
                 dg.GESDISC, attempt,
-                "server membatasi (429/503)" if retry_after else "gagal, dicoba ulang",
+                "server rate-limiting (429/503)" if retry_after else "failed, retrying",
                 retry_after=retry_after, max_attempts=MAX_RETRIES,
             )
     if resp.status_code == 404:
@@ -350,7 +350,7 @@ def _download_with_retry(
 
             if expected_size and downloaded != expected_size:
                 raise IOError(
-                    f"ukuran file tidak sesuai: got {downloaded} bytes, expected {expected_size}"
+                    f"file size mismatch: got {downloaded} bytes, expected {expected_size}"
                 )
 
             # os.replace, bukan Path.rename: atomic-overwrite di Windows
@@ -402,11 +402,11 @@ def _download_with_retry(
                 # Retry-After (429/503, dibatasi) atau backoff + jitter.
                 dg.backoff_wait(
                 dg.GESDISC, attempt,
-                "server membatasi (429/503)" if retry_after else "gagal, dicoba ulang",
+                "server rate-limiting (429/503)" if retry_after else "failed, retrying",
                 retry_after=retry_after, max_attempts=MAX_RETRIES,
             )
 
-    raise RuntimeError(f"gagal download {url} setelah {MAX_RETRIES} percobaan: {last_exc}")
+    raise RuntimeError(f"download failed for {url} after {MAX_RETRIES} attempts: {last_exc}")
 
 
 def _snap_resolution(res: float) -> float:
@@ -456,8 +456,8 @@ def _read_daily_precip(nc4_path: Path):
         data = data.T  # (lon, lat) -> (lat, lon)
     elif data.shape != (lat.size, lon.size):
         raise RuntimeError(
-            f"dimensi {IMERG_SUBDATASET} {data.shape} tidak cocok dengan "
-            f"lat={lat.size} lon={lon.size} di {nc4_path.name}"
+            f"dimensions of {IMERG_SUBDATASET} {data.shape} do not match "
+            f"lat={lat.size} lon={lon.size} in {nc4_path.name}"
         )
     if lat[0] < lat[-1]:  # utara di atas
         data = data[::-1]
@@ -498,7 +498,7 @@ def _fetch_daily_precip(
     for run in IMERG_RUN_ORDER:
         resolved = _resolve_daily_granule(date, run, raw_dir)
         if resolved is None:
-            not_found_reasons.append(f"{run}: belum terbit di {IMERG_RUNS[run]['product']}")
+            not_found_reasons.append(f"{run}: not yet published in {IMERG_RUNS[run]['product']}")
             continue
         filename, url = resolved
         nc4_path = raw_dir / filename
@@ -533,13 +533,13 @@ def _fetch_daily_precip(
             checksum = _download_with_retry(
                 url, nc4_path,
                 plog=plog, dataset_id=dataset_id, scene_id=scene_id,
-                item_label=f"{window_name} day {date.date().isoformat()} ({run}, unduh ulang)",
+                item_label=f"{window_name} day {date.date().isoformat()} ({run}, re-download)",
             )
             data, transform, crs = _read_daily_precip(nc4_path)
         return data, transform, crs, checksum, run
 
     raise RuntimeError(
-        f"tidak ada produk IMERG ({'/'.join(IMERG_RUN_ORDER)}) untuk tanggal "
+        f"no IMERG product ({'/'.join(IMERG_RUN_ORDER)}) for date "
         f"{date.date().isoformat()}: " + "; ".join(not_found_reasons)
     )
 
@@ -634,7 +634,7 @@ def _crop_to_aoi(
     row0 = max(0, int(np.floor(min(row_a, row_b) + eps)))
     row1 = min(height, int(np.ceil(max(row_a, row_b) - eps)))
     if col1 <= col0 or row1 <= row0:
-        raise ValueError(f"AOI {aoi_bbox} tidak beririsan dengan grid IMERG")
+        raise ValueError(f"AOI {aoi_bbox} does not intersect the IMERG grid")
     window = Window(col0, row0, col1 - col0, row1 - row0)
     crop_image = accum[row0:row1, col0:col1][np.newaxis, ...]
     crop_transform = window_transform(window, src_transform)
@@ -830,7 +830,7 @@ def download_gpm_scene(
             logger.warning("[M8] window %s gagal tanggal %s: %s", window_name, date.date().isoformat(), exc)
             _plog_event(
                 plog, dataset_id, scene_label, "DOWNLOAD", "FAILED",
-                f"GPM {window_name}: gagal ({exc})",
+                f"GPM {window_name}: failed ({exc})",
                 {
                     "window": window_name, "days_aggregated": num_days,
                     "error_type": type(exc).__name__, "error_message": str(exc),
@@ -851,13 +851,13 @@ def download_gpm_scene(
         product_ids.append(product_id)
         _plog_event(
             plog, dataset_id, scene_label, "DOWNLOAD", "COMPLETED",
-            f"GPM {window_name}: selesai ({num_days} hari)",
+            f"GPM {window_name}: done ({num_days} days)",
             {"window": window_name, "days_aggregated": num_days},
         )
 
     if not window_outputs:
         raise RuntimeError(
-            f"semua produk GPM gagal untuk dataset_id={dataset_id} tanggal={date.date().isoformat()} "
+            f"all GPM products failed for dataset_id={dataset_id} date={date.date().isoformat()} "
             f"({failed_windows})"
         )
 
@@ -875,8 +875,8 @@ def download_gpm_scene(
         quality = "GOOD"
     _plog_event(
         plog, dataset_id, scene_label, "DOWNLOAD_SUMMARY", "COMPLETED",
-        f"GPM selesai: {len(window_outputs)}/{len(wanted_windows)} produk"
-        + (f", gagal: {', '.join(w['window'] for w in failed_windows)}" if failed_windows else ""),
+        f"GPM done: {len(window_outputs)}/{len(wanted_windows)} products"
+        + (f", failed: {', '.join(w['window'] for w in failed_windows)}" if failed_windows else ""),
         {
             "windows_ok": list(window_outputs.keys()),
             "windows_failed": failed_windows, "quality": quality,

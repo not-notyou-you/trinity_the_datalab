@@ -140,7 +140,7 @@ def test_inverted_range_yields_nothing():
 
 
 def test_unknown_strategy_fails_fast():
-    with pytest.raises(ValueError, match="tidak dikenal"):
+    with pytest.raises(ValueError, match="unknown"):
         plan_fusion("BEST_EFFORT", S1_DATES, DATE_FROM, DATE_TO)
 
 

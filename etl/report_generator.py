@@ -207,7 +207,7 @@ class ReportGenerator:
     def generate(self, force: bool = False) -> Path:
         info = DatasetManager(self.db).get_dataset(self.dataset_id)
         if info is None:
-            raise ReportGenerationError(f"Dataset {self.dataset_id} tidak ditemukan")
+            raise ReportGenerationError(f"Dataset {self.dataset_id} not found")
 
         root = fm.get_dataset_root(self.dataset_id, info["name"])
         reports_dir = root / "reports"
@@ -239,7 +239,7 @@ class ReportGenerator:
             raise
         except Exception as exc:  # isolasi: kegagalan chart/PDF tidak boleh crash caller
             logger.exception("[report] gagal membuat laporan dataset %s", self.dataset_id)
-            raise ReportGenerationError(f"Gagal membuat laporan: {exc}") from exc
+            raise ReportGenerationError(f"Failed to generate the report: {exc}") from exc
 
         return out_path
 
@@ -291,22 +291,22 @@ class ReportGenerator:
         if recurring:
             issues.append({
                 "source": "FUSION", "severity": "LOW",
-                "title": f"{len(recurring)} stack fusion dengan valid_fraction sentinel1/VV "
-                         "lebih rendah tapi berulang (tier revisit orbit)",
+                "title": f"{len(recurring)} fusion stacks with a lower but recurring sentinel1/VV valid_fraction "
+                         "(orbit-revisit tier)",
                 "detail": ", ".join(f"{e['file']} ({e['valid_fraction']:.3f})" for e in recurring[:8]),
-                "action": "Kemungkinan besar partial swath S1 asli untuk tanggal ini (AOI "
-                          "diapit >1 relative-orbit); tidak perlu di-refuse kecuali dicek manual.",
+                "action": "Most likely a genuine partial S1 swath for this date (the AOI is "
+                          "straddled by >1 relative orbit); no need to re-fuse unless checked manually.",
                 "status": "INFO",
             })
         dropped = audit.get("dropped") or []
         if dropped:
             issues.append({
                 "source": "FUSION", "severity": "HIGH",
-                "title": f"{len(dropped)} stack fusion dengan valid_fraction sentinel1/VV "
-                         "jauh di bawah dan TERISOLASI (bukan tier berulang)",
+                "title": f"{len(dropped)} fusion stacks with a sentinel1/VV valid_fraction "
+                         "far lower and ISOLATED (not a recurring tier)",
                 "detail": ", ".join(f"{e['file']} ({e['valid_fraction']:.3f})" for e in dropped[:8]),
-                "action": "Periksa etl.refusion.scene_results_for_date untuk tanggal ini -- "
-                          "kemungkinan mosaik kehilangan frame S1 yang sebenarnya ada di disk/DB.",
+                "action": "Check etl.refusion.scene_results_for_date for this date -- "
+                          "the mosaic may have lost an S1 frame that actually exists on disk/DB.",
                 "status": "OPEN",
             })
         return issues
@@ -372,8 +372,8 @@ class ReportGenerator:
             return None
         fig, ax = _fig()
         ax.bar(list(tiers.keys()), list(tiers.values()), color=_CHART_COLORS[0], width=0.6)
-        ax.set_ylabel("Ukuran (MB)")
-        ax.set_title("Pemakaian Disk per Tier", loc="left")
+        ax.set_ylabel("Size (MB)")
+        ax.set_title("Disk Usage per Tier", loc="left")
         plt.xticks(rotation=30, ha="right", fontsize=8)
         return self._save(ctx, fig, "chart_storage.png")
 
@@ -394,7 +394,7 @@ class ReportGenerator:
         ax.bar([i + width / 2 for i in x], cog_counts, width, label="COG (processed)", color=_CHART_COLORS[1])
         ax.set_xticks(list(x))
         ax.set_xticklabels(sources)
-        ax.set_ylabel("Jumlah file")
+        ax.set_ylabel("File count")
         ax.set_title("File di Disk: RAW vs COG per Source", loc="left")
         ax.legend(frameon=False, fontsize=8, ncol=2, loc="upper center", bbox_to_anchor=(0.5, -0.12))
         return self._save(ctx, fig, "chart_ablation.png")
@@ -416,8 +416,8 @@ class ReportGenerator:
         fig, ax = _fig()
         x = range(len(rows))
         w = 0.36
-        ax.bar([i - w / 2 for i in x], [r[1] for r in rows], w, label="Retensi tanggal (%)", color=_CHART_COLORS[0])
-        ax.bar([i + w / 2 for i in x], [r[2] for r in rows], w, label="Reduksi ukuran rata-rata/file (%)",
+        ax.bar([i - w / 2 for i in x], [r[1] for r in rows], w, label="Date retention (%)", color=_CHART_COLORS[0])
+        ax.bar([i + w / 2 for i in x], [r[2] for r in rows], w, label="Average file-size reduction (%)",
                color=_CHART_COLORS[1])
         for i, r in enumerate(rows):
             ax.text(i - w / 2, r[1] + 1.5, f"{r[1]:.0f}%", ha="center", fontsize=7, color=_INK)
@@ -426,7 +426,7 @@ class ReportGenerator:
         ax.set_xticklabels([_SOURCE_LABEL[r[0]] for r in rows])
         ax.set_ylim(0, 110)
         ax.set_ylabel("%")
-        ax.set_title("Efektivitas Pemrosesan: Tier Pertama → COG", loc="left")
+        ax.set_title("Processing Effectiveness: First Tier → COG", loc="left")
         ax.legend(frameon=False, fontsize=8, ncol=2, loc="upper center", bbox_to_anchor=(0.5, -0.1))
         return self._save(ctx, fig, "chart_processing_effectiveness.png")
 
@@ -484,11 +484,11 @@ class ReportGenerator:
             ax.grid(axis="y", color=_GRID, linewidth=0.5)
             ax.xaxis.set_major_locator(matplotlib.dates.MonthLocator())
             ax.xaxis.set_major_formatter(matplotlib.dates.DateFormatter("%b"))
-            ax.text(0.99, 0.97, f"{fc.model} · keyakinan {fc.confidence.lower()}", transform=ax.transAxes,
+            ax.text(0.99, 0.97, f"{fc.model} · confidence {fc.confidence.lower()}", transform=ax.transAxes,
                     ha="right", va="top", fontsize=6, color="#666666")
         for ax in list(axes.flat)[n:]:
             ax.axis("off")
-        fig.suptitle("Prakiraan per Variabel: garis putus = prakiraan, pita = interval 80% / 95%",
+        fig.suptitle("Forecast per Variable: dashed line = forecast, band = 80% / 95% interval",
                      x=0.01, ha="left", fontsize=9)
         return self._save(ctx, fig, "chart_forecast_panels.png")
 
@@ -509,8 +509,8 @@ class ReportGenerator:
         ax.set_yticklabels([f"{rs.MONTH_NAMES[m][:3]} {y}" for y, m in months], fontsize=8)
         ax.set_xticks(range(0, 31, 5))
         ax.set_xticklabels([str(d) for d in range(1, 32, 5)], fontsize=8)
-        ax.set_xlabel("Tanggal")
-        ax.set_title("Heatmap Curah Hujan Harian GPM (mm/hari, rata-rata AOI)", loc="left", fontsize=10)
+        ax.set_xlabel("Date")
+        ax.set_title("GPM Daily Rainfall Heatmap (mm/day, AOI mean)", loc="left", fontsize=10)
         fig.colorbar(im, ax=ax, fraction=0.03, pad=0.02).ax.tick_params(labelsize=7)
         return self._save(ctx, fig, "chart_gpm_heatmap.png")
 
@@ -518,7 +518,7 @@ class ReportGenerator:
         """Heatmap musiman: z-score bulanan tiap variabel (diverging, netral di 0)."""
         import numpy as np
         variables = [("vv", "S1 VV (dB)"), ("vh", "S1 VH (dB)"), ("ndvi", "NDVI"), ("ndwi", "NDWI"),
-                     ("flood", "Banjir (%)"), ("rain", "Hujan (mm/hari)")]
+                     ("flood", "Flood (%)"), ("rain", "Rain (mm/day)")]
         variables = [(k, lbl) for k, lbl in variables if sum(r.get(k) is not None for r in table) >= 2]
         if not variables or len(table) < 2:
             return None
@@ -541,7 +541,7 @@ class ReportGenerator:
         ax.set_yticklabels([lbl for _, lbl in variables], fontsize=8)
         ax.set_xticks(range(len(table)))
         ax.set_xticklabels([f"{rs.MONTH_NAMES[r['month']][:3]}\n{r['year']}" for r in table], fontsize=7)
-        ax.set_title("Pola Musiman: z-score bulanan per variabel (angka = nilai asli)", loc="left", fontsize=10)
+        ax.set_title("Seasonal Pattern: monthly z-score per variable (numbers = raw values)", loc="left", fontsize=10)
         fig.colorbar(im, ax=ax, fraction=0.03, pad=0.02, label="z").ax.tick_params(labelsize=7)
         return self._save(ctx, fig, "chart_seasonal_heatmap.png")
 
@@ -568,9 +568,9 @@ class ReportGenerator:
                    color=_SOURCE_COLORS[src])
         ax.set_xticks(list(x))
         ax.set_xticklabels([f"{rs.MONTH_NAMES[m][:3]} {y}" for y, m in months], fontsize=8)
-        ax.set_ylabel("% hari dengan observasi")
+        ax.set_ylabel("% of days with observations")
         ax.set_ylim(0, 105)
-        ax.set_title("Kelengkapan Temporal Bulanan per Source", loc="left")
+        ax.set_title("Monthly Temporal Completeness per Source", loc="left")
         ax.legend(frameon=False, fontsize=8)
         return self._save(ctx, fig, "chart_completeness.png")
 
@@ -593,7 +593,7 @@ class ReportGenerator:
         ax.set_xticks(range(len(months)))
         ax.set_xticklabels([f"{rs.MONTH_NAMES[m][:3]} {y}" for y, m in months], fontsize=8)
         ax.set_ylabel("Backscatter mean per scene (dB)")
-        ax.set_title("Distribusi Backscatter Sentinel-1 per Bulan", loc="left")
+        ax.set_title("Sentinel-1 Backscatter Distribution per Month", loc="left")
         ax.legend(frameon=False, fontsize=8)
         return self._save(ctx, fig, "chart_s1_monthly_box.png")
 
@@ -604,10 +604,10 @@ class ReportGenerator:
         fig, ax = _fig()
         ax.hist(scores, bins=20, color=_CHART_COLORS[0], edgecolor="white")
         ax.axvline(mean(scores), color=_INK, linewidth=1, linestyle="--")
-        ax.text(mean(scores), ax.get_ylim()[1] * 0.92, f"  rata-rata {mean(scores):.1f}", fontsize=8, color=_INK)
+        ax.text(mean(scores), ax.get_ylim()[1] * 0.92, f"  mean {mean(scores):.1f}", fontsize=8, color=_INK)
         ax.set_xlabel("quality_score (0-100)")
-        ax.set_ylabel("Jumlah produk")
-        ax.set_title("Distribusi Skor Kualitas Radiometrik Sentinel-1", loc="left")
+        ax.set_ylabel("Product count")
+        ax.set_title("Sentinel-1 Radiometric Quality Score Distribution", loc="left")
         return self._save(ctx, fig, "chart_s1_quality_hist.png")
 
     def _chart_flood_classes(self, ctx: _ReportContext) -> Path | None:
@@ -627,8 +627,8 @@ class ReportGenerator:
             bottom = [b + v for b, v in zip(bottom, vals)]
         ax.set_xticks(range(len(months)))
         ax.set_xticklabels([f"{rs.MONTH_NAMES[m][:3]} {y}" for y, m in months], fontsize=8)
-        ax.set_ylabel("% piksel valid")
-        ax.set_title("Komposisi Kelas MODIS Flood (MCDWD) per Bulan", loc="left")
+        ax.set_ylabel("% valid pixels")
+        ax.set_title("MODIS Flood (MCDWD) Class Composition per Month", loc="left")
         ax.legend(frameon=False, fontsize=7, ncol=4, loc="upper center", bbox_to_anchor=(0.5, -0.12))
         return self._save(ctx, fig, "chart_modis_flood_classes.png")
 
@@ -642,9 +642,9 @@ class ReportGenerator:
             v = _percentile(vals, q)
             ax.axvline(v, color=_INK, linewidth=1, linestyle="--")
             ax.text(v, ax.get_ylim()[1] * 0.9, f" {lbl}={v:.1f}", fontsize=8, color=_INK)
-        ax.set_xlabel("Curah hujan harian (mm/hari, rata-rata AOI)")
-        ax.set_ylabel("Jumlah hari")
-        ax.set_title("Distribusi Curah Hujan Harian GPM", loc="left")
+        ax.set_xlabel("Daily rainfall (mm/day, AOI mean)")
+        ax.set_ylabel("Number of days")
+        ax.set_title("GPM Daily Rainfall Distribution", loc="left")
         return self._save(ctx, fig, "chart_gpm_distribution.png")
 
     def _chart_scorecard(self, ctx: _ReportContext) -> Path | None:
@@ -656,7 +656,7 @@ class ReportGenerator:
         for i, (_, v) in enumerate(items[::-1]):
             ax.text(v + 1, i, f"{v:.0f}", va="center", fontsize=8, color=_INK)
         ax.set_xlim(0, 105)
-        ax.set_xlabel("Skor (0-100)")
+        ax.set_xlabel("Score (0-100)")
         ax.set_title("Data Health Scorecard", loc="left")
         ax.spines[["top", "right"]].set_visible(False)
         ax.grid(axis="x", color=_GRID, linewidth=0.6)
@@ -711,7 +711,7 @@ class ReportGenerator:
         try:
             doc.multiBuild(story, onFirstPage=page_decorator, onLaterPages=page_decorator)
         except Exception as exc:
-            raise ReportGenerationError(f"Gagal menyusun PDF: {exc}") from exc
+            raise ReportGenerationError(f"Failed to build the PDF: {exc}") from exc
 
         total_pages = doc.page
         pages = {}
@@ -738,8 +738,8 @@ class ReportGenerator:
         story.append(_kv_table([
             ("Generated", f"{generated_at:%Y-%m-%d %H:%M UTC}"),
             ("Dataset ID", str(ds["dataset_uuid"])),
-            ("Lokasi", ds.get("location_label") or "-"),
-            ("Periode", f"{ds.get('date_start')} s/d {ds.get('date_end')} ({st.period_days} hari)"),
+            ("Location", ds.get("location_label") or "-"),
+            ("Period", f"{ds.get('date_start')} to {ds.get('date_end')} ({st.period_days} days)"),
             ("Sources", ", ".join(_SOURCE_LABEL.get(s, s) for s in sources) or "-"),
             ("Report Version", REPORT_VERSION),
         ], S))
@@ -751,15 +751,15 @@ class ReportGenerator:
             story.append(Paragraph(para, S.body))
         story.append(Paragraph("Key Metrics", S.sub2))
         s1_n = len(st.obs_dates.get("SENTINEL1", []))
-        rows = [["Metrik", "Nilai", "Keterangan"]]
+        rows = [["Metric", "Value", "Notes"]]
         rows += [
-            ["Total scene (pipeline)", str(ds.get("total_scenes", 0)),
-             f"{ds.get('completed_scenes', 0)} selesai, {ds.get('failed_scenes', 0)} gagal"],
-            ["Tanggal akuisisi S1", str(s1_n), f"revisit rata-rata {_n(st.revisit_days('SENTINEL1'), 1, ' hari')}"],
-            ["Hari observasi MODIS / GPM", f"{len(st.obs_dates.get('MODIS', []))} / {len(st.obs_dates.get('GPM', []))}",
-             f"dari {st.period_days} hari periode"],
-            ["Fusion stack", str(len(st.fusion)), f"strategi {ds.get('fusion_strategy') or '-'}"],
-            ["Total ukuran data", _fmt_bytes(ds.get("total_size_bytes", 0)), "semua tier di disk"],
+            ["Total scenes (pipeline)", str(ds.get("total_scenes", 0)),
+             f"{ds.get('completed_scenes', 0)} completed, {ds.get('failed_scenes', 0)} failed"],
+            ["S1 acquisition dates", str(s1_n), f"average revisit {_n(st.revisit_days('SENTINEL1'), 1, ' days')}"],
+            ["MODIS / GPM observation days", f"{len(st.obs_dates.get('MODIS', []))} / {len(st.obs_dates.get('GPM', []))}",
+             f"of {st.period_days} period days"],
+            ["Fusion stacks", str(len(st.fusion)), f"strategy {ds.get('fusion_strategy') or '-'}"],
+            ["Total data size", _fmt_bytes(ds.get("total_size_bytes", 0)), "all tiers on disk"],
             ["Overall Data Health", _n(ctx.scores.get("Overall Data Health"), 0, "/100"),
              _health_label(ctx.scores.get("Overall Data Health") or 0)],
         ]
@@ -767,7 +767,7 @@ class ReportGenerator:
         story.append(Spacer(1, 0.1 * inch))
         top = [i for i in ctx.issues if i["severity"] in ("HIGH", "MEDIUM")][:3]
         if top:
-            story.append(Paragraph("Temuan utama yang perlu diperhatikan", S.sub2))
+            story.append(Paragraph("Key findings to watch", S.sub2))
             for i in top:
                 story.append(Paragraph(f"⚠ <b>[{i['severity']}] {_SOURCE_LABEL.get(i['source'], i['source'])}</b>: "
                                        f"{_e(i['title'])}", S.bullet))
@@ -795,23 +795,23 @@ class ReportGenerator:
         story.append(Paragraph("2. Configuration &amp; Data Ingestion Summary", S.section))
         story.append(Paragraph("2.1 Dataset Overview", S.sub))
         story.append(_kv_table([
-            ("Nama", ds["name"]),
-            ("Deskripsi", ds.get("description") or "-"),
-            ("Dibuat", f"{ds['created_at']:%Y-%m-%d %H:%M UTC}"),
-            ("Terakhir diperbarui", f"{ds['updated_at']:%Y-%m-%d %H:%M UTC}"),
+            ("Name", ds["name"]),
+            ("Description", ds.get("description") or "-"),
+            ("Created", f"{ds['created_at']:%Y-%m-%d %H:%M UTC}"),
+            ("Last updated", f"{ds['updated_at']:%Y-%m-%d %H:%M UTC}"),
             ("Status", ds["status"]),
-            ("Jenis dataset", ds.get("dataset_kind") or "STANDARD"),
-            ("Strategi fusi", ds.get("fusion_strategy") or "-"),
-            ("Toleransi pasangan S1", f"±{ds.get('s1_match_tolerance_days')} hari"),
-            ("Hanya output fusi", "Ya" if ds.get("fusion_output_only") else "Tidak"),
+            ("Dataset kind", ds.get("dataset_kind") or "STANDARD"),
+            ("Fusion strategy", ds.get("fusion_strategy") or "-"),
+            ("S1 pairing tolerance", f"±{ds.get('s1_match_tolerance_days')} days"),
+            ("Fusion output only", "Yes" if ds.get("fusion_output_only") else "No"),
             ("Preview", ", ".join(ds.get("preview_options") or []) or "-"),
         ], S))
 
         story.append(Paragraph("2.2 Data Sources Configuration", S.sub))
         story.append(Paragraph(
-            "Setiap source dikonfigurasi dengan level pemrosesannya sendiri. Nilai &ldquo;di dataset&rdquo; "
-            "di bawah dihitung langsung dari tabel <i>data_products</i>, <i>satellite_scenes</i> dan raster "
-            "COG milik dataset ini.", S.body))
+            "Each source is configured with its own processing level. The &ldquo;in dataset&rdquo; values "
+            "below are computed directly from the <i>data_products</i> and <i>satellite_scenes</i> tables and "
+            "the COG rasters of this dataset.", S.body))
         for src, levels in sorted(ds.get("sources", {}).items()):
             story.append(Paragraph(f"{_SOURCE_LABEL.get(src, src).upper()} CONFIGURATION DETAIL", S.sub2))
             story.append(_kv_table(_source_spec_rows(ctx, src, levels), S))
@@ -824,42 +824,42 @@ class ReportGenerator:
             w, s, e, n = bounds
             area = _bbox_area_km2(bounds)
             story.append(Paragraph(
-                f"Area studi <b>{_e(ds.get('location_label') or 'AOI')}</b> dibatasi {abs(s):.3f}°{'S' if s < 0 else 'N'}"
-                f"–{abs(n):.3f}°{'S' if n < 0 else 'N'} dan {w:.3f}°E–{e:.3f}°E (EPSG:4326), "
-                f"luas ±{area:,.0f} km² ({(e - w) * 111.32 * _cos_deg((s + n) / 2):.1f} km × {(n - s) * 110.57:.1f} km).",
+                f"The study area <b>{_e(ds.get('location_label') or 'AOI')}</b> is bounded by {abs(s):.3f}°{'S' if s < 0 else 'N'}"
+                f"–{abs(n):.3f}°{'S' if n < 0 else 'N'} and {w:.3f}°E–{e:.3f}°E (EPSG:4326), "
+                f"area ≈{area:,.0f} km² ({(e - w) * 111.32 * _cos_deg((s + n) / 2):.1f} km × {(n - s) * 110.57:.1f} km).",
                 S.body))
             story.append(Preformatted(_ascii_bbox(bounds, ds.get("location_label") or "AOI"), S.pre))
         else:
-            story.append(Paragraph(f"Batas spasial (WKT): {_e(ds.get('bbox_wkt') or '-')}", S.body))
+            story.append(Paragraph(f"Spatial bounds (WKT): {_e(ds.get('bbox_wkt') or '-')}", S.body))
 
-        story.append(Paragraph("Timeline Visualization (harian)", S.sub2))
+        story.append(Paragraph("Timeline Visualization (daily)", S.sub2))
         story.append(Paragraph(
-            "Setiap baris adalah satu bulan; setiap karakter satu tanggal. ▓ = ada observasi, ░ = tidak ada, "
-            "spasi = di luar periode dataset. Celah &gt;10 hari dideteksi otomatis.", S.body))
+            "Each row is one month; each character is one date. ▓ = observation present, ░ = none, "
+            "blank = outside the dataset period. Gaps &gt;10 days are detected automatically.", S.body))
         for src in ("SENTINEL1", "MODIS", "GPM"):
             if src in ds.get("sources", {}):
                 story.append(KeepTogether([
                     Paragraph(f"{_SOURCE_LABEL[src]}", S.bold),
                     Preformatted(_ascii_daily_timeline(st, src), S.pre),
                 ]))
-        gap_rows = [["Source", "Hari observasi", "Kelengkapan", "Revisit rata-rata", "Celah >10 hari"]]
+        gap_rows = [["Source", "Observation days", "Completeness", "Average revisit", "Gaps >10 days"]]
         for src in ("SENTINEL1", "MODIS", "GPM"):
             if src not in ds.get("sources", {}):
                 continue
             gaps = st.gaps(src)
-            gap_txt = "; ".join(f"{a:%d %b}–{b:%d %b} ({n} h)" for a, b, n in gaps[:3]) or "Tidak ada"
+            gap_txt = "; ".join(f"{a:%d %b}–{b:%d %b} ({n} d)" for a, b, n in gaps[:3]) or "None"
             gap_rows.append([_SOURCE_LABEL[src], str(len(st.obs_dates.get(src, []))), _n(st.completeness(src), 1, "%"),
-                             _n(st.revisit_days(src), 1, " hari"), gap_txt])
+                             _n(st.revisit_days(src), 1, " days"), gap_txt])
         if len(gap_rows) > 1:
             story.append(_table(gap_rows, [1.0 * inch, 1.0 * inch, 0.9 * inch, 1.1 * inch, 2.7 * inch], S))
         chart = self._chart_completeness(ctx)
         if chart:
             story.append(_img(chart))
-            story.append(Paragraph("Gambar 2.1 — Persentase hari dengan observasi per bulan.", S.caption))
+            story.append(Paragraph("Figure 2.1 — Percentage of days with observations per month.", S.caption))
 
         story.append(CondPageBreak(3 * inch))
         story.append(Paragraph("2.4 Ingestion Summary &amp; Validation", S.sub))
-        ingest_rows = [["Source", "Levels", "Produk (DB)", "File di disk", "Ukuran disk", "Status"]]
+        ingest_rows = [["Source", "Levels", "Products (DB)", "Files on disk", "Disk size", "Status"]]
         total_files = total_products = 0
         for source, levels in sorted(ds.get("sources", {}).items()):
             per_source = ctx.breakdown["sources"].get(source.lower(), {})
@@ -869,7 +869,7 @@ class ReportGenerator:
             total_products += n_products
             ingest_rows.append([
                 _SOURCE_LABEL.get(source, source), ", ".join(levels) or "-", str(n_products), str(count),
-                _fmt_bytes(per_source.get("size_bytes", 0)), "✓ Ada data" if (count or n_products) else "✗ Belum ada",
+                _fmt_bytes(per_source.get("size_bytes", 0)), "✓ Has data" if (count or n_products) else "✗ None yet",
             ])
         ingest_rows.append(["Total", "—", str(total_products), str(total_files),
                             _fmt_bytes(sum(v.get("size_bytes", 0) for v in ctx.breakdown["sources"].values())), "—"])
@@ -878,7 +878,7 @@ class ReportGenerator:
             t.setStyle(TableStyle([("FONTNAME", (0, -1), (-1, -1), _FONTS["bold"])]))
             story.append(t)
         else:
-            story.append(Paragraph("Belum ada source yang dikonfigurasi.", S.body))
+            story.append(Paragraph("No sources have been configured yet.", S.body))
 
         story.append(Paragraph("Validation Checks Performed", S.sub2))
         for ok, label, detail in _validation_checks(ctx):
@@ -899,15 +899,15 @@ class ReportGenerator:
                 basis = "quality_flag"
             else:
                 good, acc, mar, poor = flags["GOOD"], flags["ACCEPTABLE"], flags["MARGINAL"], flags["POOR"]
-                basis = "piksel valid*"
+                basis = "valid pixels*"
             qrows.append([_SOURCE_LABEL[src], basis] + [f"{v} ({v / total * 100:.0f}%)" for v in (good, acc, mar, poor)]
                          + [str(total)])
         if len(qrows) > 1:
             story.append(KeepTogether([
                 _table(qrows, [0.85 * inch, 1.2 * inch, 1.0 * inch, 0.95 * inch, 0.95 * inch, 1.0 * inch, 0.55 * inch], S),
                 Paragraph(
-                "* Flag MODIS/GPM diturunkan dari fraksi piksel valid per raster: GOOD ≥ 90%, ACCEPTABLE ≥ 70%, "
-                "MARGINAL ≥ 50%, POOR &lt; 50% (MCDWD menandai piksel tertutup awan/insufficient data sebagai 255).",
+                "* MODIS/GPM flags are derived from the fraction of valid pixels per raster: GOOD ≥ 90%, ACCEPTABLE ≥ 70%, "
+                "MARGINAL ≥ 50%, POOR &lt; 50% (MCDWD marks cloud-covered/insufficient-data pixels as 255).",
                 S.note)]))
         story.extend(_section_break())
 
@@ -917,10 +917,10 @@ class ReportGenerator:
         ds, st = ctx.dataset, ctx.stats
         story.append(Paragraph("3. Processing Level Comparison &amp; Ablation Study", S.section))
         story.append(Paragraph(
-            "Bagian ini menelusuri setiap produk melewati tier lineage (RAW → ALIGNED → … → COG). "
-            "<b>Records</b> = jumlah file produk, <b>Tanggal</b> = tanggal unik yang terwakili, "
-            "<b>Loss</b> = persentase tanggal yang hilang dibanding tier sebelumnya. Waktu proses diambil dari "
-            "<i>processing_jobs</i> (durasi completed_at − started_at).", S.body))
+            "This section traces each product through the lineage tiers (RAW → ALIGNED → … → COG). "
+            "<b>Records</b> = number of product files, <b>Dates</b> = unique dates represented, "
+            "<b>Loss</b> = percentage of dates lost compared with the previous tier. Processing time is taken from "
+            "<i>processing_jobs</i> (duration completed_at − started_at).", S.body))
 
         stage_by_name = {j["stage"]: j for j in st.stage_jobs}
         titles = {"SENTINEL1": "3.1 Sentinel-1 Processing Pipeline", "MODIS": "3.2 MODIS Processing Pipeline",
@@ -934,7 +934,7 @@ class ReportGenerator:
             story.append(CondPageBreak(3.5 * inch))
             story.append(Paragraph(titles[src], S.sub))
             story.append(Preformatted(_ascii_flow(src, tiers, stage_by_name), S.pre))
-            rows = [["Tier", "Level", "Records", "Tgl", "Band", "Avg/file", "σ", "Total", "Loss"]]
+            rows = [["Tier", "Level", "Records", "Dates", "Band", "Avg/file", "σ", "Total", "Loss"]]
             prev_dates = None
             for t in tiers:
                 loss = "—" if prev_dates is None else (
@@ -952,7 +952,7 @@ class ReportGenerator:
         if st.stage_jobs:
             story.append(CondPageBreak(2.5 * inch))
             story.append(Paragraph("Processing Time per Stage", S.sub2))
-            rows = [["Stage", "Jobs", "Rata-rata", "Median", "σ", "Maks", "Gagal"]]
+            rows = [["Stage", "Jobs", "Mean", "Median", "σ", "Max", "Failed"]]
             for j in st.stage_jobs:
                 rows.append([j["stage"], str(j["jobs"]), _fmt_sec(j["avg_sec"]), _fmt_sec(j["median_sec"]),
                              _fmt_sec(j["std_sec"]), _fmt_sec(j["max_sec"]), str(j["failed"])])
@@ -964,28 +964,28 @@ class ReportGenerator:
         abl = self._chart_ablation(ctx, chart_dir)
         if eff:
             story.append(_img(eff))
-            story.append(Paragraph("Gambar 3.1 — Retensi tanggal dan reduksi ukuran rata-rata per file dari tier "
-                                   "pertama ke COG, per source.", S.caption))
+            story.append(Paragraph("Figure 3.1 — Date retention and average per-file size reduction from the first "
+                                   "tier to COG, per source.", S.caption))
         if abl:
             story.append(_img(abl))
-            story.append(Paragraph("Gambar 3.2 — Jumlah file di laci RAW/ vs PROCESSED/ di disk.", S.caption))
+            story.append(Paragraph("Figure 3.2 — File counts in the RAW/ vs PROCESSED/ folders on disk.", S.caption))
         fused_levels = {}
         for f in st.fusion:
             fused_levels.setdefault(f["level"], []).append(f)
         if fused_levels:
             story.append(Paragraph("Ablation Fusion Stack: RAW vs PROCESSED", S.sub2))
             fused_tiers = {t["level"]: t for t in st.tiers.get("FUSION", [])}
-            rows = [["Level input", "Stack", "Lengkap 3 source", "Rata-rata ukuran", "Total"]]
+            rows = [["Input level", "Stacks", "Complete (3 sources)", "Average size", "Total"]]
             for lvl, items in sorted(fused_levels.items()):
                 t = fused_tiers.get(lvl, {})
                 rows.append([lvl, str(len(items)), str(sum(1 for f in items if f["n_sources"] == 3)),
                              _fmt_mb(t.get("avg_mb")), _fmt_mb(t.get("size_mb"))])
             story.append(KeepTogether([_table(rows, [1.3 * inch, 0.9 * inch, 1.4 * inch, 1.4 * inch, 1.4 * inch], S), Paragraph(
-                "Dataset yang meminta level RAW dan PROCESSED menghasilkan dua stack per tanggal — inilah pasangan "
-                "ablation yang bisa dipakai langsung untuk membandingkan performa model dengan/tanpa Lee filter.",
+                "A dataset that requests both the RAW and PROCESSED levels produces two stacks per date — this is the "
+                "ablation pair that can be used directly to compare model performance with/without the Lee filter.",
                 S.note)]))
         if not any_src and not eff and not abl:
-            story.append(Paragraph("Belum ada produk yang tercatat untuk dibandingkan antar level.", S.body))
+            story.append(Paragraph("No products have been recorded yet to compare across levels.", S.body))
         story.extend(_section_break())
 
     # -- Section 4 ------------------------------------------------------------
@@ -998,19 +998,19 @@ class ReportGenerator:
         story.append(Paragraph("4. Fusion Strategy &amp; Temporal Alignment", S.section))
         story.append(Paragraph("4.1 Fusion Methodology", S.sub))
         story.append(Paragraph(
-            f"Dataset ini memakai strategi <b>{_e(ds.get('fusion_strategy') or '-')}</b>. Pipeline menyelaraskan "
-            "source pada resolusi <b>harian</b>: MODIS (komposit harian MCDWD) dan GPM (IMERG harian) sudah berupa "
-            "produk per tanggal, sehingga penyelarasan dilakukan per tanggal kalender, bukan per jam. Sentinel-1 "
-            f"menjadi jangkar; scene S1 boleh dipinjam dari tanggal lain dalam toleransi ±{tol} hari "
-            "(<i>s1_match_tolerance_days</i>) dan offset aktualnya dicatat di <i>fusion_products.s1_offset_days</i>.",
+            f"This dataset uses the <b>{_e(ds.get('fusion_strategy') or '-')}</b> strategy. The pipeline aligns "
+            "sources at <b>daily</b> resolution: MODIS (daily MCDWD composite) and GPM (daily IMERG) are already "
+            "per-date products, so alignment is done per calendar date, not per hour. Sentinel-1 "
+            f"is the anchor; an S1 scene may be borrowed from another date within a ±{tol}-day tolerance "
+            "(<i>s1_match_tolerance_days</i>) and the actual offset is recorded in <i>fusion_products.s1_offset_days</i>.",
             S.body))
         story.append(_table([
-            ["Strategi", "Tanggal MODIS/GPM yang diunduh", "Satu stack HDF5 per"],
-            ["CO_OCCURRENCE", "Tanggal S1 saja", "Tanggal S1"],
-            ["FULL_COVERAGE", "Setiap hari", "Setiap hari (S1 dipinjam ±toleransi)"],
-            ["HYBRID", "Setiap hari", "Tanggal S1"],
+            ["Strategy", "MODIS/GPM dates downloaded", "One HDF5 stack per"],
+            ["CO_OCCURRENCE", "S1 dates only", "S1 date"],
+            ["FULL_COVERAGE", "Every day", "Every day (S1 borrowed ±tolerance)"],
+            ["HYBRID", "Every day", "S1 date"],
         ], [1.5 * inch, 2.5 * inch, 2.7 * inch], S))
-        story.append(Paragraph("Fusion Algorithm (pseudocode, sesuai etl/fusion_strategies.py &amp; module9_fusion.py)", S.sub2))
+        story.append(Paragraph("Fusion Algorithm (pseudocode, following etl/fusion_strategies.py &amp; module9_fusion.py)", S.sub2))
         story.append(Preformatted(_FUSION_PSEUDOCODE.format(tol=tol, strategy=ds.get("fusion_strategy")), S.pre))
 
         story.append(CondPageBreak(4 * inch))
@@ -1028,40 +1028,40 @@ class ReportGenerator:
         story.append(Paragraph("4.3 Temporal Alignment Statistics", S.sub))
         total = len(st.fusion)
         if not total:
-            story.append(Paragraph("Belum ada fusion stack tercatat untuk dataset ini.", S.body))
+            story.append(Paragraph("No fusion stacks have been recorded for this dataset yet.", S.body))
         else:
             by_n = {k: sum(1 for f in st.fusion if f["n_sources"] == k) for k in (3, 2, 1)}
-            rows = [["Kategori", "Jumlah stack", "%"]]
-            for k, label in ((3, "Lengkap (3 source)"), (2, "Parsial (2 source)"), (1, "Tunggal (1 source)")):
+            rows = [["Category", "Number of stacks", "%"]]
+            for k, label in ((3, "Complete (3 sources)"), (2, "Partial (2 sources)"), (1, "Single (1 source)")):
                 rows.append([label, str(by_n[k]), f"{by_n[k] / total * 100:.1f}%"])
             story.append(_table(rows, [2.5 * inch, 1.5 * inch, 1.5 * inch], S))
-            rows = [["Offset terhadap tanggal stack", "n", "Rata-rata", "σ", "Maks"]]
+            rows = [["Offset from stack date", "n", "Mean", "σ", "Max"]]
             for key, label in (("s1_offset_days", "Sentinel-1"), ("modis_offset_days", "MODIS"),
                                ("gpm_offset_days", "GPM")):
                 vals = [abs(f[key]) for f in st.fusion if f[key] is not None]
-                rows.append([label, str(len(vals)), _n(mean(vals) if vals else None, 2, " hari"),
-                             _n(pstdev(vals) if len(vals) > 1 else None, 2, " hari"),
-                             _n(max(vals) if vals else None, 0, " hari")])
+                rows.append([label, str(len(vals)), _n(mean(vals) if vals else None, 2, " days"),
+                             _n(pstdev(vals) if len(vals) > 1 else None, 2, " days"),
+                             _n(max(vals) if vals else None, 0, " days")])
             story.append(_table(rows, [2.5 * inch, 0.7 * inch, 1.2 * inch, 1.2 * inch, 1.1 * inch], S))
             s1_days = set(st.obs_dates.get("SENTINEL1", []))
             fused_days = {f["date"] for f in st.fusion}
             aux_only = set(st.obs_dates.get("MODIS", [])) | set(st.obs_dates.get("GPM", []))
-            story.append(Paragraph("Ringkasan gap-fill &amp; cakupan", S.sub2))
+            story.append(Paragraph("Gap-fill &amp; coverage summary", S.sub2))
             for line in [
-                f"Tanggal S1 yang menghasilkan stack: {len(s1_days & fused_days)} dari {len(s1_days)} "
-                f"({len(s1_days & fused_days) / len(s1_days) * 100:.0f}%)" if s1_days else "Tidak ada tanggal S1.",
-                f"Stack yang meminjam S1 dari tanggal lain (offset ≠ 0): "
+                f"S1 dates that produced a stack: {len(s1_days & fused_days)} of {len(s1_days)} "
+                f"({len(s1_days & fused_days) / len(s1_days) * 100:.0f}%)" if s1_days else "No S1 dates.",
+                f"Stacks that borrowed S1 from another date (offset ≠ 0): "
                 f"{sum(1 for f in st.fusion if (f['s1_offset_days'] or 0) != 0)}",
-                f"Hari dengan MODIS/GPM tetapi tanpa stack fusi: {len(aux_only - fused_days)} hari "
-                f"(konsekuensi strategi {ds.get('fusion_strategy')} yang merakit per tanggal S1)",
-                "Interpolasi nilai (spline/linear) tidak dilakukan pipeline ini — source yang tidak ada ditulis "
-                "sebagai NaN di stack HDF5, bukan diisi nilai buatan.",
+                f"Days with MODIS/GPM but no fusion stack: {len(aux_only - fused_days)} days "
+                f"(a consequence of the {ds.get('fusion_strategy')} strategy, which assembles per S1 date)",
+                "Value interpolation (spline/linear) is not performed by this pipeline — missing sources are "
+                "written as NaN in the HDF5 stack, not filled with artificial values.",
             ]:
                 story.append(Paragraph(f"• {_e(line)}", S.bullet))
             times = _s1_time_of_day(st)
             if times:
-                story.append(Paragraph("Waktu akuisisi Sentinel-1 (UTC)", S.sub2))
-                rows = [["Orbit", "Scene", "Rata-rata (UTC)", "Rentang", "Lokal (WITA)"]]
+                story.append(Paragraph("Sentinel-1 acquisition time (UTC)", S.sub2))
+                rows = [["Orbit", "Scenes", "Mean (UTC)", "Range", "Local (WITA, UTC+8)"]]
                 for orbit, hrs in sorted(times.items()):
                     h = mean(hrs)
                     rows.append([orbit, str(len(hrs)), _hhmm(h), f"{_hhmm(min(hrs))}–{_hhmm(max(hrs))}", _hhmm((h + 8) % 24)])
@@ -1074,11 +1074,11 @@ class ReportGenerator:
         ds, st = ctx.dataset, ctx.stats
         story.append(Paragraph("5. Overall Trends &amp; Patterns", S.section))
         story.append(Paragraph(
-            "Deret waktu di bawah memakai nilai nyata: backscatter S1 dari <i>quality_metrics</i> (per scene), "
-            "serta rata-rata AOI dari raster COG MODIS dan GPM (per hari). Pita abu-abu menandai musim "
-            "(DJF musim hujan, MAM peralihan I, JJA kemarau, SON peralihan II). Setelah garis titik-titik, "
-            "garis putus-putus adalah prakiraan sepertiga periode ke depan dengan pita interval 80%/95% — "
-            "metodologi dan kesimpulannya di Section 10.", S.body))
+            "The time series below use actual values: S1 backscatter from <i>quality_metrics</i> (per scene), "
+            "and AOI means from the MODIS and GPM COG rasters (per day). Grey bands mark the seasons "
+            "(DJF wet season, MAM transition I, JJA dry season, SON transition II). After the dotted line, "
+            "the dashed line is a forecast one third of the period ahead, with 80%/95% interval bands — "
+            "methodology and conclusions in Section 10.", S.body))
         story.append(Paragraph("5.1 Time-Series Analysis", S.sub))
 
         vv = [(m["date"], m["mean_db"]) for m in st.s1_metrics if m["band"] == "VV" and m["date"] and _ok(m) and m["mean_db"] is not None]
@@ -1088,12 +1088,12 @@ class ReportGenerator:
         rain = [(o.day, o.mean) for o in st.raster_band("GPM", "RAIN_24H") if o.mean is not None]
 
         blocks = [
-            ("Chart 1 — Sentinel-1 VV/VH Backscatter (scene PASS, satuan dB)", "chart_s1_trend.png", "Sentinel-1 Backscatter per Scene",
+            ("Chart 1 — Sentinel-1 VV/VH Backscatter (PASS scenes, unit dB)", "chart_s1_trend.png", "Sentinel-1 Backscatter per Scene",
              "Backscatter mean (dB)", {"VV": vv, "VH": vh}, "line", "SENTINEL1"),
-            ("Chart 2 — MODIS NDVI/NDWI", "chart_modis_trend.png", "MODIS: Rata-rata AOI Harian",
-             "Indeks (−1…1)", {"NDVI": ndvi, "NDWI": ndwi}, "line", "MODIS"),
-            ("Chart 3 — GPM Curah Hujan Harian", "chart_gpm_trend.png", "GPM IMERG: Curah Hujan Harian",
-             "mm/hari (rata-rata AOI)", {"RAIN_24H": rain}, "bar", "GPM"),
+            ("Chart 2 — MODIS NDVI/NDWI", "chart_modis_trend.png", "MODIS: Daily AOI Mean",
+             "Index (−1…1)", {"NDVI": ndvi, "NDWI": ndwi}, "line", "MODIS"),
+            ("Chart 3 — GPM Daily Rainfall", "chart_gpm_trend.png", "GPM IMERG: Daily Rainfall",
+             "mm/day (AOI mean)", {"RAIN_24H": rain}, "bar", "GPM"),
         ]
         n_charts = 0
         fc_by = {f.key: f for f in ctx.forecasts}
@@ -1108,15 +1108,15 @@ class ReportGenerator:
                 n_charts += 1
                 story.append(_img(chart))
             else:
-                story.append(Paragraph("Belum cukup titik data (minimal 2) untuk deret ini.", S.note))
+                story.append(Paragraph("Not enough data points (minimum 2) for this series.", S.note))
             for para in _trend_narrative(st, src):
                 story.append(Paragraph(para, S.body))
 
         story.append(CondPageBreak(4 * inch))
-        story.append(Paragraph("Monthly Summary (semua source)", S.sub2))
+        story.append(Paragraph("Monthly Summary (all sources)", S.sub2))
         table = _monthly_combined(st)
         if table:
-            rows = [["Bulan", "S1", "VV dB", "VH dB", "NDVI", "NDWI", "Banjir %", "Hujan/hari", "Total mm"]]
+            rows = [["Month", "S1", "VV dB", "VH dB", "NDVI", "NDWI", "Flood %", "Rain/day", "Total mm"]]
             for r in table:
                 rows.append([f"{rs.MONTH_NAMES[r['month']][:3]} {r['year']}", str(r["s1_n"]), _n(r["vv"], 2), _n(r["vh"], 2),
                              _n(r["ndvi"], 3), _n(r["ndwi"], 3), _n(r["flood"], 2), _n(r["rain"], 2), _n(r["rain_sum"], 1)])
@@ -1125,13 +1125,13 @@ class ReportGenerator:
             heat = self._chart_seasonal_heatmap(ctx, table)
             if heat:
                 story.append(_img(heat, h=2.9))
-                story.append(Paragraph("Gambar 5.4 — Seasonal heatmap: warna = z-score bulanan tiap variabel "
-                                       "(merah di atas rata-rata periode, biru di bawah).", S.caption))
+                story.append(Paragraph("Figure 5.4 — Seasonal heatmap: colour = monthly z-score of each variable "
+                                       "(red above the period mean, blue below).", S.caption))
         rheat = self._chart_rain_heatmap(ctx)
         if rheat:
             story.append(CondPageBreak(3 * inch))
             story.append(_img(rheat, h=0.45 * len({(o.day.year, o.day.month) for o in st.raster_band('GPM', 'RAIN_24H')}) + 1.3))
-            story.append(Paragraph("Gambar 5.5 — Heatmap curah hujan harian (bulan × tanggal).", S.caption))
+            story.append(Paragraph("Figure 5.5 — Daily rainfall heatmap (month × date).", S.caption))
 
         story.append(CondPageBreak(3 * inch))
         story.append(Paragraph("5.2 Summary Findings", S.sub))
@@ -1145,7 +1145,7 @@ class ReportGenerator:
         st = ctx.stats
         story.append(Paragraph("6. Sentinel-1 Deep Dive", S.section))
         if not st.s1_metrics and not st.s1_scenes:
-            story.append(Paragraph("Belum ada scene atau metrik Sentinel-1 untuk dataset ini.", S.body))
+            story.append(Paragraph("There are no Sentinel-1 scenes or metrics for this dataset yet.", S.body))
             story.extend(_section_break())
             return
         story.append(Paragraph("6.1 SAR Backscatter Analysis", S.sub))
@@ -1155,16 +1155,16 @@ class ReportGenerator:
             good = [m["mean_db"] for m in st.s1_metrics if m["band"] == band and m["mean_db"] is not None and _ok(m)]
             spk = [m["speckle"] for m in st.s1_metrics if m["band"] == band and m["speckle"] is not None]
             pol[band] = {"vals": vals, "good": good, "speckle": spk}
-        rows = [["Karakteristik", "VV", "VH"]]
+        rows = [["Characteristic", "VV", "VH"]]
         for label, fn in [
-            ("Produk bersatuan dB", lambda d: str(len(d["vals"]))),
-            ("Mean (semua scene)", lambda d: _n(mean(d["vals"]) if d["vals"] else None, 2, " dB")),
-            ("Mean (hanya PASS)", lambda d: _n(mean(d["good"]) if d["good"] else None, 2, " dB")),
+            ("Products in dB units", lambda d: str(len(d["vals"]))),
+            ("Mean (all scenes)", lambda d: _n(mean(d["vals"]) if d["vals"] else None, 2, " dB")),
+            ("Mean (PASS only)", lambda d: _n(mean(d["good"]) if d["good"] else None, 2, " dB")),
             ("Median", lambda d: _n(median(d["vals"]) if d["vals"] else None, 2, " dB")),
-            ("σ antar scene", lambda d: _n(pstdev(d["vals"]) if len(d["vals"]) > 1 else None, 2, " dB")),
-            ("Rentang (min – max)", lambda d: f"{min(d['vals']):.2f} – {max(d['vals']):.2f} dB" if d["vals"] else "—"),
+            ("σ across scenes", lambda d: _n(pstdev(d["vals"]) if len(d["vals"]) > 1 else None, 2, " dB")),
+            ("Range (min – max)", lambda d: f"{min(d['vals']):.2f} – {max(d['vals']):.2f} dB" if d["vals"] else "—"),
             ("p5 – p95", lambda d: f"{_percentile(d['vals'], .05):.2f} – {_percentile(d['vals'], .95):.2f} dB" if d["vals"] else "—"),
-            ("Speckle index rata-rata", lambda d: _n(mean(d["speckle"]) if d["speckle"] else None, 3)),
+            ("Mean speckle index", lambda d: _n(mean(d["speckle"]) if d["speckle"] else None, 3)),
         ]:
             rows.append([label, fn(pol["VV"]), fn(pol["VH"])])
         story.append(_table(rows, [2.6 * inch, 2.0 * inch, 2.0 * inch], S))
@@ -1172,24 +1172,24 @@ class ReportGenerator:
         story.append(Paragraph("VV/VH Ratio (Decomposition Index)", S.sub2))
         if ratio["all"]:
             story.append(Paragraph(
-                f"Rasio VV−VH (dB) dihitung per scene yang memiliki kedua polarisasi: rata-rata "
+                f"The VV−VH ratio (dB) is computed per scene that has both polarisations: mean "
                 f"<b>{mean(ratio['all']):.2f} dB</b> (σ={pstdev(ratio['all']):.2f}, n={len(ratio['all'])}). "
-                "Rasio tinggi menandakan hamburan permukaan (tanah terbuka, air tenang), sedangkan rasio rendah "
-                "mengindikasikan hamburan volume (vegetasi rapat) yang menaikkan VH relatif terhadap VV.", S.body))
-            rows = [["Bulan", "n", "VV−VH rata-rata (dB)", "σ"]]
+                "A high ratio indicates surface scattering (bare soil, calm water), whereas a low ratio "
+                "indicates volume scattering (dense vegetation), which raises VH relative to VV.", S.body))
+            rows = [["Month", "n", "Mean VV−VH (dB)", "σ"]]
             for (y, m), vals in sorted(ratio["monthly"].items()):
                 rows.append([f"{rs.MONTH_NAMES[m]} {y}", str(len(vals)), f"{mean(vals):.2f}",
                              f"{pstdev(vals):.2f}" if len(vals) > 1 else "—"])
             story.append(_table(rows, [2.0 * inch, 0.8 * inch, 2.0 * inch, 1.5 * inch], S))
         else:
-            story.append(Paragraph("Tidak ada scene dengan metrik VV dan VH sekaligus.", S.note))
+            story.append(Paragraph("No scene has both VV and VH metrics.", S.note))
 
         story.append(CondPageBreak(3 * inch))
         story.append(Paragraph("SEASONAL PATTERN TABLE (Monthly, VV)", S.sub2))
         vv_months = [r for r in st.s1_monthly if r["band"] == "VV"]
         if vv_months:
             overall = mean(r["mean"] for r in vv_months if r["mean"] is not None)
-            rows = [["Bulan", "n", "VV dB", "σ", "Min", "Max", "Valid", "Interpretasi"]]
+            rows = [["Month", "n", "VV dB", "σ", "Min", "Max", "Valid", "Interpretation"]]
             for r in vv_months:
                 rows.append([f"{rs.MONTH_NAMES[r['month']]} {r['year']}", str(r["n"]), _n(r["mean"], 2), _n(r["std"], 2),
                              _n(r["min"], 2), _n(r["max"], 2), _n((r["valid"] or 0) * 100, 0),
@@ -1199,32 +1199,33 @@ class ReportGenerator:
         box = self._chart_s1_box(ctx)
         if box:
             story.append(_img(box))
-            story.append(Paragraph("Gambar 6.1 — Distribusi backscatter per bulan (kotak = kuartil).", S.caption))
+            story.append(Paragraph("Figure 6.1 — Backscatter distribution per month (box = quartiles).", S.caption))
 
         story.append(CondPageBreak(3.5 * inch))
         story.append(Paragraph("6.2 Scene Acquisition &amp; Coverage", S.sub))
         story.append(Paragraph("Orbit Analysis Statistics", S.sub2))
         times = _s1_time_of_day(st)
-        rows = [["Orbit", "Scene", "Jam UTC", "Incidence", "Rel. orbit", "Pertama", "Terakhir"]]
+        rows = [["Orbit", "Scenes", "UTC hour", "Incidence", "Rel. orbit", "First", "Last"]]
         for o in st.s1_orbit:
             hrs = times.get(o["orbit"], [])
-            inc = f"{o['inc_near']:.1f}° – {o['inc_far']:.1f}°" if o["inc_near"] is not None and o["inc_far"] is not None else "tidak tercatat"
+            inc = f"{o['inc_near']:.1f}° – {o['inc_far']:.1f}°" if o["inc_near"] is not None and o["inc_far"] is not None else "not recorded"
             rows.append([o["orbit"], str(o["scenes"]), _hhmm(mean(hrs)) if hrs else "—", inc,
-                         str(o["relative_orbits"]) if o["relative_orbits"] else "tidak tercatat",
+                         str(o["relative_orbits"]) if o["relative_orbits"] else "not recorded",
                          f"{o['first']:%Y-%m-%d}" if o["first"] else "—", f"{o['last']:%Y-%m-%d}" if o["last"] else "—"])
         story.append(_table(rows, [1.0 * inch, 0.5 * inch, 1.0 * inch, 1.1 * inch, 1.0 * inch, 0.9 * inch, 0.9 * inch], S))
         story.append(Paragraph(
-            "Geometri: Sentinel-1 IW adalah SAR right-looking. Pass ascending melintas sore hari waktu lokal, "
-            "descending pagi hari — pola jam di atas konsisten dengan itu. Kolom incidence angle/relative orbit "
-            "tersedia di skema tetapi belum diisi oleh modul download untuk scene dataset ini.", S.note))
+            "Geometry: Sentinel-1 IW is a right-looking SAR. Ascending passes cross in the local evening, "
+            "descending passes in the morning — the hour pattern above is consistent with that. The incidence "
+            "angle/relative orbit columns exist in the schema but were not filled in by the download module "
+            "for this dataset's scenes.", S.note))
         story.append(Paragraph("Scene Acquisition Timeline", S.sub2))
         story.append(Preformatted(_ascii_month_grid(st), S.pre))
         intervals = _intervals(st.obs_dates.get("SENTINEL1", []))
         if intervals:
             story.append(Paragraph(
-                f"Interval antar tanggal akuisisi: rata-rata {mean(intervals):.1f} hari, median {median(intervals):.0f} hari, "
-                f"maksimum {max(intervals)} hari. {len(st.s1_scenes)} scene tercatat pada "
-                f"{len(st.obs_dates.get('SENTINEL1', []))} tanggal unik.", S.body))
+                f"Interval between acquisition dates: mean {mean(intervals):.1f} days, median {median(intervals):.0f} days, "
+                f"maximum {max(intervals)} days. {len(st.s1_scenes)} scenes recorded on "
+                f"{len(st.obs_dates.get('SENTINEL1', []))} unique dates.", S.body))
 
         story.append(CondPageBreak(3.5 * inch))
         story.append(Paragraph("6.3 Data Quality Metrics", S.sub))
@@ -1233,34 +1234,35 @@ class ReportGenerator:
         consist = [m["consistent"] for m in st.s1_metrics if m["consistent"] is not None]
         flags = st.quality_flags.get("SENTINEL1", {})
         spk_all = [m["speckle"] for m in st.s1_metrics if m["speckle"] is not None]
-        rows = [["Metrik", "Nilai", "Sumber"]]
+        rows = [["Metric", "Value", "Source"]]
         rows += [
-            ["Skor kualitas rata-rata", _n(mean(scores) if scores else None, 1, "/100"), "quality_metrics.quality_score"],
-            ["Skor minimum / maksimum", f"{min(scores):.1f} / {max(scores):.1f}" if scores else "—", "quality_metrics.quality_score"],
+            ["Mean quality score", _n(mean(scores) if scores else None, 1, "/100"), "quality_metrics.quality_score"],
+            ["Minimum / maximum score", f"{min(scores):.1f} / {max(scores):.1f}" if scores else "—", "quality_metrics.quality_score"],
             ["PASS / FAIL", f"{flags.get('PASS', 0)} / {flags.get('FAIL', 0)}", "quality_metrics.quality_flag"],
             ["Radiometric consistency = TRUE", f"{sum(consist)}/{len(consist)} ({sum(consist) / len(consist) * 100:.0f}%)" if consist else "—",
              "quality_metrics.radiometric_consistency"],
-            ["Speckle index rata-rata (σ)", f"{mean(spk_all):.3f} ({pstdev(spk_all):.3f})" if len(spk_all) > 1 else "—",
+            ["Mean speckle index (σ)", f"{mean(spk_all):.3f} ({pstdev(spk_all):.3f})" if len(spk_all) > 1 else "—",
              "quality_metrics.speckle_index"],
         ]
         story.append(_table(rows, [2.3 * inch, 1.8 * inch, 2.6 * inch], S))
         story.append(Paragraph("Geometric / Coverage Quality", S.sub2))
         valid = [m["valid_frac"] for m in st.s1_metrics if m["valid_frac"] is not None]
         if valid:
-            rows = [["Fraksi piksel valid", "Nilai"],
-                    ["Rata-rata", f"{mean(valid) * 100:.1f}%"],
+            rows = [["Valid pixel fraction", "Value"],
+                    ["Mean", f"{mean(valid) * 100:.1f}%"],
                     ["Median", f"{median(valid) * 100:.1f}%"],
-                    ["Produk dengan valid < 50%", f"{sum(1 for v in valid if v < .5)} dari {len(valid)}"],
-                    ["Produk dengan valid ≥ 90%", f"{sum(1 for v in valid if v >= .9)} dari {len(valid)}"]]
+                    ["Products with valid < 50%", f"{sum(1 for v in valid if v < .5)} of {len(valid)}"],
+                    ["Products with valid ≥ 90%", f"{sum(1 for v in valid if v >= .9)} of {len(valid)}"]]
             story.append(_table(rows, [3.3 * inch, 3.3 * inch], S))
         story.append(Paragraph(
-            "Akurasi geolokasi dan orthorectification absolut (meter) tidak diukur pipeline — tidak ada titik kontrol "
-            "tanah di skema. Fraksi piksel valid dipakai sebagai proksi cakupan footprint atas AOI.", S.note))
+            "Absolute geolocation and orthorectification accuracy (metres) is not measured by the pipeline — there are "
+            "no ground control points in the schema. The valid pixel fraction is used as a proxy for footprint "
+            "coverage over the AOI.", S.note))
         story.append(Paragraph("Coherence &amp; Interferometry", S.sub2))
         story.append(Paragraph(
-            "Pipeline memproses produk GRD (intensitas), bukan SLC, sehingga koherensi interferometrik tidak dapat "
-            "dihitung dari data ini. Sebagai pengganti, stabilitas temporal backscatter per musim dilaporkan di bawah.", S.body))
-        rows = [["Musim", "n VV", "Mean VV (dB)", "σ VV (dB)", "Koef. variasi"]]
+            "The pipeline processes GRD (intensity) products, not SLC, so interferometric coherence cannot be "
+            "computed from this data. As a substitute, the temporal stability of backscatter per season is reported below.", S.body))
+        rows = [["Season", "n VV", "Mean VV (dB)", "σ VV (dB)", "Coeff. of variation"]]
         for key, label, months in rs.SEASONS:
             vals = [m["mean_db"] for m in st.s1_metrics if m["band"] == "VV" and m["mean_db"] is not None
                     and m["date"] and m["date"].month in months and _ok(m)]
@@ -1273,7 +1275,7 @@ class ReportGenerator:
         hist = self._chart_s1_quality(ctx)
         if hist:
             story.append(_img(hist))
-            story.append(Paragraph("Gambar 6.2 — Histogram skor kualitas radiometrik per produk.", S.caption))
+            story.append(Paragraph("Figure 6.2 — Histogram of the radiometric quality score per product.", S.caption))
 
         story.append(CondPageBreak(3 * inch))
         story.append(Paragraph("6.4 Data Artifacts &amp; Known Issues", S.sub))
@@ -1293,22 +1295,23 @@ class ReportGenerator:
         story.append(Paragraph("7. MODIS Deep Dive", S.section))
         story.append(Paragraph("7.1 Product Characteristics &amp; Surface Index Analysis", S.sub))
         story.append(_kv_table([
-            ("Produk sumber", ", ".join(st.nasa_products.get("MODIS", [])) or "MCDWD_L3_F2_NRT (default pipeline)"),
-            ("Deskripsi", "MODIS NRT Global Flood Product (LANCE), komposit 2-hari Terra+Aqua"),
-            ("Resolusi spasial", "250 m (produk MCDWD)"),
-            ("Band di dataset", ", ".join(sorted(st.raster.get("MODIS", {}).keys())) or "-"),
-            ("Hari observasi", f"{len(st.obs_dates.get('MODIS', []))} dari {st.period_days}"),
-            ("Kelas FLOOD", "; ".join(f"{k}={v}" for k, v in rs.FLOOD_CLASSES.items()) + "; 255=insufficient data"),
+            ("Source product", ", ".join(st.nasa_products.get("MODIS", [])) or "MCDWD_L3_F2_NRT (pipeline default)"),
+            ("Description", "MODIS NRT Global Flood Product (LANCE), 2-day Terra+Aqua composite"),
+            ("Spatial resolution", "250 m (MCDWD product)"),
+            ("Bands in dataset", ", ".join(sorted(st.raster.get("MODIS", {}).keys())) or "-"),
+            ("Observation days", f"{len(st.obs_dates.get('MODIS', []))} of {st.period_days}"),
+            ("FLOOD classes", "; ".join(f"{k}={v}" for k, v in rs.FLOOD_CLASSES.items()) + "; 255=insufficient data"),
         ], S))
         story.append(Paragraph(
-            "Catatan: spesifikasi awal mencontohkan Land Surface Temperature (MOD11A2). Pipeline dataset ini tidak "
-            "mengunduh LST; statistik di bawah memakai band yang benar-benar ada (NDVI, NDWI, FLOOD).", S.note))
+            "Note: the original specification gave Land Surface Temperature (MOD11A2) as an example. This dataset's "
+            "pipeline does not download LST; the statistics below use the bands that are actually present "
+            "(NDVI, NDWI, FLOOD).", S.note))
         for band, label in (("NDVI", "NDVI"), ("NDWI", "NDWI")):
             rows_m = st.monthly_raster("MODIS", band)
             if not rows_m:
                 continue
             story.append(Paragraph(f"Monthly {label} Statistics", S.sub2))
-            rows = [["Bulan", "Hari", f"Mean {label}", "σ antar hari", "Max piksel", "Min piksel", "Valid %"]]
+            rows = [["Month", "Days", f"Mean {label}", "σ across days", "Max pixel", "Min pixel", "Valid %"]]
             for r in rows_m:
                 rows.append([f"{rs.MONTH_NAMES[r['month']]} {r['year']}", str(r["n"]), _n(r["mean"], 3), _n(r["std"], 3),
                              _n(r["max"], 2), _n(r["min"], 2), _n(r["valid"] * 100, 0)])
@@ -1316,7 +1319,7 @@ class ReportGenerator:
             srows = [r for r in st.seasonal_raster("MODIS", band) if r["n"]]
             if srows:
                 story.append(Paragraph(
-                    f"Per musim: " + "; ".join(f"{r['label']} mean {r['mean']:.3f} (n={r['n']})" for r in srows if r["mean"] is not None)
+                    f"Per season: " + "; ".join(f"{r['label']} mean {r['mean']:.3f} (n={r['n']})" for r in srows if r["mean"] is not None)
                     + ".", S.body))
 
         story.append(CondPageBreak(3.5 * inch))
@@ -1325,17 +1328,17 @@ class ReportGenerator:
         if flood:
             clear = [o.valid_frac for o in flood]
             story.append(Paragraph(
-                f"Piksel ber-kode 255 (insufficient data — terutama tutupan awan) dipakai sebagai proksi awan. "
-                f"Rata-rata piksel bebas-awan: <b>{mean(clear) * 100:.1f}%</b>; hari dengan &lt;50% piksel valid: "
-                f"<b>{sum(1 for v in clear if v < .5)}</b> dari {len(clear)}.", S.body))
-            rows = [["Musim", "Hari", "Bebas awan (rata-rata)", "Hari valid < 50%", "Hari valid ≥ 90%"]]
+                f"Pixels coded 255 (insufficient data — mainly cloud cover) are used as a cloud proxy. "
+                f"Mean cloud-free pixels: <b>{mean(clear) * 100:.1f}%</b>; days with &lt;50% valid pixels: "
+                f"<b>{sum(1 for v in clear if v < .5)}</b> of {len(clear)}.", S.body))
+            rows = [["Season", "Days", "Cloud-free (mean)", "Days valid < 50%", "Days valid ≥ 90%"]]
             for key, label, months in rs.SEASONS:
                 sel = [o.valid_frac for o in flood if o.day.month in months]
                 if sel:
                     rows.append([label, str(len(sel)), f"{mean(sel) * 100:.1f}%", str(sum(1 for v in sel if v < .5)),
                                  str(sum(1 for v in sel if v >= .9))])
             story.append(_table(rows, [2.0 * inch, 0.7 * inch, 1.5 * inch, 1.2 * inch, 1.2 * inch], S))
-            rows = [["Bulan", "Hari", "Bebas awan", "Tidak ada air", "Air permukaan", "Banjir berulang", "Banjir anomali"]]
+            rows = [["Month", "Days", "Cloud-free", "No water", "Surface water", "Recurrent flood", "Anomalous flood"]]
             months = sorted({(o.day.year, o.day.month) for o in flood})
             for ym in months:
                 sel = [o for o in flood if (o.day.year, o.day.month) == ym and o.classes]
@@ -1343,26 +1346,26 @@ class ReportGenerator:
                     continue
                 rows.append([f"{rs.MONTH_NAMES[ym[1]][:3]} {ym[0]}", str(len(sel)), f"{mean(o.valid_frac for o in sel) * 100:.0f}%"]
                             + [f"{mean(o.classes.get(c, 0) for o in sel) * 100:.2f}%" for c in rs.FLOOD_CLASSES])
-            story.append(Paragraph("Komposisi kelas FLOOD per bulan (% dari piksel valid)", S.sub2))
+            story.append(Paragraph("FLOOD class composition per month (% of valid pixels)", S.sub2))
             story.append(_table(rows, [0.9 * inch, 0.5 * inch, 0.9 * inch, 1.0 * inch, 1.1 * inch, 1.1 * inch, 1.1 * inch], S))
             chart = self._chart_flood_classes(ctx)
             if chart:
                 story.append(_img(chart))
-                story.append(Paragraph("Gambar 7.1 — Komposisi kelas MCDWD per bulan.", S.caption))
+                story.append(Paragraph("Figure 7.1 — MCDWD class composition per month.", S.caption))
         else:
-            story.append(Paragraph("Tidak ada raster FLOOD untuk dianalisis.", S.note))
+            story.append(Paragraph("There are no FLOOD rasters to analyse.", S.note))
 
         story.append(CondPageBreak(3 * inch))
         story.append(Paragraph("7.3 Validation &amp; Accuracy", S.sub))
         story.append(Paragraph(
-            "Skema tidak menyimpan data stasiun ground-truth, jadi RMSE/bias terhadap pengukuran lapangan tidak "
-            "dapat dihitung. Sebagai gantinya dilakukan <b>uji konsistensi silang antar-sensor</b> — korelasi "
-            "Pearson antar deret harian yang secara fisik seharusnya berhubungan:", S.body))
-        rows = [["Pasangan variabel", "n hari", "r Pearson", "Ekspektasi fisik", "Hasil"]]
+            "The schema does not store ground-truth station data, so RMSE/bias against field measurements cannot "
+            "be computed. Instead a <b>cross-sensor consistency test</b> is performed — Pearson correlation "
+            "between daily series that should be physically related:", S.body))
+        rows = [["Variable pair", "n days", "Pearson r", "Physical expectation", "Result"]]
         for a, b, label, expect in _consistency_pairs():
             r, n = _pair_corr(st, a, b)
-            verdict = "—" if r is None else ("✓ konsisten" if (r > 0.2 if expect > 0 else r < -0.2) else "⚠ lemah")
-            rows.append([label, str(n), _n(r, 3), "positif" if expect > 0 else "negatif", verdict])
+            verdict = "—" if r is None else ("✓ consistent" if (r > 0.2 if expect > 0 else r < -0.2) else "⚠ weak")
+            rows.append([label, str(n), _n(r, 3), "positive" if expect > 0 else "negative", verdict])
         story.append(_table(rows, [2.4 * inch, 0.7 * inch, 0.9 * inch, 1.2 * inch, 1.4 * inch], S))
         self._previews(story, ctx, S, "MODIS")
         story.extend(_section_break())
@@ -1376,26 +1379,26 @@ class ReportGenerator:
         rain = st.raster_band("GPM", "RAIN_24H")
         vals = [o.mean for o in rain if o.mean is not None]
         story.append(_kv_table([
-            ("Produk sumber", ", ".join(st.nasa_products.get("GPM", [])) or "GPM_3IMERGDF"),
-            ("Deskripsi", "IMERG Final Run, agregat harian (gauge-adjusted)"),
-            ("Resolusi", "0.1° × 0.1° (±11 km); harian"),
-            ("Latensi produk", "±3,5 bulan (Final Run)"),
-            ("Band di dataset", ", ".join(sorted(st.raster.get("GPM", {}).keys())) or "-"),
-            ("Piksel per raster (AOI)", _gpm_pixels(rain)),
+            ("Source product", ", ".join(st.nasa_products.get("GPM", [])) or "GPM_3IMERGDF"),
+            ("Description", "IMERG Final Run, daily aggregate (gauge-adjusted)"),
+            ("Resolution", "0.1° × 0.1° (~11 km); daily"),
+            ("Product latency", "~3.5 months (Final Run)"),
+            ("Bands in dataset", ", ".join(sorted(st.raster.get("GPM", {}).keys())) or "-"),
+            ("Pixels per raster (AOI)", _gpm_pixels(rain)),
         ], S))
         if vals:
-            rows = [["Statistik (RAIN_24H, rata-rata AOI)", "Nilai"],
-                    ["Mean", f"{mean(vals):.2f} mm/hari"], ["Median", f"{median(vals):.2f} mm/hari"],
-                    ["σ", f"{pstdev(vals):.2f} mm/hari"], ["p90 / p95 / p99",
-                     f"{_percentile(vals, .9):.1f} / {_percentile(vals, .95):.1f} / {_percentile(vals, .99):.1f} mm/hari"],
-                    ["Maksimum (rata-rata AOI)", f"{max(vals):.1f} mm/hari"],
-                    ["Maksimum (piksel)", f"{max(o.max for o in rain if o.max is not None):.1f} mm/hari"],
-                    ["Hari hujan (≥0,1 mm)", f"{sum(1 for v in vals if v >= rs.RAINY_THRESHOLD_MM)} dari {len(vals)} "
+            rows = [["Statistic (RAIN_24H, AOI mean)", "Value"],
+                    ["Mean", f"{mean(vals):.2f} mm/day"], ["Median", f"{median(vals):.2f} mm/day"],
+                    ["σ", f"{pstdev(vals):.2f} mm/day"], ["p90 / p95 / p99",
+                     f"{_percentile(vals, .9):.1f} / {_percentile(vals, .95):.1f} / {_percentile(vals, .99):.1f} mm/day"],
+                    ["Maximum (AOI mean)", f"{max(vals):.1f} mm/day"],
+                    ["Maximum (pixel)", f"{max(o.max for o in rain if o.max is not None):.1f} mm/day"],
+                    ["Rainy days (≥0.1 mm)", f"{sum(1 for v in vals if v >= rs.RAINY_THRESHOLD_MM)} of {len(vals)} "
                      f"({sum(1 for v in vals if v >= rs.RAINY_THRESHOLD_MM) / len(vals) * 100:.0f}%)"],
-                    ["Total akumulasi periode", f"{sum(vals):.0f} mm"]]
+                    ["Total accumulation over the period", f"{sum(vals):.0f} mm"]]
             story.append(_table(rows, [3.3 * inch, 3.3 * inch], S))
             story.append(Paragraph("Monthly Precipitation", S.sub2))
-            rows = [["Bulan", "Hari", "Mean mm/hari", "σ", "Maks px", "Total mm", "Hari hujan"]]
+            rows = [["Month", "Days", "Mean mm/day", "σ", "Max px", "Total mm", "Rainy days"]]
             by_month = {}
             for o in rain:
                 if o.mean is not None:
@@ -1408,54 +1411,54 @@ class ReportGenerator:
             chart = self._chart_rain_distribution(ctx)
             if chart:
                 story.append(_img(chart))
-                story.append(Paragraph("Gambar 8.1 — Distribusi curah hujan harian (garis putus = persentil).", S.caption))
+                story.append(Paragraph("Figure 8.1 — Daily rainfall distribution (dashed line = percentile).", S.caption))
             acc = []
             for band in ("RAIN_72H", "RAIN_7D"):
                 bv = [o.mean for o in st.raster_band("GPM", band) if o.mean is not None]
                 if bv:
                     acc.append([band, str(len(bv)), f"{mean(bv):.1f}", f"{max(bv):.1f}", f"{_percentile(bv, .95):.1f}"])
             if acc:
-                story.append(Paragraph("Akumulasi multi-hari", S.sub2))
-                story.append(_table([["Band", "Hari", "Mean (mm)", "Maks (mm)", "p95 (mm)"]] + acc,
+                story.append(Paragraph("Multi-day accumulation", S.sub2))
+                story.append(_table([["Band", "Days", "Mean (mm)", "Max (mm)", "p95 (mm)"]] + acc,
                                     [1.4 * inch, 0.9 * inch, 1.3 * inch, 1.3 * inch, 1.3 * inch], S))
         else:
-            story.append(Paragraph("Tidak ada raster RAIN_24H untuk dianalisis.", S.note))
+            story.append(Paragraph("There are no RAIN_24H rasters to analyse.", S.note))
 
         story.append(CondPageBreak(3 * inch))
         story.append(Paragraph("8.2 Extreme Event Analysis", S.sub))
         events = _extreme_events(st)
         if events:
             story.append(Paragraph(
-                "Lima hari dengan curah hujan rata-rata AOI tertinggi. <b>Durasi</b> = jumlah hari berturut-turut dengan hujan "
-                "≥10 mm/hari yang memuat hari puncak; <b>Akumulasi 72 jam</b> diambil dari band RAIN_72H.", S.body))
-            rows = [["Rank", "Tanggal", "Puncak AOI", "Maks px", "72 jam", "Durasi", "Musim"]]
+                "The five days with the highest AOI-mean rainfall. <b>Duration</b> = number of consecutive days with rain "
+                "≥10 mm/day that contain the peak day; <b>72-hour accumulation</b> is taken from the RAIN_72H band.", S.body))
+            rows = [["Rank", "Date", "AOI peak", "Max px", "72 h", "Duration", "Season"]]
             for i, e in enumerate(events, 1):
                 rows.append([str(i), f"{e['day']:%Y-%m-%d}", f"{e['mean']:.1f}", _n(e["max"], 1), _n(e["r72"], 1, " mm"),
-                             f"{e['duration']} hari", e["season"]])
+                             f"{e['duration']} days", e["season"]])
             story.append(_table(rows, [0.5 * inch, 1.0 * inch, 1.3 * inch, 0.9 * inch, 1.2 * inch, 0.8 * inch, 1.0 * inch], S))
             story.append(Paragraph(
-                "Atribusi penyebab (monsun, siklon, konveksi lokal) tidak dapat ditentukan dari data curah hujan saja; "
-                "kolom musim diberikan sebagai konteks.", S.note))
+                "The cause (monsoon, cyclone, local convection) cannot be determined from rainfall data alone; "
+                "the season column is given as context.", S.note))
             flood_by_day = {o.day: o for o in st.raster_band("MODIS", "FLOOD")}
             resp = []
             for e in events:
                 after = [flood_by_day.get(e["day"] + timedelta(days=k)) for k in range(0, 4)]
                 after = [o for o in after if o and o.mean is not None and o.valid_frac >= .3]
                 if after:
-                    resp.append(f"{e['day']:%d %b}: banjir MODIS maks {max(o.mean for o in after):.2f}% piksel dalam 0–3 hari")
+                    resp.append(f"{e['day']:%d %b}: MODIS flood max {max(o.mean for o in after):.2f}% of pixels within 0–3 days")
             if resp:
-                story.append(Paragraph("Respons banjir MODIS setelah kejadian ekstrem: " + "; ".join(resp) + ".", S.body))
+                story.append(Paragraph("MODIS flood response after extreme events: " + "; ".join(resp) + ".", S.body))
         else:
-            story.append(Paragraph("Tidak ada data curah hujan untuk analisis kejadian ekstrem.", S.note))
+            story.append(Paragraph("There is no rainfall data for extreme-event analysis.", S.note))
 
         story.append(CondPageBreak(3 * inch))
         story.append(Paragraph("8.3 Seasonal Precipitation Breakdown", S.sub))
         seasons = st.seasonal_raster("GPM", "RAIN_24H")
         total_sum = sum(r["sum"] or 0 for r in seasons)
-        rows = [["Musim", "Hari", "Mean", "Max AOI", "Max px", "Hari ≥0,1", "% total"]]
+        rows = [["Season", "Days", "Mean", "Max AOI", "Max px", "Days ≥0.1", "% of total"]]
         for r in seasons:
             if not r["n"]:
-                rows.append([r["label"], "0", "—", "—", "—", "—", "di luar periode"])
+                rows.append([r["label"], "0", "—", "—", "—", "—", "outside the period"])
                 continue
             rows.append([r["label"], str(r["n"]), _n(r["mean"], 2), _n(r["max_mean"], 1), _n(r["max_px"], 1),
                          str(r["wet_days"]), f"{(r['sum'] or 0) / total_sum * 100:.0f}%" if total_sum else "—"])
@@ -1483,9 +1486,9 @@ class ReportGenerator:
             if chart:
                 story.append(_img(chart, h=2.4))
         else:
-            story.append(Paragraph("Tidak ada data untuk dinilai kualitasnya.", S.body))
+            story.append(Paragraph("There is no data to assess for quality.", S.body))
         if ctx.quality:
-            rows = [["Source", "Jenis skor", "Skor", "Flag", "Produk", "Scene/hari"]]
+            rows = [["Source", "Score type", "Score", "Flag", "Products", "Scenes/days"]]
             for item in ctx.quality:
                 rows.append([_SOURCE_LABEL.get(item["source"], item["source"]),
                              "Radiometric" if item["kind"] == "RADIOMETRIC" else "Coverage band",
@@ -1504,10 +1507,10 @@ class ReportGenerator:
             story.append(Paragraph(f"{label.upper()} QUALITY ISSUES", S.sub2))
             worst = _worst_severity(items)
             if not items:
-                story.append(Paragraph("✓ EXCELLENT — tidak ada isu terdeteksi oleh pemeriksaan otomatis.", S.body))
+                story.append(Paragraph("✓ EXCELLENT — no issues were detected by the automated checks.", S.body))
             else:
                 header = {"HIGH": "✗ CRITICAL ISSUES PRESENT", "MEDIUM": "⚠ ISSUES REQUIRE ATTENTION",
-                          "LOW": "✓ GOOD — hanya isu minor"}[worst]
+                          "LOW": "✓ GOOD — minor issues only"}[worst]
                 story.append(Paragraph(f"<b>{header}</b>", S.body))
                 for n, i in enumerate(items, 1):
                     story.append(Paragraph(f"<b>{n}. {_e(i['title'])}</b>", S.bullet))
@@ -1516,7 +1519,7 @@ class ReportGenerator:
                             story.append(Paragraph(f"&nbsp;&nbsp;&nbsp;• {k.capitalize() if k != 'action' else 'Recommended action'}: "
                                                    f"{_e(i[k])}", S.bullet))
                     story.append(Paragraph(f"&nbsp;&nbsp;&nbsp;• Severity: <b>{i['severity']}</b>", S.bullet))
-            verdict = {"HIGH": "✗ PERBAIKI SEBELUM DIPAKAI", "MEDIUM": "⚠ APPROVED WITH CAVEATS", "LOW": "✓ APPROVED FOR USE",
+            verdict = {"HIGH": "✗ FIX BEFORE USE", "MEDIUM": "⚠ APPROVED WITH CAVEATS", "LOW": "✓ APPROVED FOR USE",
                        None: "✓ APPROVED FOR USE"}[worst]
             story.append(Paragraph(f"Recommendation: <b>{verdict}</b>", S.body))
 
@@ -1542,29 +1545,29 @@ class ReportGenerator:
         fcs = ctx.forecasts
         h = rf.horizon_for(st.period_days) if st.period_days else 0
         end = st.period_end
-        story.append(Paragraph("10. Kesimpulan: Kondisi Saat Ini &amp; Prakiraan", S.section))
+        story.append(Paragraph("10. Conclusions: Current Conditions &amp; Forecast", S.section))
         if not fcs or end is None:
             story.append(Paragraph(
-                "Data dataset ini belum cukup (minimal 6 observasi per variabel) untuk membuat prakiraan. "
-                "Kesimpulan kondisi saat ini dapat dibaca di Section 5 dan 9.", S.body))
+                "This dataset does not have enough data (at least 6 observations per variable) to produce a forecast. "
+                "Conclusions about current conditions can be read in Sections 5 and 9.", S.body))
             story.extend(_section_break())
             return
         horizon_end = end + timedelta(days=h)
 
-        story.append(Paragraph("10.1 Metodologi Prakiraan", S.sub))
+        story.append(Paragraph("10.1 Forecast Methodology", S.sub))
         story.append(Paragraph(
-            f"Horizon prakiraan = sepertiga panjang periode dataset: {st.period_days} hari → <b>{h} hari</b> "
-            f"({end + timedelta(days=1)} s/d {horizon_end}). Hanya data dataset ini yang dipakai. Empat model "
-            "sederhana bersaing — <i>naif</i> (nilai terakhir berlanjut), <i>rata-rata</i> periode, <i>SES</i> "
-            "(exponential smoothing) dan <i>Holt damped</i> (tren yang melandai). Setiap model dilatih pada 2/3 awal "
-            "data dan diuji pada 1/3 akhir — panjang uji sama dengan horizon, sehingga error backtest mewakili "
-            "kemampuan prakiraan yang sesungguhnya. Model dengan error terkecil dipakai ulang pada seluruh data.", S.body))
+            f"Forecast horizon = one third of the dataset period length: {st.period_days} days → <b>{h} days</b> "
+            f"({end + timedelta(days=1)} to {horizon_end}). Only this dataset's data is used. Four simple "
+            "models compete — <i>naive</i> (the last value continues), the period <i>mean</i>, <i>SES</i> "
+            "(exponential smoothing) and <i>Holt damped</i> (a tapering trend). Each model is trained on the first "
+            "2/3 of the data and tested on the last 1/3 — the test length equals the horizon, so the backtest error "
+            "represents true forecasting ability. The model with the smallest error is refit on all the data.", S.body))
         story.append(Paragraph(
-            "<b>Skill</b> = 1 − MAE(model)/MAE(naif): 0 berarti tidak lebih baik dari menebak &ldquo;kondisi terakhir "
-            "berlanjut&rdquo;. Keyakinan: <b>Tinggi</b> (skill ≥ 0,20 dan ≥ 30 hari data), <b>Sedang</b> (skill "
-            "0,05–0,20), <b>Rendah</b> (skill &lt; 0,05 atau backtest tidak mungkin). Pita 80%/95% dikalibrasi dari "
-            "error backtest dan dipotong ke rentang fisik variabel.", S.body))
-        rows = [["Variabel", "Model", "Latih/uji (hari)", "MAE model", "MAE naif", "Skill", "Keyakinan"]]
+            "<b>Skill</b> = 1 − MAE(model)/MAE(naive): 0 means no better than guessing &ldquo;the latest condition "
+            "continues&rdquo;. Confidence: <b>High</b> (skill ≥ 0.20 and ≥ 30 days of data), <b>Medium</b> (skill "
+            "0.05–0.20), <b>Low</b> (skill &lt; 0.05 or a backtest is not possible). The 80%/95% bands are calibrated "
+            "from the backtest error and clipped to the variable's physical range.", S.body))
+        rows = [["Variable", "Model", "Train/test (days)", "Model MAE", "Naive MAE", "Skill", "Confidence"]]
         for f in fcs:
             bt = f.backtest
             rows.append([f.label, f.model, f"{bt.get('train_days', '—')}/{bt.get('test_days', '—')}",
@@ -1575,31 +1578,31 @@ class ReportGenerator:
         chart = self._chart_forecast_panels(ctx)
         if chart:
             story.append(CondPageBreak(4.5 * inch))
-            story.append(Paragraph("10.2 Visualisasi Prakiraan", S.sub))
+            story.append(Paragraph("10.2 Forecast Visualisation", S.sub))
             rows_n = (len(fcs) + 1) // 2
             story.append(_img(chart, h=1.9 * rows_n + 0.3))
             story.append(Paragraph(
-                f"Gambar 10.1 — Jendela {2 * h} hari terakhir + prakiraan {h} hari. Garis titik-titik vertikal = akhir "
-                "periode dataset. Pita melebar ke depan karena ketidakpastian bertambah dengan jarak waktu.", S.caption))
+                f"Figure 10.1 — The last {2 * h} days + a {h}-day forecast. The vertical dotted line = the end of "
+                "the dataset period. The bands widen forward because uncertainty grows with time distance.", S.caption))
 
         story.append(CondPageBreak(3 * inch))
-        story.append(Paragraph("10.3 Kondisi Saat Ini", S.sub))
-        rows = [["Variabel", "Terkini", "Rata-rata periode", "Deviasi", "Status"]]
+        story.append(Paragraph("10.3 Current Conditions", S.sub))
+        rows = [["Variable", "Recent", "Period mean", "Deviation", "Status"]]
         for f in fcs:
             z = (f.recent_mean - f.period_mean) / f.period_std if f.period_std else 0.0
             d = 3 if not f.unit else 2
-            rows.append([f.label, Paragraph(f"{rf.fmt(f.recent_mean, f.unit, d)}<br/>({f.recent_days} hari terakhir)", S.cell),
+            rows.append([f.label, Paragraph(f"{rf.fmt(f.recent_mean, f.unit, d)}<br/>(last {f.recent_days} days)", S.cell),
                          rf.fmt(f.period_mean, f.unit, d), f"{z:+.2f} σ", Paragraph(_status_text(f, z), S.cell)])
         story.append(_table(rows, [1.4 * inch, 1.3 * inch, 1.2 * inch, 0.7 * inch, 2.1 * inch], S))
 
         story.append(CondPageBreak(3 * inch))
-        story.append(Paragraph(f"10.4 Prakiraan {h} Hari ke Depan", S.sub))
-        rows = [["Variabel", "Prakiraan rata-rata", "Rentang 80% (akhir horizon)", "Arah", "Keyakinan"]]
+        story.append(Paragraph(f"10.4 {h}-Day Forecast", S.sub))
+        rows = [["Variable", "Mean forecast", "80% range (end of horizon)", "Direction", "Confidence"]]
         for f in fcs:
             d = 3 if not f.unit else 2
             label_mean = rf.fmt(f.forecast_mean, f.unit, d) + (" (median)" if f.key == "rain" else "")
             rows.append([f.label, label_mean, f"{rf.fmt(f.lo80[-1], '', d)} – {rf.fmt(f.hi80[-1], f.unit, d)}",
-                         {"naik": "↑ naik", "turun": "↓ turun", "stabil": "→ stabil"}[f.direction], f.confidence])
+                         {"up": "↑ up", "down": "↓ down", "stable": "→ stable"}[f.direction], f.confidence])
         story.append(_table(rows, [1.6 * inch, 1.5 * inch, 1.7 * inch, 0.8 * inch, 0.9 * inch], S))
         for f in fcs:
             for n in f.notes:
@@ -1610,42 +1613,42 @@ class ReportGenerator:
         flood = rf.flood_scenario(st, rain_fc)
         if rain or flood:
             story.append(CondPageBreak(2.5 * inch))
-            story.append(Paragraph("10.5 Prospek Hujan &amp; Risiko Genangan", S.sub))
+            story.append(Paragraph("10.5 Rainfall Outlook &amp; Inundation Risk", S.sub))
         if rain:
             lines = [
-                f"Peluang hari hujan (≥0,1 mm) di periode dataset: {rain['p_rain_day'] * 100:.0f}%; hari hujan lebat "
-                f"(≥{rain['heavy_threshold_mm']:.0f} mm): {rain['p_heavy_day'] * 100:.1f}% dari hari.",
-                f"Dalam {h} hari ke depan, bila pola periode ini berlanjut: rata-rata ±{rain['expected_heavy_days']:.1f} hari "
-                f"hujan lebat; peluang minimal satu kejadian {rain['p_at_least_one_heavy'] * 100:.0f}%.",
+                f"Probability of a rainy day (≥0.1 mm) in the dataset period: {rain['p_rain_day'] * 100:.0f}%; heavy-rain days "
+                f"(≥{rain['heavy_threshold_mm']:.0f} mm): {rain['p_heavy_day'] * 100:.1f}% of days.",
+                f"Over the next {h} days, if this period's pattern continues: on average ≈{rain['expected_heavy_days']:.1f} "
+                f"heavy-rain days; probability of at least one event {rain['p_at_least_one_heavy'] * 100:.0f}%.",
             ]
             if "total_p50" in rain:
-                lines.append(f"Akumulasi hujan {h} hari: median {rain['total_p50']:.0f} mm (rentang wajar p10–p90: "
-                             f"{rain['total_p10']:.0f}–{rain['total_p90']:.0f} mm), dari {rain['windows']} jendela {h}-hari "
-                             "bergulir dalam periode dataset.")
+                lines.append(f"{h}-day rainfall accumulation: median {rain['total_p50']:.0f} mm (plausible p10–p90 range: "
+                             f"{rain['total_p10']:.0f}–{rain['total_p90']:.0f} mm), from {rain['windows']} rolling {h}-day "
+                             "windows within the dataset period.")
             for line in lines:
                 story.append(Paragraph(f"• {line}", S.bullet))
         if flood:
             if flood.get("usable"):
                 story.append(Paragraph(
-                    f"• Skenario genangan: hubungan % banjir MODIS terhadap hujan 7 hari (r = {flood['r']:.2f}, n = {flood['n']} "
-                    f"hari cerah) memberi ±{flood['slope']:.3f} % piksel banjir per mm. Dengan hujan 7-hari prakiraan "
-                    f"±{flood['rain7_forecast']:.0f} mm (terkini {flood['rain7_recent']:.0f} mm), luas banjir diperkirakan "
-                    f"<b>{flood['flood_forecast']:.2f}%</b> piksel (rentang 80%: {flood['flood_lo']:.2f}–{flood['flood_hi']:.2f}%), "
-                    f"dibanding {flood['flood_recent_model']:.2f}% pada kondisi hujan terkini.", S.bullet))
+                    f"• Inundation scenario: the relationship of MODIS flood % to 7-day rainfall (r = {flood['r']:.2f}, n = {flood['n']} "
+                    f"clear days) gives ≈{flood['slope']:.3f} % flood pixels per mm. With a forecast 7-day rainfall of "
+                    f"≈{flood['rain7_forecast']:.0f} mm (recent {flood['rain7_recent']:.0f} mm), the flood extent is expected to be "
+                    f"<b>{flood['flood_forecast']:.2f}%</b> of pixels (80% range: {flood['flood_lo']:.2f}–{flood['flood_hi']:.2f}%), "
+                    f"compared with {flood['flood_recent_model']:.2f}% under recent rainfall conditions.", S.bullet))
             else:
                 story.append(Paragraph(
-                    f"• Hubungan hujan 7 hari dengan luas banjir MODIS lemah (r = {rf.fmt(flood.get('r'), '', 2)}), "
-                    "sehingga skenario genangan berbasis hujan tidak disajikan.", S.bullet))
+                    f"• The relationship between 7-day rainfall and MODIS flood extent is weak (r = {rf.fmt(flood.get('r'), '', 2)}), "
+                    "so a rain-based inundation scenario is not presented.", S.bullet))
 
         story.append(CondPageBreak(3 * inch))
-        story.append(Paragraph("10.6 Kesimpulan", S.sub))
+        story.append(Paragraph("10.6 Conclusions", S.sub))
         for i, (title, text) in enumerate(_outlook_conclusions(ctx, h, rain, flood), 1):
             story.append(Paragraph(f"<b>{i}. {title}</b> — {text}", S.bullet))
         story.append(Paragraph(
-            "Catatan: prakiraan ini adalah ekstrapolasi statistik dari data satu dataset, bukan model cuaca/hidrologi. "
-            "Ia menjawab &ldquo;jika pola periode ini berlanjut, kira-kira seperti apa&rdquo;, dan tidak dapat "
-            "mengantisipasi perubahan musim atau kejadian di luar pola historis. Untuk keputusan operasional gunakan "
-            "prakiraan resmi (mis. BMKG) sebagai acuan utama.", S.note))
+            "Note: this forecast is a statistical extrapolation of a single dataset's data, not a weather/hydrological "
+            "model. It answers &ldquo;if this period's pattern continues, roughly what would it look like&rdquo;, and "
+            "cannot anticipate seasonal changes or events outside the historical pattern. For operational decisions use "
+            "official forecasts (e.g. BMKG) as the primary reference.", S.note))
         story.extend(_section_break())
 
     # -- Section 11 -----------------------------------------------------------
@@ -1654,14 +1657,14 @@ class ReportGenerator:
         story.append(Paragraph("11. JSON Summary &amp; Machine-Readable Export", S.section))
         story.append(Paragraph("11.1 Complete Metadata JSON", S.sub))
         story.append(Paragraph(
-            "JSON berikut juga disimpan sebagai file terpisah di samping PDF ini (nama sama, ekstensi .json) dan "
-            "tersedia lewat <i>GET /api/datasets/{id}/report/json</i>. Nilai <i>null</i> berarti besaran tersebut "
-            "tidak diukur oleh pipeline (lihat catatan di section terkait).", S.body))
+            "The following JSON is also saved as a separate file next to this PDF (same name, .json extension) and "
+            "is available via <i>GET /api/datasets/{id}/report/json</i>. A <i>null</i> value means that quantity "
+            "was not measured by the pipeline (see the notes in the relevant section).", S.body))
         payload = _json_summary(ctx)
         # Versi PDF diringkas: rincian yang sudah tampil sebagai tabel di section lain
         # (storage, quality, processing_levels, rekomendasi, detail backtest) hanya
         # dirujuk. File .json di samping PDF memuat versi lengkapnya.
-        full = "<lihat file .json>"
+        full = "<see the .json file>"
         for key in ("storage", "quality", "processing_levels", "recommendations"):
             payload[key] = full
         if payload.get("forecast"):
@@ -1683,7 +1686,7 @@ class ReportGenerator:
         day = imgs[0][0].stem.split("_", 1)[0]
         colored = "grayscale" not in imgs[0][0].parent.name
         story.append(CondPageBreak(3.2 * inch))
-        story.append(Paragraph(f"Contoh Preview{' Berwarna' if colored else ''} — {day[:4]}-{day[4:6]}-{day[6:]}", S.sub2))
+        story.append(Paragraph(f"Example Preview{' (Coloured)' if colored else ''} — {day[:4]}-{day[4:6]}-{day[6:]}", S.sub2))
         # grid 3 kolom: gambar di atas, label band di bawahnya
         per_row, size = 3, 2.05 * inch
         cells = []
@@ -1707,27 +1710,27 @@ class ReportGenerator:
 _PREVIEW_BAND_LABELS = {
     "s1_vv": "Sentinel-1 VV", "s1_vh": "Sentinel-1 VH",
     "modis_flood": "MODIS Flood (MCDWD)", "modis_ndvi": "MODIS NDVI", "modis_ndwi": "MODIS NDWI",
-    "gpm_rain_24h": "GPM hujan 24 jam", "gpm_rain_72h": "GPM hujan 72 jam", "gpm_rain_7d": "GPM hujan 7 hari",
+    "gpm_rain_24h": "GPM rain 24 h", "gpm_rain_72h": "GPM rain 72 h", "gpm_rain_7d": "GPM rain 7 days",
 }
 
 _PREVIEW_LEGENDS = {
-    "SENTINEL1": "Skala warna backscatter: ungu gelap = rendah (air tenang, specular), kuning = tinggi "
-                 "(permukaan kasar/vegetasi, bangunan).",
-    "MODIS": "Flood: abu-abu = tanpa air, biru = air permanen, oranye = banjir musiman, merah = banjir tidak biasa, "
-             "transparan = data tidak cukup (awan). NDVI (RdYlGn, −0.2…0.8): merah = air/lahan terbangun, hijau = "
-             "vegetasi. NDWI (BrBG, −0.5…0.5): cokelat = kering, biru-hijau = air. Overlay = layer MODIS di atas "
-             "backscatter S1 pada grid fusi.",
-    "GPM": "Skala YlGnBu mulai dari 0 mm: makin biru tua makin tinggi curah hujan (batas atas persentil 98 per "
-           "berkas). Piksel besar mencerminkan resolusi IMERG 0.1° (±11 km); overlay = curah hujan di atas "
-           "backscatter S1.",
+    "SENTINEL1": "Backscatter colour scale: dark purple = low (calm water, specular), yellow = high "
+                 "(rough surfaces/vegetation, buildings).",
+    "MODIS": "Flood: grey = no water, blue = permanent water, orange = seasonal flood, red = unusual flood, "
+             "transparent = insufficient data (clouds). NDVI (RdYlGn, −0.2…0.8): red = water/built-up land, green = "
+             "vegetation. NDWI (BrBG, −0.5…0.5): brown = dry, blue-green = water. Overlay = MODIS layer over "
+             "S1 backscatter on the fusion grid.",
+    "GPM": "YlGnBu scale starting at 0 mm: the darker the blue, the higher the rainfall (upper bound at the 98th "
+           "percentile per file). Large pixels reflect the IMERG 0.1° resolution (~11 km); overlay = rainfall over "
+           "S1 backscatter.",
 }
 
 
 def _preview_label(rest: str, kind: str) -> str:
-    """'modis_flood_on_s1' -> 'MODIS Flood (MCDWD) — overlay di S1'."""
+    """'modis_flood_on_s1' -> 'MODIS Flood (MCDWD) — overlay on S1'."""
     base = rest.removesuffix("_on_s1")
     label = _PREVIEW_BAND_LABELS.get(base, base.replace("_", " ").upper())
-    return f"{label} — overlay di S1" if rest.endswith("_on_s1") or kind == "composite" else label
+    return f"{label} — overlay on S1" if rest.endswith("_on_s1") or kind == "composite" else label
 
 
 def _preview_date_score(st, source: str, day: str) -> float:
@@ -1750,41 +1753,41 @@ def _preview_date_score(st, source: str, day: str) -> float:
 
 _FUSION_PSEUDOCODE = """\
 def build_fusion_stacks(dataset, strategy="{strategy}", tol_days={tol}):
-    # Sumbu 1 (UNDUH): tanggal MODIS/GPM yang diambil dari NASA
+    # Axis 1 (DOWNLOAD): MODIS/GPM dates fetched from NASA
     aux_days = s1_dates if strategy == "CO_OCCURRENCE" else every_day(period)
-    # Sumbu 2 (RAKIT): tanggal yang jadi satu berkas HDF5
+    # Axis 2 (ASSEMBLE): dates that become one HDF5 file
     stack_days = every_day(period) if strategy == "FULL_COVERAGE" else s1_dates
 
     for day in stack_days:
         s1 = s1_scene_on(day)
-        if s1 is None:                         # hanya terjadi di FULL_COVERAGE
-            s1 = nearest_s1(day, max_offset=tol_days)     # boleh pinjam ±tol
-        modis = daily_file("MODIS", day)       # NDVI, NDWI, FLOOD (reproject ke grid S1)
-        gpm   = daily_file("GPM", day)         # RAIN_24H/72H/7D   (reproject ke grid S1)
+        if s1 is None:                         # only happens in FULL_COVERAGE
+            s1 = nearest_s1(day, max_offset=tol_days)     # may borrow ±tol
+        modis = daily_file("MODIS", day)       # NDVI, NDWI, FLOOD (reprojected to the S1 grid)
+        gpm   = daily_file("GPM", day)         # RAIN_24H/72H/7D   (reprojected to the S1 grid)
 
         stack = HDF5(grid=pinned_dataset_grid)
-        stack["sentinel1"] = s1.bands if s1 else NaN     # tidak diinterpolasi
+        stack["sentinel1"] = s1.bands if s1 else NaN     # not interpolated
         stack["modis"]     = modis     if modis else NaN
         stack["gpm"]       = gpm       if gpm   else NaN
         record = fusion_products(day, s1_offset_days=offset(s1, day),
                                  temporal_offset_modis=0, temporal_offset_gpm=0)
-        n = count_present(s1, modis, gpm)       # 3 = lengkap, 2 = parsial, 1 = tunggal"""
+        n = count_present(s1, modis, gpm)       # 3 = complete, 2 = partial, 1 = single"""
 
 
-_DIR_WORD = {"naik": "meningkat", "turun": "menurun", "stabil": "relatif stabil"}
+_DIR_WORD = {"up": "increasing", "down": "decreasing", "stable": "relatively stable"}
 
 
 def _status_text(f, z: float) -> str:
-    level = ("jauh di atas" if z > 1 else "di atas" if z > 0.25 else
-             "jauh di bawah" if z < -1 else "di bawah" if z < -0.25 else "mendekati")
+    level = ("far above" if z > 1 else "above" if z > 0.25 else
+             "far below" if z < -1 else "below" if z < -0.25 else "near")
     meaning = {
-        "vv": "permukaan lebih basah/kasar", "vh": "hamburan volume (vegetasi) lebih tinggi",
-        "ndvi": "vegetasi lebih hijau", "ndwi": "permukaan lebih basah", "flood": "genangan lebih luas",
-        "rain": "periode lebih basah",
+        "vv": "wetter/rougher surface", "vh": "higher volume scattering (vegetation)",
+        "ndvi": "greener vegetation", "ndwi": "wetter surface", "flood": "wider inundation",
+        "rain": "wetter period",
     }[f.key]
-    if level == "mendekati":
-        return "mendekati rata-rata periode (normal)"
-    return f"{level} rata-rata" + (f"; {meaning}" if "atas" in level else "")
+    if level == "near":
+        return "near the period mean (normal)"
+    return f"{level} the mean" + (f"; {meaning}" if "above" in level else "")
 
 
 def _outlook_conclusions(ctx, h: int, rain: dict | None, flood: dict | None) -> list[tuple[str, str]]:
@@ -1803,77 +1806,77 @@ def _outlook_conclusions(ctx, h: int, rain: dict | None, flood: dict | None) -> 
         f = by.get(key)
         if f:
             zz = z(f)
-            word = "di atas" if zz > 0.25 else "di bawah" if zz < -0.25 else "mendekati"
-            parts.append(f"{f.label.lower()} {word} rata-rata ({zz:+.1f}σ)")
+            word = "above" if zz > 0.25 else "below" if zz < -0.25 else "near"
+            parts.append(f"{f.label.lower()} {word} the mean ({zz:+.1f}σ)")
     if parts:
-        out.append((f"KONDISI AKHIR PERIODE (s/d {end})", "; ".join(parts) + "."))
+        out.append((f"END-OF-PERIOD CONDITIONS (to {end})", "; ".join(parts) + "."))
 
     rain_f = by.get("rain")
     if rain_f:
-        txt = (f"Curah hujan diperkirakan {_DIR_WORD[rain_f.direction]} (median ±{rain_f.forecast_mean:.1f} mm/hari vs "
-               f"{rain_f.recent_mean:.1f} mm/hari terkini; keyakinan {rain_f.confidence.lower()}).")
+        txt = (f"Rainfall is expected to be {_DIR_WORD[rain_f.direction]} (median ±{rain_f.forecast_mean:.1f} mm/day vs "
+               f"{rain_f.recent_mean:.1f} mm/day recently; confidence {rain_f.confidence.lower()}).")
         if rain and "total_p50" in rain:
-            txt += f" Akumulasi {h} hari yang wajar: {rain['total_p10']:.0f}–{rain['total_p90']:.0f} mm."
+            txt += f" Plausible {h}-day accumulation: {rain['total_p10']:.0f}–{rain['total_p90']:.0f} mm."
         if rain:
-            txt += f" Peluang ≥1 hari hujan lebat: {rain['p_at_least_one_heavy'] * 100:.0f}%."
-        out.append((f"PROSPEK HUJAN s/d {horizon_end}", txt))
+            txt += f" Probability of ≥1 heavy-rain day: {rain['p_at_least_one_heavy'] * 100:.0f}%."
+        out.append((f"RAINFALL OUTLOOK to {horizon_end}", txt))
 
     ff = by.get("flood")
     usable = bool(flood and flood.get("usable"))
     if ff or usable:
         signals = []
         if ff:
-            signals.append(f"deret banjir MODIS {_DIR_WORD[ff.direction]} (±{ff.forecast_mean:.2f}% piksel, keyakinan "
+            signals.append(f"MODIS flood series {_DIR_WORD[ff.direction]} (±{ff.forecast_mean:.2f}% of pixels, confidence "
                            f"{ff.confidence.lower()})")
         if usable:
             delta = flood["flood_forecast"] - flood["flood_recent_model"]
-            signals.append(f"skenario berbasis hujan {flood['flood_forecast']:.2f}% ({delta:+.2f} poin vs kondisi hujan terkini)")
-        ups = int(ff is not None and ff.direction == "naik") + int(
+            signals.append(f"rain-based scenario {flood['flood_forecast']:.2f}% ({delta:+.2f} points vs current rainfall conditions)")
+        ups = int(ff is not None and ff.direction == "up") + int(
             usable and flood["flood_forecast"] > flood["flood_recent_model"] + 0.25)
-        downs = int(ff is not None and ff.direction == "turun") + int(
+        downs = int(ff is not None and ff.direction == "down") + int(
             usable and flood["flood_forecast"] < flood["flood_recent_model"] - 0.25)
-        verdict = "MENINGKAT" if ups > downs else "MENURUN" if downs > ups else "TETAP"
-        out.append((f"RISIKO GENANGAN: {verdict}", "; ".join(signals) + "."))
+        verdict = "INCREASING" if ups > downs else "DECREASING" if downs > ups else "UNCHANGED"
+        out.append((f"INUNDATION RISK: {verdict}", "; ".join(signals) + "."))
 
     surf = [by[k] for k in ("ndvi", "ndwi", "vv", "vh") if k in by]
     if surf:
-        out.append(("PERMUKAAN &amp; VEGETASI",
+        out.append(("SURFACE &amp; VEGETATION",
                     "; ".join(f"{f.label} {_DIR_WORD[f.direction]} ({rf.fmt(f.forecast_mean, f.unit, 3 if not f.unit else 2)}, "
-                              f"keyakinan {f.confidence.lower()})" for f in surf) + "."))
+                              f"confidence {f.confidence.lower()})" for f in surf) + "."))
 
-    conf = {c: [f.label for f in ctx.forecasts if f.confidence == c] for c in ("Tinggi", "Sedang", "Rendah")}
+    conf = {c: [f.label for f in ctx.forecasts if f.confidence == c] for c in ("High", "Medium", "Low")}
     txt = "; ".join(f"{c.lower()}: {', '.join(v)}" for c, v in conf.items() if v)
-    weak = conf["Rendah"]
-    out.append(("TINGKAT KEPERCAYAAN",
-                f"Keyakinan {txt}."
-                + (f" Untuk {', '.join(weak)} prakiraan tidak lebih baik dari asumsi kondisi terakhir berlanjut — "
-                   "perlakukan sebagai indikasi saja." if weak else "")
-                + f" Horizon {h} hari (sepertiga periode) menjaga ekstrapolasi tetap dekat dengan data yang teramati."))
+    weak = conf["Low"]
+    out.append(("CONFIDENCE LEVEL",
+                f"Confidence {txt}."
+                + (f" For {', '.join(weak)} the forecast is no better than assuming the latest condition continues — "
+                   "treat it as an indication only." if weak else "")
+                + f" A {h}-day horizon (one third of the period) keeps the extrapolation close to the observed data."))
     return out
 
 
 def _executive_summary(ctx) -> list[str]:
     ds, st = ctx.dataset, ctx.stats
-    src_txt = ", ".join(_SOURCE_LABEL.get(s, s) for s in sorted(ds.get("sources", {}))) or "belum ada source"
-    location = ds.get("location_label") or "wilayah yang dikonfigurasi"
+    src_txt = ", ".join(_SOURCE_LABEL.get(s, s) for s in sorted(ds.get("sources", {}))) or "no"
+    location = ds.get("location_label") or "the configured region"
     paras = [
-        f"Dataset <b>{_e(ds['name'])}</b> menggabungkan data {src_txt} atas {_e(location)} dari "
-        f"{ds.get('date_start')} hingga {ds.get('date_end')} ({st.period_days} hari). Pipeline mencatat "
-        f"{ds.get('total_scenes', 0)} scene ({ds.get('completed_scenes', 0)} selesai) dan menghasilkan "
-        f"{len(st.fusion)} fusion stack dengan strategi {ds.get('fusion_strategy') or '-'}.",
+        f"The dataset <b>{_e(ds['name'])}</b> combines {src_txt} data over {_e(location)} from "
+        f"{ds.get('date_start')} to {ds.get('date_end')} ({st.period_days} days). The pipeline recorded "
+        f"{ds.get('total_scenes', 0)} scenes ({ds.get('completed_scenes', 0)} completed) and produced "
+        f"{len(st.fusion)} fusion stacks with the {ds.get('fusion_strategy') or '-'} strategy.",
     ]
     facts = []
     vv = [m["mean_db"] for m in st.s1_metrics if m["band"] == "VV" and m["mean_db"] is not None and _ok(m)]
     if vv:
-        facts.append(f"backscatter VV rata-rata {mean(vv):.2f} dB (scene PASS)")
+        facts.append(f"mean VV backscatter {mean(vv):.2f} dB (PASS scenes)")
     ndvi = [o.mean for o in st.raster_band("MODIS", "NDVI") if o.mean is not None]
     if ndvi:
-        facts.append(f"NDVI rata-rata {mean(ndvi):.3f}")
+        facts.append(f"mean NDVI {mean(ndvi):.3f}")
     rain = [o.mean for o in st.raster_band("GPM", "RAIN_24H") if o.mean is not None]
     if rain:
-        facts.append(f"curah hujan rata-rata {mean(rain):.2f} mm/hari dengan total {sum(rain):.0f} mm")
+        facts.append(f"mean rainfall {mean(rain):.2f} mm/day with a total of {sum(rain):.0f} mm")
     if facts:
-        paras.append("Ringkasan geofisik: " + "; ".join(facts) + ".")
+        paras.append("Geophysical summary: " + "; ".join(facts) + ".")
     overall = ctx.scores.get("Overall Data Health")
     n_issue = {s: sum(1 for i in ctx.issues if i["severity"] == s) for s in ("HIGH", "MEDIUM", "LOW")}
     if ctx.forecasts and st.period_end:
@@ -1881,11 +1884,11 @@ def _executive_summary(ctx) -> list[str]:
         dirs = "; ".join(f"{f.label.lower()} {_DIR_WORD[f.direction]}" for f in ctx.forecasts
                          if f.key in ("rain", "flood", "ndwi"))
         if dirs:
-            paras.append(f"Prakiraan {h} hari ke depan (s/d {st.period_end + timedelta(days=h)}): {dirs} — rincian dan "
-                         "tingkat keyakinannya di Section 10.")
+            paras.append(f"Forecast for the next {h} days (to {st.period_end + timedelta(days=h)}): {dirs} — details and "
+                         "confidence levels in Section 10.")
     paras.append(
-        f"Skor kesehatan data keseluruhan {_n(overall, 0, '/100')} ({_health_label(overall or 0)}). Pemeriksaan otomatis "
-        f"menemukan {n_issue['HIGH']} isu HIGH, {n_issue['MEDIUM']} MEDIUM dan {n_issue['LOW']} LOW — rinciannya di Section 9."
+        f"The overall data health score is {_n(overall, 0, '/100')} ({_health_label(overall or 0)}). The automated checks "
+        f"found {n_issue['HIGH']} HIGH, {n_issue['MEDIUM']} MEDIUM and {n_issue['LOW']} LOW issues — details in Section 9."
     )
     return paras
 
@@ -1894,33 +1897,33 @@ def _source_spec_rows(ctx, src, levels) -> list[tuple[str, str]]:
     st = ctx.stats
     rows = [("Enabled", "Yes"), ("Processing levels", ", ".join(levels) or "-")]
     tiers = st.tiers.get(src, [])
-    rows.append(("Tier di dataset", " → ".join(t["tier"] for t in tiers) or "-"))
-    rows.append(("Records in dataset (semua tier)", str(sum(t["files"] for t in tiers))))
+    rows.append(("Tiers in dataset", " → ".join(t["tier"] for t in tiers) or "-"))
+    rows.append(("Records in dataset (all tiers)", str(sum(t["files"] for t in tiers))))
     if src == "SENTINEL1":
         orbit = {o["orbit"]: o["scenes"] for o in st.s1_orbit}
         bands = sorted({m["band"] for m in st.s1_metrics})
         inc = [(o["inc_near"], o["inc_far"]) for o in st.s1_orbit if o["inc_near"] is not None]
         rows += [
-            ("Mode / polarisasi", f"IW, {' + '.join(bands) or 'VV + VH'} ({'dual-pol' if len(bands) == 2 else 'single-pol'})"),
+            ("Mode / polarisation", f"IW, {' + '.join(bands) or 'VV + VH'} ({'dual-pol' if len(bands) == 2 else 'single-pol'})"),
             ("Ascending passes", str(orbit.get("ASCENDING", 0))),
             ("Descending passes", str(orbit.get("DESCENDING", 0))),
-            ("Incidence angle", f"{min(a for a, _ in inc):.1f}° – {max(b for _, b in inc):.1f}°" if inc else "tidak tercatat di satellite_scenes"),
-            ("Resolusi spasial", "10 m (GRD IW)"),
-            ("Tanggal akuisisi unik", f"{len(st.obs_dates.get(src, []))} (revisit rata-rata {_n(st.revisit_days(src), 1, ' hari')})"),
+            ("Incidence angle", f"{min(a for a, _ in inc):.1f}° – {max(b for _, b in inc):.1f}°" if inc else "not recorded in satellite_scenes"),
+            ("Spatial resolution", "10 m (GRD IW)"),
+            ("Unique acquisition dates", f"{len(st.obs_dates.get(src, []))} (average revisit {_n(st.revisit_days(src), 1, ' days')})"),
         ]
     elif src == "MODIS":
         rows += [
-            ("Produk", ", ".join(st.nasa_products.get("MODIS", [])) or "MCDWD_L3_F2_NRT"),
-            ("Band", ", ".join(sorted(st.raster.get("MODIS", {}))) or "-"),
-            ("Hari observasi", f"{len(st.obs_dates.get(src, []))} ({_n(st.completeness(src), 1, '%')} periode)"),
-            ("Piksel valid rata-rata", _n(_mean_valid(st, "MODIS"), 1, "%")),
+            ("Product", ", ".join(st.nasa_products.get("MODIS", [])) or "MCDWD_L3_F2_NRT"),
+            ("Bands", ", ".join(sorted(st.raster.get("MODIS", {}))) or "-"),
+            ("Observation days", f"{len(st.obs_dates.get(src, []))} ({_n(st.completeness(src), 1, '%')} of the period)"),
+            ("Mean valid pixels", _n(_mean_valid(st, "MODIS"), 1, "%")),
         ]
     elif src == "GPM":
         rows += [
-            ("Produk", ", ".join(st.nasa_products.get("GPM", [])) or "GPM_3IMERGDF"),
-            ("Band", ", ".join(sorted(st.raster.get("GPM", {}))) or "-"),
-            ("Hari observasi", f"{len(st.obs_dates.get(src, []))} ({_n(st.completeness(src), 1, '%')} periode)"),
-            ("Resolusi", "0.1° harian"),
+            ("Product", ", ".join(st.nasa_products.get("GPM", [])) or "GPM_3IMERGDF"),
+            ("Bands", ", ".join(sorted(st.raster.get("GPM", {}))) or "-"),
+            ("Observation days", f"{len(st.obs_dates.get(src, []))} ({_n(st.completeness(src), 1, '%')} of the period)"),
+            ("Resolution", "0.1° daily"),
         ]
     return rows
 
@@ -1932,41 +1935,41 @@ def _validation_checks(ctx) -> list[tuple[bool | None, str, str]]:
     if bounds:
         w, s, e, n = bounds
         ok = -180 <= w < e <= 180 and -90 <= s < n <= 90
-        checks.append((ok, "Geolocation bounds check", f"bbox {w:.3f},{s:.3f},{e:.3f},{n:.3f} valid EPSG:4326" if ok else "bbox tidak valid"))
+        checks.append((ok, "Geolocation bounds check", f"bbox {w:.3f},{s:.3f},{e:.3f},{n:.3f} valid EPSG:4326" if ok else "invalid bbox"))
     out_of_period = [d for src in st.obs_dates for d in st.obs_dates[src]
                      if st.period_start and (d < st.period_start or d > st.period_end)]
     checks.append((not out_of_period, "Temporal range check",
-                   "semua observasi di dalam periode" if not out_of_period else f"{len(out_of_period)} observasi di luar periode"))
+                   "all observations are within the period" if not out_of_period else f"{len(out_of_period)} observations outside the period"))
     big_gaps = {src: st.gaps(src) for src in ("SENTINEL1", "MODIS", "GPM") if src in ds.get("sources", {})}
     n_gaps = sum(len(g) for g in big_gaps.values())
     checks.append((True if n_gaps == 0 else None, "Temporal continuity",
-                   "tidak ada celah >10 hari" if n_gaps == 0 else
-                   ", ".join(f"{_SOURCE_LABEL[s]}: {len(g)} celah" for s, g in big_gaps.items() if g)))
+                   "no gaps >10 days" if n_gaps == 0 else
+                   ", ".join(f"{_SOURCE_LABEL[s]}: {len(g)} gap(s)" for s, g in big_gaps.items() if g)))
     invalid = sum(t["invalid"] for items in st.tiers.values() for t in items)
-    checks.append((invalid == 0, "Metadata completeness / validity", f"{invalid} produk ditandai is_valid = false"))
+    checks.append((invalid == 0, "Metadata completeness / validity", f"{invalid} products flagged is_valid = false"))
     lin = [m for m in st.s1_metrics if m["linear"]]
-    checks.append((not lin if st.s1_metrics else None, "Unit check (S1 backscatter dalam dB)",
-                   f"{len(lin)} produk tampak bersatuan linear (min ≥ 0, mean > −1)" if lin else
-                   ("semua produk bersatuan dB" if st.s1_metrics else "tidak ada metrik S1")))
+    checks.append((not lin if st.s1_metrics else None, "Unit check (S1 backscatter in dB)",
+                   f"{len(lin)} products appear to be in linear units (min ≥ 0, mean > −1)" if lin else
+                   ("all products are in dB units" if st.s1_metrics else "no S1 metrics")))
     s1_bad = [m for m in st.s1_metrics if _db(m) and not (-40 <= m["mean_db"] <= 5)]
     checks.append((not s1_bad if st.s1_metrics else None, "Radiometric range check (S1, −40…+5 dB)",
-                   f"{len(s1_bad)} produk di luar rentang" if st.s1_metrics else "tidak ada metrik S1"))
+                   f"{len(s1_bad)} products out of range" if st.s1_metrics else "no S1 metrics"))
     ndvi_bad = [o for o in st.raster_band("MODIS", "NDVI") if o.min is not None and (o.min < -1.0001 or o.max > 1.0001)]
     if st.raster.get("MODIS"):
-        checks.append((not ndvi_bad, "Data type / range check (NDVI −1…1)", f"{len(ndvi_bad)} raster di luar rentang"))
+        checks.append((not ndvi_bad, "Data type / range check (NDVI −1…1)", f"{len(ndvi_bad)} rasters out of range"))
     rain_bad = [o for o in st.raster_band("GPM", "RAIN_24H") if o.min is not None and o.min < 0]
     if st.raster.get("GPM"):
-        checks.append((not rain_bad, "Physical range check (hujan ≥ 0)", f"{len(rain_bad)} raster bernilai negatif"))
+        checks.append((not rain_bad, "Physical range check (rain ≥ 0)", f"{len(rain_bad)} rasters with negative values"))
     return checks
 
 
 def _ascii_flow(src, tiers, stage_by_name) -> str:
     desc = {
-        "SENTINEL1": {"RAW": "GRD mentah (download)", "ALIGNED": "kalibrasi σ0 + crop ke AOI",
+        "SENTINEL1": {"RAW": "raw GRD (download)", "ALIGNED": "σ0 calibration + crop to AOI",
                       "DESPECKLED": "Lee filter (speckle)", "COG": "Cloud-Optimized GeoTIFF"},
-        "MODIS": {"ALIGNED": "MCDWD harian, crop + reproject", "INDICES": "NDVI / NDWI / FLOOD",
+        "MODIS": {"ALIGNED": "daily MCDWD, crop + reproject", "INDICES": "NDVI / NDWI / FLOOD",
                   "COG": "Cloud-Optimized GeoTIFF"},
-        "GPM": {"ALIGNED": "IMERG harian, crop", "ACCUMULATED": "akumulasi 24 jam / 72 jam / 7 hari",
+        "GPM": {"ALIGNED": "daily IMERG, crop", "ACCUMULATED": "24 h / 72 h / 7-day accumulation",
                 "COG": "Cloud-Optimized GeoTIFF"},
     }[src]
     stage_for = {("SENTINEL1", "ALIGNED"): "CROP", ("SENTINEL1", "DESPECKLED"): "LEE_FILTER",
@@ -1981,12 +1984,12 @@ def _ascii_flow(src, tiers, stage_by_name) -> str:
             lines.append("    │")
             lines.append(f"    ↓  [{desc.get(t['tier'], t['tier'])}]")
             if stage and stage["avg_sec"] is not None:
-                lines.append(f"    ↓  [Waktu proses: {_fmt_sec(stage['avg_sec'])}/job rata-rata, {stage['jobs']} job]")
-            lines.append(f"    ↓  [Data loss: {loss:.1f}% tanggal | ukuran/file: {size:.0f}% dari tier sebelumnya]")
+                lines.append(f"    ↓  [Processing time: {_fmt_sec(stage['avg_sec'])}/job on average, {stage['jobs']} jobs]")
+            lines.append(f"    ↓  [Data loss: {loss:.1f}% of dates | size/file: {size:.0f}% of the previous tier]")
             lines.append("    │")
         label = f"{t['tier']} ({t['level']})"
         lines.append(f"┌{'─' * 64}┐")
-        lines.append(f"│ {label:<30}{t['files']:>6} file  {t['dates']:>4} tgl  {_fmt_mb(t['avg_mb']):>9} │")
+        lines.append(f"│ {label:<30}{t['files']:>6} files {t['dates']:>4} dates {_fmt_mb(t['avg_mb']):>9} │")
         lines.append(f"└{'─' * 64}┘")
         prev = t
     return "\n".join(lines)
@@ -1996,23 +1999,23 @@ def _ablation_narrative(src, tiers, stage_by_name, st) -> list[str]:
     out = []
     first, last = tiers[0], tiers[-1]
     if first["dates"]:
-        out.append(f"Retensi tanggal {first['tier']} → {last['tier']}: {last['dates']}/{first['dates']} "
+        out.append(f"Date retention {first['tier']} → {last['tier']}: {last['dates']}/{first['dates']} "
                    f"({last['dates'] / first['dates'] * 100:.1f}%).")
     if first["avg_mb"]:
-        out.append(f"Ukuran rata-rata per file turun dari {_fmt_mb(first['avg_mb'])} ke {_fmt_mb(last['avg_mb'])} "
-                   f"({(1 - last['avg_mb'] / first['avg_mb']) * 100:.1f}% lebih kecil); total {_fmt_mb(first['size_mb'])} → "
+        out.append(f"Average size per file fell from {_fmt_mb(first['avg_mb'])} to {_fmt_mb(last['avg_mb'])} "
+                   f"({(1 - last['avg_mb'] / first['avg_mb']) * 100:.1f}% smaller); total {_fmt_mb(first['size_mb'])} → "
                    f"{_fmt_mb(last['size_mb'])}.")
     if src == "SENTINEL1":
         crop, lee = stage_by_name.get("CROP"), stage_by_name.get("LEE_FILTER")
         if crop and lee and crop["avg_sec"] and lee["avg_sec"]:
-            out.append(f"Tahap termahal adalah kalibrasi + crop ({_fmt_sec(crop['avg_sec'])}/scene) dibanding Lee filter "
+            out.append(f"The most expensive stage is calibration + crop ({_fmt_sec(crop['avg_sec'])}/scene) compared with the Lee filter "
                        f"({_fmt_sec(lee['avg_sec'])}/scene).")
         pas = [m["speckle"] for m in st.s1_metrics if m["speckle"] is not None]
         if pas:
-            out.append(f"Speckle index rata-rata pada produk akhir {mean(pas):.3f}. Akurasi radiometrik/geometrik absolut "
-                       "(±dB, ±m) tidak diukur pipeline, jadi tidak dilaporkan sebagai angka perbaikan.")
+            out.append(f"Mean speckle index on the final product {mean(pas):.3f}. Absolute radiometric/geometric accuracy "
+                       "(±dB, ±m) is not measured by the pipeline, so it is not reported as an improvement figure.")
     invalid = sum(t["invalid"] for t in tiers)
-    out.append(f"Produk ditandai tidak valid di semua tier: {invalid}.")
+    out.append(f"Products flagged invalid across all tiers: {invalid}.")
     return out
 
 
@@ -2027,10 +2030,10 @@ def _case_studies(ctx) -> list[dict]:
     s1_scene_time = {s["date"]: s["datetime"] for s in st.s1_scenes if s["date"]}
 
     def source_rows(d, f):
-        rows = [["Source", "Tanggal / waktu", "Offset", "Ringkasan data", "Kualitas"]]
+        rows = [["Source", "Date / time", "Offset", "Data summary", "Quality"]]
         ms = s1_by_day.get(d, [])
         if f and f["s1_scene_id"] is None:
-            rows.append(["Sentinel-1", "—", "—", "tidak ada (NaN di stack)", "✗ absen"])
+            rows.append(["Sentinel-1", "—", "—", "none (NaN in the stack)", "✗ absent"])
         else:
             t = s1_scene_time.get(d)
             vvs = [m for m in ms if m["band"] == "VV"]
@@ -2038,15 +2041,15 @@ def _case_studies(ctx) -> list[dict]:
             summ = ", ".join(f"{b} {mean(x['mean_db'] for x in lst):.2f} dB" for b, lst in (("VV", vvs), ("VH", vhs)) if lst) or "—"
             q = ", ".join(sorted({m["flag"] for m in ms})) or "—"
             rows.append(["Sentinel-1", f"{t:%Y-%m-%d %H:%M} UTC" if t else str(d),
-                         f"{f['s1_offset_days']} hari" if f and f["s1_offset_days"] is not None else "0 hari",
+                         f"{f['s1_offset_days']} days" if f and f["s1_offset_days"] is not None else "0 days",
                          summ, ("✓ " if q == "PASS" else "⚠ ") + q])
-        for src, band, fmt in (("MODIS", "NDVI", "NDVI {:.3f}"), ("GPM", "RAIN_24H", "{:.2f} mm/hari")):
+        for src, band, fmt in (("MODIS", "NDVI", "NDVI {:.3f}"), ("GPM", "RAIN_24H", "{:.2f} mm/day")):
             o = raster_day(src, band, d)
             present = o is not None and (f is None or f[f"{src.lower()}_scene_id"] is not None)
             if not present:
-                rows.append([_SOURCE_LABEL[src], "—", "—", "tidak ada (NaN di stack)", "✗ absen"])
+                rows.append([_SOURCE_LABEL[src], "—", "—", "none (NaN in the stack)", "✗ absent"])
                 continue
-            rows.append([_SOURCE_LABEL[src], f"{d} (harian)", "0 hari", fmt.format(o.mean) if o.mean is not None else "—",
+            rows.append([_SOURCE_LABEL[src], f"{d} (daily)", "0 days", fmt.format(o.mean) if o.mean is not None else "—",
                          f"{'✓' if o.valid_frac >= .7 else '⚠'} valid {o.valid_frac * 100:.0f}%"])
         return rows
 
@@ -2076,27 +2079,27 @@ def _case_studies(ctx) -> list[dict]:
             return (passes, o.valid_frac if o else 0)
         f = max(complete, key=score)
         out.append({
-            "title": "Case Study 1: Optimal Alignment (ketiga source)",
-            "paras": [f"Tanggal <b>{f['date']}</b> (level {f['level']}) — stack lengkap dengan offset 0 hari untuk ketiga "
-                      "source dan cakupan MODIS terbaik di antara stack lengkap. Contoh ini dipilih otomatis dari "
+            "title": "Case Study 1: Optimal Alignment (all three sources)",
+            "paras": [f"Date <b>{f['date']}</b> (level {f['level']}) — a complete stack with a 0-day offset for all three "
+                      "sources and the best MODIS coverage among complete stacks. This example is chosen automatically from "
                       "<i>fusion_products</i>."],
             "rows": source_rows(f["date"], f), "widths": widths, "pre": "Fused record (fusion_products):\n" + record_json(f, f["date"]),
         })
     else:
-        out.append({"title": "Case Study 1: Optimal Alignment (ketiga source)",
-                    "paras": ["Tidak ada stack dengan ketiga source pada dataset ini."]})
+        out.append({"title": "Case Study 1: Optimal Alignment (all three sources)",
+                    "paras": ["There is no stack with all three sources in this dataset."]})
 
     # Case 2: parsial -- 2 source, atau S1 dipinjam; fallback: stack lengkap dengan MODIS paling tertutup awan
     partial = [f for f in st.fusion if f["n_sources"] == 2 or (f["s1_offset_days"] or 0) != 0]
     if partial:
         f = partial[0]
         missing = [n for n, k in (("Sentinel-1", "s1_scene_id"), ("MODIS", "modis_scene_id"), ("GPM", "gpm_scene_id")) if f[k] is None]
-        paras = [f"Tanggal <b>{f['date']}</b>: " + (f"source {', '.join(missing)} tidak tersedia. " if missing else "")
-                 + (f"Scene S1 dipinjam dari {abs(f['s1_offset_days'])} hari {'sebelum' if f['s1_offset_days'] < 0 else 'sesudah'}. "
+        paras = [f"Date <b>{f['date']}</b>: " + (f"source {', '.join(missing)} is not available. " if missing else "")
+                 + (f"The S1 scene was borrowed from {abs(f['s1_offset_days'])} days {'before' if f['s1_offset_days'] < 0 else 'after'}. "
                     if f["s1_offset_days"] else "")
-                 + "Pipeline tidak menginterpolasi; layer yang hilang ditulis NaN dan konsumen memakai "
-                   "<i>n_sources</i>/offset untuk menyaring."]
-        out.append({"title": "Case Study 2: Partial Alignment (2 dari 3)", "paras": paras,
+                 + "The pipeline does not interpolate; missing layers are written as NaN and consumers use "
+                   "<i>n_sources</i>/the offset to filter."]
+        out.append({"title": "Case Study 2: Partial Alignment (2 of 3)", "paras": paras,
                     "rows": source_rows(f["date"], f), "widths": widths, "pre": record_json(f, f["date"])})
     else:
         cloudy = []
@@ -2104,17 +2107,17 @@ def _case_studies(ctx) -> list[dict]:
             o = raster_day("MODIS", "FLOOD", f["date"])
             if o:
                 cloudy.append((o.valid_frac, f))
-        paras = ["Tidak ada stack yang kehilangan source atau meminjam scene S1 dari tanggal lain — seluruh stack "
-                 "lengkap secara struktural."]
+        paras = ["No stack lost a source or borrowed an S1 scene from another date — all stacks are "
+                 "structurally complete."]
         if cloudy:
             vf, f = min(cloudy, key=lambda x: x[0])
-            paras.append(f"Kasus parsial <i>efektif</i> terburuk: <b>{f['date']}</b> — MODIS hadir tetapi hanya "
-                         f"<b>{vf * 100:.0f}%</b> piksel FLOOD yang valid (sisanya tertutup awan). Untuk tanggal seperti ini "
-                         "informasi MODIS di stack hanya parsial walau record berlabel lengkap.")
-            out.append({"title": "Case Study 2: Partial Alignment (2 dari 3)", "paras": paras,
+            paras.append(f"The worst <i>effective</i> partial case: <b>{f['date']}</b> — MODIS is present but only "
+                         f"<b>{vf * 100:.0f}%</b> of FLOOD pixels are valid (the rest is cloud-covered). For dates like this "
+                         "the MODIS information in the stack is only partial even though the record is labelled complete.")
+            out.append({"title": "Case Study 2: Partial Alignment (2 of 3)", "paras": paras,
                         "rows": source_rows(f["date"], f), "widths": widths})
         else:
-            out.append({"title": "Case Study 2: Partial Alignment (2 dari 3)", "paras": paras})
+            out.append({"title": "Case Study 2: Partial Alignment (2 of 3)", "paras": paras})
 
     # Case 3: hari hanya auxiliary (tanpa S1 dan tanpa stack)
     fused_days = {f["date"] for f in st.fusion}
@@ -2130,23 +2133,23 @@ def _case_studies(ctx) -> list[dict]:
         after = min((s for s in s1_days if s > d), default=None)
         gap = dist(d)
         paras = [
-            f"Tanggal <b>{d}</b> memiliki data MODIS/GPM tetapi tidak ada scene Sentinel-1. S1 terdekat: "
-            f"{before or '—'} (sebelum) dan {after or '—'} (sesudah); jarak minimum <b>{gap} hari</b>.",
-            f"Dengan strategi {ds.get('fusion_strategy')}, tidak ada stack yang dirakit untuk tanggal ini. "
-            + (f"Di bawah FULL_COVERAGE hari ini akan mendapat S1 pinjaman (jarak {gap} ≤ toleransi {tol} hari)."
+            f"Date <b>{d}</b> has MODIS/GPM data but no Sentinel-1 scene. Nearest S1: "
+            f"{before or '—'} (before) and {after or '—'} (after); minimum distance <b>{gap} days</b>.",
+            f"With the {ds.get('fusion_strategy')} strategy, no stack is assembled for this date. "
+            + (f"Under FULL_COVERAGE this day would get a borrowed S1 (distance {gap} ≤ tolerance {tol} days)."
                if gap <= tol else
-               f"Bahkan di bawah FULL_COVERAGE layer S1 akan NaN karena jarak {gap} hari melebihi toleransi ±{tol} hari "
-               "(gap_fill tidak dilakukan)."),
-            f"Secara total ada {len(aux_days)} hari seperti ini dalam periode dataset.",
+               f"Even under FULL_COVERAGE the S1 layer would be NaN because the {gap}-day distance exceeds the ±{tol}-day "
+               "tolerance (no gap-fill is performed)."),
+            f"In total there are {len(aux_days)} such days in the dataset period.",
         ]
-        out.append({"title": "Case Study 3: Single Source (auxiliary saja) + Gap-Fill", "paras": paras,
+        out.append({"title": "Case Study 3: Single Source (auxiliary only) + Gap-Fill", "paras": paras,
                     "rows": source_rows(d, {"s1_scene_id": None, "modis_scene_id": 1 if raster_day("MODIS", "NDVI", d) else None,
                                             "gpm_scene_id": 1 if raster_day("GPM", "RAIN_24H", d) else None,
                                             "s1_offset_days": None}),
                     "widths": widths})
     else:
         out.append({"title": "Case Study 3: Single Source + Gap-Fill",
-                    "paras": ["Tidak ada hari yang hanya memiliki data auxiliary pada dataset ini."]})
+                    "paras": ["There are no days with only auxiliary data in this dataset."]})
     return out
 
 
@@ -2169,13 +2172,13 @@ def _trend_narrative(st, src) -> list[str]:
                 monthly.setdefault((d.year, d.month), []).append(x)
             mm = {k: mean(v) for k, v in monthly.items()}
             amp = max(mm.values()) - min(mm.values()) if len(mm) > 1 else None
-            out.append(f"<b>{band}</b> (hanya scene PASS) — " + "; ".join(seas) + ". "
-                       + (f"Amplitudo antar-bulan {amp:.2f} dB. " if amp is not None else "")
-                       + (f"Tren linier {slope:+.2f} dB/30 hari." if slope is not None else ""))
+            out.append(f"<b>{band}</b> (PASS scenes only) — " + "; ".join(seas) + ". "
+                       + (f"Month-to-month amplitude {amp:.2f} dB. " if amp is not None else "")
+                       + (f"Linear trend {slope:+.2f} dB/30 days." if slope is not None else ""))
         if out:
-            out.append("Interpretasi fisik: kenaikan backscatter umumnya mengikuti kelembapan tanah/tanaman yang lebih "
-                       "tinggi, sedangkan penurunan tajam pada VV dapat menandakan genangan air (pantulan specular). "
-                       "Periode data yang pendek membatasi pemisahan sinyal musiman dari variasi scene-ke-scene.")
+            out.append("Physical interpretation: an increase in backscatter usually follows higher soil/plant moisture, "
+                       "whereas a sharp drop in VV can indicate standing water (specular reflection). "
+                       "The short data period limits separating the seasonal signal from scene-to-scene variation.")
     elif src == "MODIS":
         for band in ("NDVI", "NDWI"):
             pts = [(o.day, o.mean) for o in st.raster_band("MODIS", band) if o.mean is not None and o.valid_frac >= .5]
@@ -2184,17 +2187,17 @@ def _trend_narrative(st, src) -> list[str]:
             slope = rs.linear_trend(pts)
             hi = max(pts, key=lambda p: p[1])
             lo = min(pts, key=lambda p: p[1])
-            out.append(f"<b>{band}</b> (hari dengan ≥50% piksel valid, n={len(pts)}) — rata-rata {mean(x for _, x in pts):.3f}, "
-                       f"tertinggi {hi[1]:.3f} ({hi[0]}), terendah {lo[1]:.3f} ({lo[0]})"
-                       + (f", tren {slope:+.4f}/30 hari." if slope is not None else "."))
+            out.append(f"<b>{band}</b> (days with ≥50% valid pixels, n={len(pts)}) — mean {mean(x for _, x in pts):.3f}, "
+                       f"highest {hi[1]:.3f} ({hi[0]}), lowest {lo[1]:.3f} ({lo[0]})"
+                       + (f", trend {slope:+.4f}/30 days." if slope is not None else "."))
     elif src == "GPM":
         vals = [(o.day, o.mean) for o in st.raster_band("GPM", "RAIN_24H") if o.mean is not None]
         if vals:
-            seas = [f"{r['label']}: {r['mean']:.2f} mm/hari" for r in st.seasonal_raster("GPM", "RAIN_24H") if r["n"] and r["mean"] is not None]
+            seas = [f"{r['label']}: {r['mean']:.2f} mm/day" for r in st.seasonal_raster("GPM", "RAIN_24H") if r["n"] and r["mean"] is not None]
             wet = sum(1 for _, v in vals if v >= rs.RAINY_THRESHOLD_MM)
             peak = max(vals, key=lambda p: p[1])
-            out.append(f"Rata-rata {mean(v for _, v in vals):.2f} mm/hari; {wet} dari {len(vals)} hari hujan. "
-                       f"Puncak {peak[1]:.1f} mm/hari pada {peak[0]}. Per musim — " + "; ".join(seas) + ".")
+            out.append(f"Mean {mean(v for _, v in vals):.2f} mm/day; {wet} of {len(vals)} days were rainy. "
+                       f"Peak {peak[1]:.1f} mm/day on {peak[0]}. Per season — " + "; ".join(seas) + ".")
     return out
 
 
@@ -2228,30 +2231,30 @@ def _key_findings(ctx, table) -> list[tuple[str, str]]:
         dry = min(rain_rows, key=lambda r: r["rain"])
         ratio = wet["rain"] / dry["rain"] if dry["rain"] else None
         strong = ratio is not None and ratio >= 3
-        out.append(("SINYAL MUSIMAN " + ("KUAT" if strong else "MODERAT"),
-                    f"Bulan terbasah {rs.MONTH_NAMES[wet['month']]} {wet['year']} ({wet['rain']:.2f} mm/hari) vs terkering "
-                    f"{rs.MONTH_NAMES[dry['month']]} {dry['year']} ({dry['rain']:.2f} mm/hari)"
-                    + (f", rasio {ratio:.1f}×." if ratio else ".")))
+        out.append(("SEASONAL SIGNAL " + ("STRONG" if strong else "MODERATE"),
+                    f"Wettest month {rs.MONTH_NAMES[wet['month']]} {wet['year']} ({wet['rain']:.2f} mm/day) vs driest "
+                    f"{rs.MONTH_NAMES[dry['month']]} {dry['year']} ({dry['rain']:.2f} mm/day)"
+                    + (f", ratio {ratio:.1f}×." if ratio else ".")))
     corr_vv_rain = _monthly_corr(table, "vv", "rain")
     corr_flood_rain = _monthly_corr(table, "flood", "rain")
     if corr_vv_rain is not None or corr_flood_rain is not None:
-        out.append(("KETERKAITAN ANTAR-SENSOR",
-                    f"Korelasi bulanan VV–hujan r={_n(corr_vv_rain, 2)}, banjir MODIS–hujan r={_n(corr_flood_rain, 2)} "
-                    f"(n={len(table)} bulan; indikatif karena n kecil)."))
+        out.append(("CROSS-SENSOR RELATIONSHIP",
+                    f"Monthly correlation VV–rain r={_n(corr_vv_rain, 2)}, MODIS flood–rain r={_n(corr_flood_rain, 2)} "
+                    f"(n={len(table)} months; indicative because n is small)."))
     span = st.period_days
-    out.append(("TIDAK CUKUP UNTUK TREN JANGKA PANJANG" if span < 730 else "PERIODE MEMADAI UNTUK TREN",
-                f"Periode {span} hari. Kemiringan linier yang dilaporkan di atas menggambarkan variasi intra-musim, bukan "
-                "tren iklim; minimal beberapa tahun data diperlukan untuk inferensi tren."))
+    out.append(("NOT ENOUGH FOR A LONG-TERM TREND" if span < 730 else "PERIOD ADEQUATE FOR TRENDS",
+                f"Period {span} days. The linear slopes reported above describe intra-seasonal variation, not "
+                "a climate trend; at least several years of data are needed to infer a trend."))
     comp = {s: st.completeness(s) for s in ("SENTINEL1", "MODIS", "GPM") if s in ds.get("sources", {})}
-    out.append(("KELENGKAPAN DATA",
-                ", ".join(f"{_SOURCE_LABEL[s]} {_n(v, 1, '%')} hari" for s, v in comp.items())
-                + f". Revisit S1 rata-rata {_n(st.revisit_days('SENTINEL1'), 1, ' hari')}; MODIS rata-rata "
-                  f"{_n(_mean_valid(st, 'MODIS'), 0, '%')} piksel valid per hari (awan)."))
+    out.append(("DATA COMPLETENESS",
+                ", ".join(f"{_SOURCE_LABEL[s]} {_n(v, 1, '%')} of days" for s, v in comp.items())
+                + f". Mean S1 revisit {_n(st.revisit_days('SENTINEL1'), 1, ' days')}; MODIS mean "
+                  f"{_n(_mean_valid(st, 'MODIS'), 0, '%')} valid pixels per day (clouds)."))
     if st.fusion:
         complete = sum(1 for f in st.fusion if f["n_sources"] == 3)
         out.append(("FUSION SUCCESS RATE",
-                    f"{complete}/{len(st.fusion)} stack lengkap tiga source ({complete / len(st.fusion) * 100:.0f}%), "
-                    f"seluruhnya dengan offset S1 {'0 hari' if not any(f['s1_offset_days'] for f in st.fusion) else 'bervariasi'}."))
+                    f"{complete}/{len(st.fusion)} stacks complete with all three sources ({complete / len(st.fusion) * 100:.0f}%), "
+                    f"all with an S1 offset of {'0 days' if not any(f['s1_offset_days'] for f in st.fusion) else 'varying length'}."))
     return out
 
 
@@ -2261,64 +2264,64 @@ def _s1_artifacts(st) -> list[dict]:
     if lin:
         dates = sorted({m["date"] for m in lin if m["date"]})
         orbits = sorted({m["orbit"] or "?" for m in lin})
-        rows = [["Tanggal", "Orbit", "Band", "Mean", "Min", "Max", "Flag"]]
+        rows = [["Date", "Orbit", "Band", "Mean", "Min", "Max", "Flag"]]
         for m in lin[:10]:
             rows.append([str(m["date"]), m["orbit"] or "-", m["band"], _n(m["mean_db"], 3), _n(m["min_db"], 2),
                          _n(m["max_db"], 1), m["flag"]])
         out.append({
-            "title": f"BACKSCATTER TERSIMPAN DALAM SATUAN LINEAR ({len(lin)} produk)",
-            "lines": [f"Issue: {len(lin)} produk ({len(dates)} tanggal, orbit {', '.join(orbits)}) memiliki nilai di kolom "
-                      "*_db dengan minimum ≥ 0 dan rata-rata ≈ 0 — pola nilai daya linear, bukan dB.",
-                      f"Tanggal: {', '.join(str(d) for d in dates[:10])}{' …' if len(dates) > 10 else ''}",
-                      f"Dampak: {sum(1 for m in lin if m['flag'] == 'PASS')} di antaranya berflag PASS, sehingga rata-rata "
-                      "dB naif bias ke arah 0 dB. Laporan ini mengeluarkannya dari semua statistik dB.",
+            "title": f"BACKSCATTER STORED IN LINEAR UNITS ({len(lin)} products)",
+            "lines": [f"Issue: {len(lin)} products ({len(dates)} dates, orbit {', '.join(orbits)}) have values in the "
+                      "*_db columns with a minimum ≥ 0 and a mean ≈ 0 — the pattern of linear power values, not dB.",
+                      f"Dates: {', '.join(str(d) for d in dates[:10])}{' …' if len(dates) > 10 else ''}",
+                      f"Impact: {sum(1 for m in lin if m['flag'] == 'PASS')} of them are flagged PASS, so a naive mean "
+                      "in dB is biased toward 0 dB. This report excludes them from all dB statistics.",
                       "Severity: HIGH",
-                      "Resolution: OPEN — periksa konversi 10·log10 di tahap kalibrasi/QA untuk track ini, lalu hitung "
-                      "ulang quality_metrics."],
+                      "Resolution: OPEN — check the 10·log10 conversion in the calibration/QA stage for this track, then "
+                      "recompute quality_metrics."],
             "rows": rows, "widths": [0.9 * inch, 1.0 * inch, 0.5 * inch, 0.8 * inch, 0.7 * inch, 0.8 * inch, 0.7 * inch],
         })
     fails = [m for m in st.s1_metrics if m["flag"] == "FAIL"]
     if fails:
-        rows = [["Tanggal", "Band", "Skor", "Valid %", "Max dB", "Scene"]]
+        rows = [["Date", "Band", "Score", "Valid %", "Max dB", "Scene"]]
         for m in fails[:12]:
             rows.append([str(m["date"]), m["band"], _n(m["score"], 1), _n((m["valid_frac"] or 0) * 100, 0), _n(m["max_db"], 2),
                          Paragraph(_e((m["product_identifier"] or "")[:44]), _cell_style())])
         zero_max = sum(1 for m in fails if m["max_db"] is not None and m["max_db"] > -0.5)
         sev = "MEDIUM" if len(fails) / max(len(st.s1_metrics), 1) > 0.1 else "LOW"
         out.append({
-            "title": f"RADIOMETRIC QUALITY FAILURES ({len(fails)} produk)",
-            "lines": [f"Issue: {len(fails)} dari {len(st.s1_metrics)} produk berflag FAIL "
+            "title": f"RADIOMETRIC QUALITY FAILURES ({len(fails)} products)",
+            "lines": [f"Issue: {len(fails)} of {len(st.s1_metrics)} products are flagged FAIL "
                       f"({len(fails) / len(st.s1_metrics) * 100:.0f}%).",
-                      f"Indikasi: {zero_max} produk FAIL memiliki backscatter maksimum ≈ 0 dB — pola khas piksel pengisi "
-                      "(zero-fill) di tepi footprint yang ikut terhitung.",
+                      f"Indication: {zero_max} FAIL products have a maximum backscatter ≈ 0 dB — the typical pattern of "
+                      "fill pixels (zero-fill) at the footprint edge that get counted.",
                       f"Severity: {sev}",
-                      "Resolution: FLAGGED — flag tersimpan di quality_metrics; saring flag = 'PASS' untuk analisis sensitif."],
+                      "Resolution: FLAGGED — the flag is stored in quality_metrics; filter flag = 'PASS' for sensitive analysis."],
             "rows": rows, "widths": [0.9 * inch, 0.5 * inch, 0.5 * inch, 0.6 * inch, 0.6 * inch, 3.6 * inch],
         })
     low_cov = [m for m in st.s1_metrics if m["valid_frac"] is not None and m["valid_frac"] < 0.5]
     if low_cov:
         dates = sorted({str(m["date"]) for m in low_cov})
-        out.append({"title": f"PARTIAL FOOTPRINT COVERAGE ({len(low_cov)} produk)",
-                    "lines": [f"Produk dengan &lt;50% piksel valid atas AOI pada tanggal: {', '.join(dates[:10])}"
+        out.append({"title": f"PARTIAL FOOTPRINT COVERAGE ({len(low_cov)} products)",
+                    "lines": [f"Products with &lt;50% valid pixels over the AOI on dates: {', '.join(dates[:10])}"
                               + (" …" if len(dates) > 10 else ""),
-                              "Penyebab umum: AOI berada di tepi swath sehingga hanya sebagian tertutup scene.",
-                              "Severity: LOW — Status: FLAGGED (valid_pixels tercatat)"]})
+                              "Common cause: the AOI is at the swath edge so it is only partly covered by the scene.",
+                              "Severity: LOW — Status: FLAGGED (valid_pixels recorded)"]})
     vv = [m for m in st.s1_metrics if m["band"] == "VV" and m["mean_db"] is not None and _ok(m)]
     if len(vv) > 4:
         mu, sd = mean(x["mean_db"] for x in vv), pstdev(x["mean_db"] for x in vv)
         outl = [m for m in vv if sd and abs(m["mean_db"] - mu) > 2 * sd]
         out.append({"title": "BACKSCATTER OUTLIERS (|z| &gt; 2, VV, scene PASS)",
-                    "lines": [f"Teridentifikasi {len(outl)} scene"
+                    "lines": [f"{len(outl)} scene(s) identified"
                               + (": " + ", ".join(f"{m['date']} ({m['mean_db']:.2f} dB)" for m in outl[:6]) if outl else "."),
-                              f"Referensi: mean {mu:.2f} dB, σ {sd:.2f} dB.",
-                              "Severity: " + ("LOW — outlier bisa nyata (genangan, hujan saat akuisisi)." if outl else "tidak ada.")]})
+                              f"Reference: mean {mu:.2f} dB, σ {sd:.2f} dB.",
+                              "Severity: " + ("LOW — outliers can be real (flooding, rain during acquisition)." if outl else "none.")]})
     if not any(s["inc_near"] is not None for s in st.s1_scenes):
         out.append({"title": "METADATA GAPS",
-                    "lines": ["Incidence angle dan relative orbit tidak terisi untuk scene dataset ini — normalisasi "
-                              "sudut (γ0 / cosine correction) tidak dapat diverifikasi dari metadata.",
+                    "lines": ["Incidence angle and relative orbit are not filled in for this dataset's scenes — angle "
+                              "normalisation (γ0 / cosine correction) cannot be verified from the metadata.",
                               "Severity: LOW — Status: OPEN"]})
     if not out:
-        out.append({"title": "Tidak ada artefak terdeteksi", "lines": ["Semua pemeriksaan otomatis lolos."]})
+        out.append({"title": "No artefacts detected", "lines": ["All automated checks passed."]})
     return out
 
 
@@ -2334,31 +2337,31 @@ def _collect_issues(ctx) -> list[dict]:
     if "SENTINEL1" in srcs:
         lin = [m for m in st.s1_metrics if m["linear"]]
         if lin:
-            add("SENTINEL1", "HIGH", f"{len(lin)} produk S1 bersatuan linear di kolom dB",
-                "Tanggal: " + ", ".join(sorted({str(m['date']) for m in lin})[:8]),
-                "Perbaiki konversi 10·log10 dan hitung ulang quality_metrics; saring produk ini sampai diperbaiki.",
+            add("SENTINEL1", "HIGH", f"{len(lin)} S1 products in linear units in the dB columns",
+                "Dates: " + ", ".join(sorted({str(m['date']) for m in lin})[:8]),
+                "Fix the 10·log10 conversion and recompute quality_metrics; filter these products until fixed.",
                 "OPEN")
         fails = [m for m in st.s1_metrics if m["flag"] == "FAIL"]
         if fails:
             share = len(fails) / len(st.s1_metrics)
             add("SENTINEL1", "MEDIUM" if share > 0.1 else "LOW",
-                f"{len(fails)} produk S1 gagal QA radiometrik ({share * 100:.0f}%)",
-                "Tanggal: " + ", ".join(sorted({str(m['date']) for m in fails})[:8]),
-                "Saring quality_flag = 'PASS' untuk analisis backscatter; periksa zero-fill di tepi swath.",
+                f"{len(fails)} S1 products failed radiometric QA ({share * 100:.0f}%)",
+                "Dates: " + ", ".join(sorted({str(m['date']) for m in fails})[:8]),
+                "Filter quality_flag = 'PASS' for backscatter analysis; check for zero-fill at the swath edge.",
                 "FLAGGED IN METADATA")
         for a, b, n in st.gaps("SENTINEL1"):
-            add("SENTINEL1", "MEDIUM", f"Celah akuisisi S1 {n} hari", f"{a} s/d {b}",
-                "Pertimbangkan toleransi pasangan lebih besar atau strategi FULL_COVERAGE.", "OPEN")
+            add("SENTINEL1", "MEDIUM", f"S1 acquisition gap of {n} days", f"{a} to {b}",
+                "Consider a larger pairing tolerance or the FULL_COVERAGE strategy.", "OPEN")
         if st.s1_scenes and not any(s["inc_near"] is not None for s in st.s1_scenes):
-            add("SENTINEL1", "LOW", "Incidence angle tidak tercatat",
-                "satellite_scenes.incidence_angle_near/far kosong.", "Isi dari metadata SAFE saat download.", "OPEN")
+            add("SENTINEL1", "LOW", "Incidence angle not recorded",
+                "satellite_scenes.incidence_angle_near/far is empty.", "Fill it from the SAFE metadata at download time.", "OPEN")
         orb = {o["orbit"]: o["scenes"] for o in st.s1_orbit}
         if len(orb) == 2 and min(orb.values()) / max(orb.values()) < 0.6:
-            add("SENTINEL1", "LOW", "Jumlah pass ascending/descending tidak seimbang", str(orb),
-                "Pisahkan analisis per orbit — geometri berbeda memengaruhi backscatter.", "INFO")
+            add("SENTINEL1", "LOW", "Unbalanced number of ascending/descending passes", str(orb),
+                "Analyse each orbit separately — different geometry affects backscatter.", "INFO")
         if not st.s1_metrics and st.s1_scenes:
-            add("SENTINEL1", "MEDIUM", "Scene S1 tanpa metrik kualitas", f"{len(st.s1_scenes)} scene",
-                "Jalankan tahap QUALITY_ANALYTICS.", "OPEN")
+            add("SENTINEL1", "MEDIUM", "S1 scenes without quality metrics", f"{len(st.s1_scenes)} scenes",
+                "Run the QUALITY_ANALYTICS stage.", "OPEN")
     if "MODIS" in srcs:
         flood = st.raster_band("MODIS", "FLOOD")
         if flood:
@@ -2367,49 +2370,49 @@ def _collect_issues(ctx) -> list[dict]:
             if share > 0.2:
                 worst = min(rs.SEASONS, key=lambda s: mean([o.valid_frac for o in flood if o.day.month in s[2]] or [1]))
                 add("MODIS", "MEDIUM" if share < 0.5 else "HIGH",
-                    f"Tutupan awan tinggi: {poor} hari (<50% piksel valid)",
-                    f"{share * 100:.0f}% hari; terburuk pada {worst[1]}.",
-                    "Gunakan komposit multi-hari atau lengkapi dengan S1 (tembus awan) untuk deteksi banjir.",
+                    f"High cloud cover: {poor} days (<50% valid pixels)",
+                    f"{share * 100:.0f}% of days; worst in {worst[1]}.",
+                    "Use multi-day composites or complement with S1 (sees through clouds) for flood detection.",
                     "INHERENT TO OPTICAL SENSOR")
         for a, b, n in st.gaps("MODIS"):
-            add("MODIS", "MEDIUM", f"Celah data MODIS {n} hari", f"{a} s/d {b}", "Periksa log unduhan LANCE.", "OPEN")
+            add("MODIS", "MEDIUM", f"MODIS data gap of {n} days", f"{a} to {b}", "Check the LANCE download log.", "OPEN")
         missing = [q for q in ctx.quality if q["source"] == "MODIS" and q["quality_score"] < 100]
         for q in missing:
             low = {b: v for b, v in (q.get("bands") or {}).items() if v < 100}
-            add("MODIS", "LOW", "Cakupan band tidak merata", ", ".join(f"{b} {v:.0f}%" for b, v in low.items()),
-                "Periksa tanggal yang kehilangan band tertentu.", "FLAGGED")
+            add("MODIS", "LOW", "Uneven band coverage", ", ".join(f"{b} {v:.0f}%" for b, v in low.items()),
+                "Check the dates that are missing particular bands.", "FLAGGED")
     if "GPM" in srcs:
         rain = st.raster_band("GPM", "RAIN_24H")
         if rain:
-            add("GPM", "LOW", "Resolusi kasar relatif terhadap AOI", f"{_gpm_pixels(rain)} piksel 0.1° per raster",
-                "Perlakukan curah hujan sebagai nilai rata-rata wilayah, bukan per piksel S1.", "INHERENT")
-            add("GPM", "LOW", "Latensi IMERG Final ±3,5 bulan", "Tidak cocok untuk aplikasi near-real-time.",
-                "Gunakan IMERG Early/Late untuk operasional.", "INHERENT")
+            add("GPM", "LOW", "Coarse resolution relative to the AOI", f"{_gpm_pixels(rain)} 0.1° pixels per raster",
+                "Treat rainfall as a regional mean value, not per S1 pixel.", "INHERENT")
+            add("GPM", "LOW", "IMERG Final latency of ~3.5 months", "Not suitable for near-real-time applications.",
+                "Use IMERG Early/Late for operational use.", "INHERENT")
         for a, b, n in st.gaps("GPM"):
-            add("GPM", "MEDIUM", f"Celah data GPM {n} hari", f"{a} s/d {b}", "Periksa log unduhan GES DISC.", "OPEN")
+            add("GPM", "MEDIUM", f"GPM data gap of {n} days", f"{a} to {b}", "Check the GES DISC download log.", "OPEN")
     if len(srcs) > 1:
         s1_days = set(st.obs_dates.get("SENTINEL1", []))
         fused = {f["date"] for f in st.fusion}
         missing = s1_days - fused
         if s1_days and missing:
             add("FUSION", "MEDIUM" if len(missing) / len(s1_days) > .1 else "LOW",
-                f"{len(missing)} tanggal S1 tanpa fusion stack", ", ".join(str(d) for d in sorted(missing)[:8]),
-                "Jalankan refusion untuk tanggal tersebut.", "OPEN")
+                f"{len(missing)} S1 dates without a fusion stack", ", ".join(str(d) for d in sorted(missing)[:8]),
+                "Run refusion for those dates.", "OPEN")
         partial = [f for f in st.fusion if f["n_sources"] < 3]
         if partial:
-            add("FUSION", "LOW", f"{len(partial)} stack tidak lengkap", ", ".join(str(f["date"]) for f in partial[:8]),
-                "Saring berdasarkan jumlah source saat membuat data latih.", "FLAGGED")
+            add("FUSION", "LOW", f"{len(partial)} incomplete stacks", ", ".join(str(f["date"]) for f in partial[:8]),
+                "Filter by the number of sources when building training data.", "FLAGGED")
     order = {"HIGH": 0, "MEDIUM": 1, "LOW": 2}
     issues.sort(key=lambda i: order[i["severity"]])
     return issues
 
 
 _SCORE_FORMULAS = {
-    "Completeness Score": "rata-rata (scene pipeline selesai %, hari observasi MODIS %, hari observasi GPM %).",
-    "Radiometric Quality": "rata-rata quality_score Sentinel-1 (quality_metrics).",
-    "Spatial Coverage": "rata-rata fraksi piksel valid per produk di semua source × 100.",
-    "Fusion Success": "tanggal S1 yang menghasilkan stack lengkap 3 source ÷ tanggal S1 × 100.",
-    "Overall Data Health": "rata-rata komponen di atas yang tersedia.",
+    "Completeness Score": "mean of (% pipeline scenes completed, % MODIS observation days, % GPM observation days).",
+    "Radiometric Quality": "mean Sentinel-1 quality_score (quality_metrics).",
+    "Spatial Coverage": "mean valid-pixel fraction per product across all sources × 100.",
+    "Fusion Success": "S1 dates that produced a complete 3-source stack ÷ S1 dates × 100.",
+    "Overall Data Health": "mean of the available components above.",
 }
 
 
@@ -2442,30 +2445,30 @@ def _usage_recommendations(ctx) -> dict:
     srcs = ds.get("sources", {})
     suitable, caution, not_suitable = [], [], []
     if len(srcs) > 1 and st.fusion:
-        suitable.append(f"Pelatihan model machine learning multi-sensor ({len(st.fusion)} fusion stack pada grid yang sama)")
+        suitable.append(f"Training multi-sensor machine-learning models ({len(st.fusion)} fusion stacks on the same grid)")
     if st.raster.get("GPM"):
-        suitable.append("Karakterisasi curah hujan harian dan analisis kejadian hujan ekstrem tingkat wilayah")
+        suitable.append("Characterising daily rainfall and analysing regional-scale extreme rainfall events")
     if st.raster.get("MODIS"):
-        suitable.append("Pemetaan genangan/banjir harian pada hari cerah (MCDWD) dan pemantauan NDVI/NDWI")
+        suitable.append("Daily inundation/flood mapping on clear days (MCDWD) and NDVI/NDWI monitoring")
     if st.s1_metrics:
-        suitable.append("Deteksi air permukaan tembus awan dengan Sentinel-1 (scene PASS)")
+        suitable.append("Cloud-penetrating surface-water detection with Sentinel-1 (PASS scenes)")
     if st.period_days >= 90:
-        suitable.append("Karakterisasi musiman dalam periode dataset")
+        suitable.append("Seasonal characterisation within the dataset period")
 
     if st.s1_metrics and any(m["flag"] == "FAIL" for m in st.s1_metrics):
-        caution.append("Analisis backscatter absolut — saring scene FAIL terlebih dahulu")
+        caution.append("Absolute backscatter analysis — filter out FAIL scenes first")
     if st.raster.get("MODIS") and (_mean_valid(st, "MODIS") or 100) < 80:
-        caution.append("Analisis MODIS pada musim berawan — banyak piksel insufficient data")
+        caution.append("MODIS analysis in cloudy seasons — many pixels have insufficient data")
     if st.raster.get("GPM"):
-        caution.append("Analisis curah hujan pada skala sub-kilometer (resolusi GPM 0.1°)")
+        caution.append("Rainfall analysis at sub-kilometre scale (GPM resolution 0.1°)")
     if (st.revisit_days("SENTINEL1") or 0) > 3:
-        caution.append(f"Pemantauan harian berbasis S1 — revisit rata-rata {st.revisit_days('SENTINEL1')} hari")
+        caution.append(f"Daily S1-based monitoring — mean revisit {st.revisit_days('SENTINEL1')} days")
 
     if st.period_days < 730:
-        not_suitable.append(f"Deteksi tren iklim / antar-tahun (periode hanya {st.period_days} hari)")
+        not_suitable.append(f"Detecting climate / inter-annual trends (the period is only {st.period_days} days)")
     if "GPM" in srcs:
-        not_suitable.append("Nowcasting operasional dengan IMERG Final (latensi ±3,5 bulan)")
-    not_suitable.append("Validasi akurasi absolut tanpa data lapangan (tidak ada ground-truth di dataset)")
+        not_suitable.append("Operational nowcasting with IMERG Final (latency ~3.5 months)")
+    not_suitable.append("Absolute accuracy validation without field data (there is no ground truth in the dataset)")
     return {"suitable": suitable, "caution": caution, "not_suitable": not_suitable}
 
 
@@ -2625,7 +2628,7 @@ def _forecast_json(ctx) -> dict | None:
 
     return {
         "horizon_days": h,
-        "rule": "horizon = period_days / 3; hanya data dataset ini",
+        "rule": "horizon = period_days / 3; this dataset's data only",
         "start": st.period_end + timedelta(days=1),
         "end": st.period_end + timedelta(days=h),
         "variables": {
@@ -2673,11 +2676,11 @@ def _draw_forecast(ax, fc, color, last_x=None, last_y=None, legend=True) -> None
     m = ([last_y] if last_y is not None else []) + list(fc.mean)
     pad = [last_y] if last_y is not None else []
     ax.fill_between(xs, pad + fc.lo95, pad + fc.hi95, color=color, alpha=0.10, linewidth=0,
-                    label="interval 95%" if legend else None)
+                    label="95% interval" if legend else None)
     ax.fill_between(xs, pad + fc.lo80, pad + fc.hi80, color=color, alpha=0.22, linewidth=0,
-                    label="interval 80%" if legend else None)
+                    label="80% interval" if legend else None)
     ax.plot(xs, m, color=color, linewidth=1.4, linestyle="--",
-            label=f"prakiraan {fc.label.split()[-1]}" if legend else None)
+            label=f"forecast {fc.label.split()[-1]}" if legend else None)
 
 
 def _mark_forecast_start(ax, day, label=True) -> None:
@@ -2685,7 +2688,7 @@ def _mark_forecast_start(ax, day, label=True) -> None:
         return
     ax.axvline(day, color="#666666", linewidth=0.8, linestyle=":")
     if label:
-        ax.text(day, 0.02, "  prakiraan →", transform=ax.get_xaxis_transform(), fontsize=7, color="#555555")
+        ax.text(day, 0.02, "  forecast →", transform=ax.get_xaxis_transform(), fontsize=7, color="#555555")
 
 
 def _section_break() -> list:
@@ -2892,7 +2895,7 @@ def _ascii_month_grid(st) -> str:
             cells.append("▓▓▓" if c >= 8 else "▓▓░" if c >= 4 else "▓░░" if c >= 1 else "░░░")
         lines.append(f"{y}:   " + "  ".join(cells))
         lines.append("       " + "  ".join(f"{counts.get((y, m), 0):>3}" if (y, m) in months else "   " for m in range(1, 13)))
-    lines.append("Legend: ▓▓▓ ≥ 8 scene, ▓▓░ 4–7, ▓░░ 1–3, ░░░ 0 (angka = jumlah scene)")
+    lines.append("Legend: ▓▓▓ ≥ 8 scenes, ▓▓░ 4–7, ▓░░ 1–3, ░░░ 0 (number = scene count)")
     return "\n".join(lines)
 
 
@@ -2939,13 +2942,13 @@ def _month_interpretation(r, overall) -> str:
     if r["mean"] is None:
         return "—"
     diff = r["mean"] - overall
-    level = ("jauh di atas" if diff > 1.5 else "di atas" if diff > 0.5 else
-             "jauh di bawah" if diff < -1.5 else "di bawah" if diff < -0.5 else "mendekati")
-    txt = f"{level} rata-rata periode ({diff:+.2f} dB)"
+    level = ("far above" if diff > 1.5 else "above" if diff > 0.5 else
+             "far below" if diff < -1.5 else "below" if diff < -0.5 else "near")
+    txt = f"{level} the period mean ({diff:+.2f} dB)"
     if (r["valid"] or 1) < 0.6:
-        txt += "; cakupan valid rendah — bobot kecil"
+        txt += "; low valid coverage — low weight"
     if r["std"] and r["std"] > 3:
-        txt += "; variabilitas tinggi (ada scene FAIL/zero-fill)"
+        txt += "; high variability (FAIL/zero-fill scenes present)"
     return txt
 
 
@@ -2956,10 +2959,10 @@ def _mean_valid(st, src) -> float | None:
 
 def _consistency_pairs():
     return [
-        (("MODIS", "NDWI"), ("MODIS", "FLOOD"), "NDWI ↔ % piksel banjir (MODIS)", 1),
-        (("GPM", "RAIN_7D"), ("MODIS", "FLOOD"), "Hujan 7 hari (GPM) ↔ % banjir (MODIS)", 1),
-        (("GPM", "RAIN_7D"), ("MODIS", "NDWI"), "Hujan 7 hari (GPM) ↔ NDWI (MODIS)", 1),
-        (("GPM", "RAIN_7D"), ("SENTINEL1", "VV"), "Hujan 7 hari (GPM) ↔ VV (S1)", -1),
+        (("MODIS", "NDWI"), ("MODIS", "FLOOD"), "NDWI ↔ % flood pixels (MODIS)", 1),
+        (("GPM", "RAIN_7D"), ("MODIS", "FLOOD"), "7-day rain (GPM) ↔ % flood (MODIS)", 1),
+        (("GPM", "RAIN_7D"), ("MODIS", "NDWI"), "7-day rain (GPM) ↔ NDWI (MODIS)", 1),
+        (("GPM", "RAIN_7D"), ("SENTINEL1", "VV"), "7-day rain (GPM) ↔ VV (S1)", -1),
     ]
 
 

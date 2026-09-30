@@ -57,7 +57,7 @@ class DeletionManager:
             self._update_operation_status(
                 self._last_op_id, "FAILED",
                 completed_at=_now(),
-                error_log=f"File terhapus tapi row database gagal dihapus: {exc}",
+                error_log=f"Files were deleted but the database row could not be deleted: {exc}",
                 deleted_count=result["deleted_count"],
                 freed_bytes=result["freed_bytes"],
             )
@@ -256,7 +256,7 @@ class DeletionManager:
             if dataset is None:
                 return
             if not dataset.is_deletable:
-                raise RuntimeError(f"dataset_id={self._dataset_id} tidak boleh dihapus (is_deletable=False)")
+                raise RuntimeError(f"dataset_id={self._dataset_id} must not be deleted (is_deletable=False)")
             sess.delete(dataset)
             removed = self._delete_aux_placeholder_scenes(sess)
         if removed:

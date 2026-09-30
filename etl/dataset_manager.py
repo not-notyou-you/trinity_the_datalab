@@ -161,7 +161,7 @@ def _job_timing(dataset_id: int, job: dict) -> dict | None:
 def _normalize_tiers(tiers: list[str]) -> list[str]:
     upper = {t.upper() for t in tiers}
     if not upper:
-        raise ValueError("tiers tidak boleh kosong")
+        raise ValueError("tiers must not be empty")
     invalid = set()
     for t in upper:
         try:
@@ -169,7 +169,7 @@ def _normalize_tiers(tiers: list[str]) -> list[str]:
         except ValueError:
             invalid.add(t)
     if invalid:
-        raise ValueError(f"Tier tidak valid: {invalid}. Valid: {tn.ALL_TIERS}")
+        raise ValueError(f"Invalid tier: {invalid}. Valid: {tn.ALL_TIERS}")
     return sorted(upper, key=tn.sort_key)
 
 
@@ -230,7 +230,7 @@ class DatasetManager:
             dict berisi dataset_id, job_id, status, dan source_configs.
         """
         if sources is None and not tiers:
-            raise ValueError("Isi sources (konfigurasi per-satelit) atau tiers")
+            raise ValueError("Provide sources (per-satellite configuration) or tiers")
         # region_id = lokasi dipilih dari tabel (jalur UI). location = nama bebas
         # (pemanggil lama/CLI), di-resolve lewat nama lalu geocoding.
         if region_id is not None:
@@ -238,7 +238,7 @@ class DatasetManager:
         elif location and location.strip():
             bbox_wkt, region_id, location_label = resolve_location(self._db, location)
         else:
-            raise ValueError("Lokasi belum dipilih: isi region_id atau location")
+            raise ValueError("No location selected: provide region_id or location")
 
         dataset_fields = dict(
             name=name,
@@ -612,7 +612,7 @@ class DatasetManager:
     def toggle_live(self, enabled: bool) -> dict:
         live = self.get_live_dataset()
         if live is None:
-            raise ValueError("Dataset live belum ada")
+            raise ValueError("Live dataset does not exist yet")
         dataset_id = live["dataset_id"]
         with self._db.session() as sess:
             dataset = sess.get(Dataset, dataset_id)
@@ -624,7 +624,7 @@ class DatasetManager:
     def clear_live_dataset(self) -> dict:
         live = self.get_live_dataset()
         if live is None:
-            raise ValueError("Dataset live belum ada")
+            raise ValueError("Live dataset does not exist yet")
         dataset_id = live["dataset_id"]
 
         from etl.deletion_manager import DeletionManager
@@ -647,7 +647,7 @@ class DatasetManager:
     def trigger_live_backfill(self, date_start: date, date_end: date) -> dict:
         live = self.get_live_dataset()
         if live is None:
-            raise ValueError("Dataset live belum ada")
+            raise ValueError("Live dataset does not exist yet")
         dataset_id = live["dataset_id"]
         with self._db.session() as sess:
             job = DatasetJob(
@@ -669,19 +669,19 @@ class DatasetManager:
         with self._db.session() as sess:
             dataset = sess.get(Dataset, dataset_id)
             if dataset is None:
-                raise ValueError(f"dataset_id={dataset_id} tidak ditemukan")
+                raise ValueError(f"dataset_id={dataset_id} not found")
             if dataset.dataset_kind == "LIVE":
-                raise ValueError("Dataset live tidak bisa dipause, gunakan toggle enable/disable")
+                raise ValueError("A live dataset cannot be paused; use the enable/disable toggle")
             job = sess.scalar(
                 select(DatasetJob)
                 .where(DatasetJob.dataset_id == dataset_id)
                 .order_by(DatasetJob.created_at.desc())
             )
             if job is None:
-                raise ValueError("Belum ada job berjalan untuk dataset ini")
+                raise ValueError("There is no running job for this dataset yet")
             pausable = {"QUEUED", "PREPARING", "DOWNLOADING", "PROCESSING"}
             if job.status not in pausable:
-                raise ValueError(f"Job berstatus {job.status}, tidak bisa dipause")
+                raise ValueError(f"Job has status {job.status} and cannot be paused")
             job.status = "PAUSED"
             job.paused_at = datetime.now(timezone.utc)
             job.paused_by = "user"
@@ -696,18 +696,18 @@ class DatasetManager:
         with self._db.session() as sess:
             dataset = sess.get(Dataset, dataset_id)
             if dataset is None:
-                raise ValueError(f"dataset_id={dataset_id} tidak ditemukan")
+                raise ValueError(f"dataset_id={dataset_id} not found")
             if dataset.dataset_kind == "LIVE":
-                raise ValueError("Dataset live tidak menggunakan resume, gunakan toggle enable/disable")
+                raise ValueError("A live dataset does not use resume; use the enable/disable toggle")
             job = sess.scalar(
                 select(DatasetJob)
                 .where(DatasetJob.dataset_id == dataset_id)
                 .order_by(DatasetJob.created_at.desc())
             )
             if job is None:
-                raise ValueError("Belum ada job untuk dataset ini")
+                raise ValueError("There is no job for this dataset yet")
             if job.status != "PAUSED":
-                raise ValueError(f"Job berstatus {job.status}, bukan PAUSED")
+                raise ValueError(f"Job has status {job.status}, not PAUSED")
             # Mirror retry_dataset_job: queue it and let run_dataset_job set the
             # real stage-specific status, instead of hardcoding "PROCESSING".
             job.status = "QUEUED"
@@ -773,18 +773,18 @@ class DatasetManager:
         with self._db.session() as sess:
             dataset = sess.get(Dataset, dataset_id)
             if dataset is None:
-                raise ValueError(f"dataset_id={dataset_id} tidak ditemukan")
+                raise ValueError(f"dataset_id={dataset_id} not found")
             if dataset.dataset_kind == "LIVE":
-                raise ValueError("Dataset live tidak menggunakan retry, gunakan toggle enable/disable")
+                raise ValueError("A live dataset does not use retry; use the enable/disable toggle")
             job = sess.scalar(
                 select(DatasetJob)
                 .where(DatasetJob.dataset_id == dataset_id)
                 .order_by(DatasetJob.created_at.desc())
             )
             if job is None:
-                raise ValueError("Belum ada job untuk dataset ini")
+                raise ValueError("There is no job for this dataset yet")
             if job.status != "FAILED":
-                raise ValueError(f"Job berstatus {job.status}, bukan FAILED")
+                raise ValueError(f"Job has status {job.status}, not FAILED")
             job.status = "QUEUED"
             job.started_at = None
             job.completed_at = None
@@ -799,9 +799,9 @@ class DatasetManager:
         with self._db.session() as sess:
             dataset = sess.get(Dataset, dataset_id)
             if dataset is None:
-                raise ValueError(f"dataset_id={dataset_id} tidak ditemukan")
+                raise ValueError(f"dataset_id={dataset_id} not found")
             if dataset.dataset_kind == "LIVE":
-                raise ValueError("Dataset live tidak bisa dibatalkan, gunakan toggle enable/disable")
+                raise ValueError("A live dataset cannot be cancelled; use the enable/disable toggle")
             job = sess.scalar(
                 select(DatasetJob)
                 .where(DatasetJob.dataset_id == dataset_id)
@@ -810,7 +810,7 @@ class DatasetManager:
             cancellable = {"QUEUED", "PREPARING", "DOWNLOADING", "PROCESSING", "PAUSED"}
             if job is None or job.status not in cancellable:
                 raise ValueError(
-                    f"Job berstatus {job.status if job else 'tidak ada'}, tidak bisa dibatalkan"
+                    f"Job has status {job.status if job else 'none'} and cannot be cancelled"
                 )
             job.status = "CANCELLED"
             job.completed_at = datetime.now(timezone.utc)
@@ -840,9 +840,9 @@ class DatasetManager:
         with self._db.session() as sess:
             dataset = sess.get(Dataset, dataset_id)
             if dataset is None:
-                raise ValueError(f"dataset_id={dataset_id} tidak ditemukan")
+                raise ValueError(f"dataset_id={dataset_id} not found")
             if not dataset.is_deletable:
-                raise ValueError("Dataset ini tidak bisa dihapus (dataset live gunakan clear)")
+                raise ValueError("This dataset cannot be deleted (live datasets use clear)")
             job = sess.scalar(
                 select(DatasetJob)
                 .where(DatasetJob.dataset_id == dataset_id)
@@ -850,7 +850,7 @@ class DatasetManager:
             )
             active_statuses = {"QUEUED", "PREPARING", "DOWNLOADING", "PROCESSING"}
             if job and job.status in active_statuses and not force:
-                raise ValueError("Dataset sedang diproses. Gunakan force=True atau pause dulu.")
+                raise ValueError("The dataset is being processed. Use force=True or pause it first.")
             dataset.status = "DELETING"
             job_id = job.job_id if job else None
             job_was_paused = job.status == "PAUSED" if job else False

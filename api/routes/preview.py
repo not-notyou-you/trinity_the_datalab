@@ -65,11 +65,11 @@ def _generate_thumbnail(
         from rasterio.enums import Resampling
         from PIL import Image, ImageDraw, ImageFont
     except ImportError as e:
-        raise ImportError(f"Dependency tidak terinstall: {e}. pip install rasterio Pillow numpy")
+        raise ImportError(f"Dependency not installed: {e}. pip install rasterio Pillow numpy")
 
     path = Path(tif_path)
     if not path.exists():
-        raise FileNotFoundError(f"File tidak ditemukan: {tif_path}")
+        raise FileNotFoundError(f"File not found: {tif_path}")
 
     with rasterio.open(tif_path) as src:
         # Hitung skala downsample untuk thumbnail
@@ -131,16 +131,16 @@ def _generate_thumbnail(
 
 @router.get(
     "/latest",
-    summary="Gambar terbaru",
+    summary="Latest images",
     description=(
-        "Mengembalikan metadata 3–5 scene terbaru dengan produk rank 2, "
-        "beserta URL thumbnail untuk ditampilkan di dashboard."
+        "Returns metadata for the 3–5 latest scenes with rank-2 products, "
+        "plus thumbnail URLs to display on the dashboard."
     ),
 )
 async def get_latest_previews(
     db:    DatabaseClient = Depends(get_db),
-    limit: int            = Query(5, ge=1, le=20, description="Jumlah scene terbaru (1-20)"),
-    band:  str            = Query("VV", pattern="^(VV|VH)$", description="Band yang ditampilkan"),
+    limit: int            = Query(5, ge=1, le=20, description="Number of latest scenes (1-20)"),
+    band:  str            = Query("VV", pattern="^(VV|VH)$", description="Band to display"),
 ) -> JSONResponse:
     """
     Ambil N scene terbaru yang sudah punya produk rank 2 (DESPECKLED/INDICES/
@@ -210,9 +210,9 @@ async def get_latest_previews(
     response_class=Response,
     summary="Thumbnail PNG",
     description=(
-        "Generate dan return thumbnail PNG dari file COG/TIFF. "
-        "Melakukan contrast stretch otomatis untuk visualisasi SAR backscatter. "
-        "Gambar dikembalikan langsung sebagai PNG."
+        "Generate and return a PNG thumbnail from a COG/TIFF file. "
+        "Applies an automatic contrast stretch for SAR backscatter visualisation. "
+        "The image is returned directly as a PNG."
     ),
 )
 async def get_product_thumbnail(
@@ -228,7 +228,7 @@ async def get_product_thumbnail(
     with db.session() as sess:
         p = sess.get(DataProduct, product_id)
         if not p:
-            raise HTTPException(404, f"Product {product_id} tidak ditemukan")
+            raise HTTPException(404, f"Product {product_id} not found")
         file_path = p.file_path
         band_name = p.band_name
 
@@ -239,13 +239,13 @@ async def get_product_thumbnail(
             import io
             placeholder = Image.new("RGB", (width, int(width * 0.6)), color=(40, 40, 40))
             draw = __import__("PIL.ImageDraw", fromlist=["ImageDraw"]).ImageDraw.Draw(placeholder)
-            draw.text((10, 10), f"File tidak ada: {Path(file_path).name if file_path else 'unknown'}", fill=(150, 150, 150))
+            draw.text((10, 10), f"File missing: {Path(file_path).name if file_path else 'unknown'}", fill=(150, 150, 150))
             buf = io.BytesIO()
             placeholder.save(buf, "PNG")
             buf.seek(0)
             return Response(content=buf.read(), media_type="image/png")
         except Exception:
-            raise HTTPException(404, f"File tidak ditemukan: {file_path}")
+            raise HTTPException(404, f"File not found: {file_path}")
 
     try:
         png_bytes = _generate_thumbnail(file_path, band=band_name, width=width)
@@ -261,7 +261,7 @@ async def get_product_thumbnail(
     except FileNotFoundError as exc:
         raise HTTPException(404, str(exc))
     except ImportError as exc:
-        raise HTTPException(503, f"Library tidak terinstall di server: {exc}")
+        raise HTTPException(503, f"Library not installed on the server: {exc}")
     except Exception as exc:
         logger.error("Thumbnail error product=%d: %s", product_id, exc)
-        raise HTTPException(500, f"Gagal generate thumbnail: {exc}")
+        raise HTTPException(500, f"Failed to generate thumbnail: {exc}")

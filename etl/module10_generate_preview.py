@@ -183,9 +183,9 @@ PREVIEW_SPECS: tuple[PreviewSpec, ...] = (
         scale="percentile",
         log_db=True,
         interpretation=(
-            "Backscatter ko-polarisasi. Gelap = permukaan halus yang "
-            "memantulkan sinyal menjauh dari sensor (air tenang, jalan aspal, "
-            "sawah tergenang); terang = permukaan kasar atau bangunan."
+            "Co-polarised backscatter. Dark = smooth surfaces that reflect "
+            "the signal away from the sensor (calm water, asphalt roads, "
+            "flooded rice fields); bright = rough surfaces or buildings."
         ),
     ),
     PreviewSpec(
@@ -198,17 +198,17 @@ PREVIEW_SPECS: tuple[PreviewSpec, ...] = (
         scale="percentile",
         log_db=True,
         interpretation=(
-            "Backscatter silang-polarisasi, didominasi hamburan volume. "
-            "Lebih peka ke vegetasi dan tegakan daripada VV, dan kontras "
-            "air-vs-darat biasanya lebih tajam."
+            "Cross-polarised backscatter, dominated by volume scattering. "
+            "More sensitive to vegetation and tree stands than VV, and the "
+            "water-vs-land contrast is usually sharper."
         ),
     ),
     PreviewSpec(
         key="modis_flood",
         source="modis",
         band="FLOOD",
-        label="MODIS Flood 2 hari (MCDWD)",
-        units="kelas",
+        label="MODIS Flood 2-day (MCDWD)",
+        units="class",
         cmap="categorical",
         scale="categorical",
         vmin=0.0,
@@ -217,16 +217,16 @@ PREVIEW_SPECS: tuple[PreviewSpec, ...] = (
         # merah. "No water" abu-abu semi-transparan supaya area yang teramati
         # kering tetap beda dari "insufficient data" (255, transparan).
         categories=(
-            (0, "#bdbdbd", 110, "Tidak ada air"),
-            (1, "#2171b5", 255, "Air permanen (referensi)"),
-            (2, "#fd8d3c", 255, "Banjir musiman (berulang)"),
-            (3, "#e31a1c", 255, "Banjir (tidak biasa)"),
+            (0, "#bdbdbd", 110, "No water"),
+            (1, "#2171b5", 255, "Permanent water (reference)"),
+            (2, "#fd8d3c", 255, "Seasonal flood (recurrent)"),
+            (3, "#e31a1c", 255, "Flood (unusual)"),
         ),
         interpretation=(
-            "Peta banjir MODIS MCDWD komposit 2 hari (Terra+Aqua, 250 m). Biru = "
-            "air permanen, oranye = banjir musiman, merah = banjir tidak biasa, "
-            "abu-abu = teramati tanpa air. Transparan = data tidak cukup "
-            "(umumnya tertutup awan)."
+            "MODIS MCDWD 2-day composite flood map (Terra+Aqua, 250 m). Blue = "
+            "permanent water, orange = seasonal flood, red = unusual flood, "
+            "grey = observed with no water. Transparent = insufficient data "
+            "(usually cloud-covered)."
         ),
     ),
     PreviewSpec(
@@ -234,7 +234,7 @@ PREVIEW_SPECS: tuple[PreviewSpec, ...] = (
         source="modis",
         band="NDVI",
         label="MODIS NDVI",
-        units="indeks",
+        units="index",
         cmap="RdYlGn",
         scale="fixed",
         # Rentang palet NDVI yang lazim (NASA/GEE): nilai < -0.2 hanya air
@@ -243,11 +243,11 @@ PREVIEW_SPECS: tuple[PreviewSpec, ...] = (
         vmin=-0.2,
         vmax=0.8,
         interpretation=(
-            "Normalized Difference Vegetation Index (komposit 8 hari MOD09A1, "
-            "awan dibuang). Merah (<0) = air atau lahan terbangun; kuning "
-            "(~0.3) = vegetasi jarang; hijau (>0.6) = kanopi rapat. Skala "
-            "dipatok -0.2..0.8 sehingga warna bisa dibandingkan antar tanggal. "
-            "Transparan = awan."
+            "Normalized Difference Vegetation Index (8-day MOD09A1 composite, "
+            "clouds removed). Red (<0) = water or built-up land; yellow "
+            "(~0.3) = sparse vegetation; green (>0.6) = dense canopy. The scale "
+            "is fixed at -0.2..0.8 so colours can be compared across dates. "
+            "Transparent = cloud."
         ),
     ),
     PreviewSpec(
@@ -255,7 +255,7 @@ PREVIEW_SPECS: tuple[PreviewSpec, ...] = (
         source="modis",
         band="NDWI",
         label="MODIS NDWI",
-        units="indeks",
+        units="index",
         cmap="BrBG",
         scale="fixed",
         # Tetap simetris di nol (ambang air McFeeters), tapi dipersempit:
@@ -263,17 +263,17 @@ PREVIEW_SPECS: tuple[PreviewSpec, ...] = (
         vmin=-0.5,
         vmax=0.5,
         interpretation=(
-            "Normalized Difference Water Index (formulasi McFeeters: "
-            "green/NIR). Cokelat (<0) = daratan kering; biru-hijau (>0) = "
-            "badan air terbuka. Ambang genangan biasanya diambil di sekitar 0. "
-            "Transparan = awan."
+            "Normalized Difference Water Index (McFeeters formulation: "
+            "green/NIR). Brown (<0) = dry land; blue-green (>0) = "
+            "open water. The flooding threshold is usually taken around 0. "
+            "Transparent = cloud."
         ),
     ),
     PreviewSpec(
         key="gpm_rain_24h",
         source="gpm",
         band="RAIN_24H",
-        label="GPM Curah Hujan 24 jam",
+        label="GPM Rainfall 24 h",
         units="mm",
         # Sequential gelap-di-atas: intensitas hujan tinggi harus jadi warna
         # paling pekat, bukan paling terang, supaya menonjol di atas latar.
@@ -281,38 +281,38 @@ PREVIEW_SPECS: tuple[PreviewSpec, ...] = (
         scale="zero_based",
         transparent_below=0.1,
         interpretation=(
-            "Curah hujan satu hari kalender UTC tanggal akuisisi (IMERG "
-            "harian, sel 0.1 derajat ~11 km). Pemicu langsung banjir kilat. "
-            "Piksel <0.1 mm dibuat transparan supaya area kering tidak "
-            "terbaca sebagai 'hujan sangat sedikit'."
+            "Rainfall over the UTC calendar day of the acquisition date "
+            "(daily IMERG, 0.1-degree cells ~11 km). A direct trigger of "
+            "flash floods. Pixels <0.1 mm are made transparent so dry areas "
+            "are not read as 'very little rain'."
         ),
     ),
     PreviewSpec(
         key="gpm_rain_72h",
         source="gpm",
         band="RAIN_72H",
-        label="GPM Curah Hujan 72 jam",
+        label="GPM Rainfall 72 h",
         units="mm",
         cmap="YlGnBu",
         scale="zero_based",
         transparent_below=0.1,
         interpretation=(
-            "Akumulasi 3 hari. Menangkap hujan bertingkat yang menjenuhkan "
-            "tanah sebelum kejadian puncak."
+            "3-day accumulation. Captures the successive rainfall that "
+            "saturates the soil before the peak event."
         ),
     ),
     PreviewSpec(
         key="gpm_rain_7d",
         source="gpm",
         band="RAIN_7D",
-        label="GPM Curah Hujan 7 hari",
+        label="GPM Rainfall 7 days",
         units="mm",
         cmap="YlGnBu",
         scale="zero_based",
         transparent_below=0.1,
         interpretation=(
-            "Akumulasi sepekan. Proksi kondisi kelembapan awal — hujan yang "
-            "sama menghasilkan genangan jauh lebih luas di atas tanah jenuh."
+            "1-week accumulation. A proxy for antecedent moisture — the same "
+            "rainfall produces far more widespread flooding on saturated soil."
         ),
     ),
 )
@@ -320,13 +320,13 @@ PREVIEW_SPECS: tuple[PreviewSpec, ...] = (
 # Komposit RGB Sentinel-1: kanal warna dipetakan ke besaran polarimetrik, bukan
 # ke warna asli apa pun. Ini konvensi baku untuk GRD dual-pol.
 S1_RGB_KEY = "s1_rgb_composite"
-S1_RGB_LABEL = "Sentinel-1 Komposit RGB (VV / VH / VV-VH)"
+S1_RGB_LABEL = "Sentinel-1 RGB Composite (VV / VH / VV-VH)"
 S1_RGB_INTERPRETATION = (
-    "False color: R = VV, G = VH, B = selisih VV-VH (dB). Air terbuka jadi "
-    "gelap/kebiruan (VV dan VH sama-sama rendah), lahan bervegetasi jadi "
-    "kehijauan (VH relatif tinggi), area terbangun jadi merah muda hingga "
-    "putih (VV sangat tinggi). Berguna untuk memisahkan genangan dari bayangan "
-    "topografi yang di citra satu-band terlihat sama gelapnya."
+    "False color: R = VV, G = VH, B = VV-VH difference (dB). Open water turns "
+    "dark/bluish (both VV and VH low), vegetated land turns "
+    "greenish (VH relatively high), built-up areas turn pink to "
+    "white (VV very high). Useful for separating flooding from topographic "
+    "shadow, which look equally dark in a single-band image."
 )
 
 
@@ -391,7 +391,7 @@ def _aux_source_path(
         # band RAIN_24H -> window "24h", bentuk yang dipakai module8.
         filename = m8.band_filename(band.removeprefix("RAIN_").lower(), date_key)
     else:  # pragma: no cover - dijaga PREVIEW_SPECS
-        raise ValueError(f"source aux tidak dikenal: {source!r}")
+        raise ValueError(f"unknown aux source: {source!r}")
     tier = tier_for_level(processing_level)
     path = fm.get_scene_dir(dataset_id, dataset_name, tier, source, date_key) / filename
     return path if path.exists() else None
@@ -740,7 +740,7 @@ def _class_percentages(layer: _Layer, spec: PreviewSpec) -> dict[str, float]:
         label: round(float((values == value).sum()) / total * 100, 2)
         for value, _color, _alpha, label in spec.categories
     }
-    out["Tidak ada data"] = round(float(layer.mask.sum()) / total * 100, 2)
+    out["No data"] = round(float(layer.mask.sum()) / total * 100, 2)
     return out
 
 
@@ -833,8 +833,8 @@ def _write_json(path: Path, payload: dict) -> Path:
 def _grayscale_info(entries: list[dict]) -> dict:
     return {
         "kind": "grayscale",
-        "purpose": "Representasi ilmiah — pembacaan nilai relatif per berkas.",
-        "colormap": "gray (linear, tanpa hue)",
+        "purpose": "Scientific representation — reading relative values per file.",
+        "colormap": "gray (linear, no hue)",
         "image_mode": "LA (luminansi 8-bit + alpha)",
         "stretch": {
             "method": "percentile",
@@ -842,26 +842,26 @@ def _grayscale_info(entries: list[dict]) -> dict:
             "percentile_high": PCT_HIGH,
             "per_file": True,
             "note": (
-                "Rentang dihitung ulang dari piksel valid tiap berkas, jadi "
-                "kontras maksimal untuk berkas itu — tapi tingkat abu-abu "
-                "TIDAK bisa dibandingkan antar tanggal atau antar band. "
-                "Untuk perbandingan lintas waktu pakai folder colored/, yang "
-                "skalanya dipatok."
+                "The range is recomputed from the valid pixels of each file, so "
+                "contrast is maximal for that file — but grey levels "
+                "are NOT comparable across dates or bands. "
+                "For comparison over time use the colored/ folder, whose "
+                "scale is fixed."
             ),
         },
         "pre_transform": (
-            "Band Sentinel-1 dikonversi ke desibel (10*log10) sebelum "
-            "di-stretch: GOLD menyimpan sigma0 linear yang sebarannya "
-            "menjulur ekstrem, dan stretch persentil langsung di atasnya "
-            "menghasilkan citra gelap tak terbaca. MODIS dan GPM dirender "
-            "apa adanya. Kolom 'transform' tiap gambar mencatat mana yang "
-            "kena konversi."
+            "Sentinel-1 bands are converted to decibels (10*log10) before "
+            "stretching: GOLD stores linear sigma0, whose distribution has an "
+            "extreme tail, and a percentile stretch applied directly to it "
+            "produces an unreadably dark image. MODIS and GPM are rendered "
+            "as-is. Each image's 'transform' field records which ones "
+            "were converted."
         ),
-        "nodata": "Transparan (alpha=0). Tidak dipetakan ke hitam karena hitam adalah nilai sah untuk backscatter rendah / air.",
+        "nodata": "Transparent (alpha=0). Not mapped to black because black is a valid value for low backscatter / water.",
         "interpretation": (
-            "Gelap = nilai rendah pada rentang persentil berkas ini; terang = "
-            "nilai tinggi. Untuk SAR, gelap umumnya permukaan halus (air, "
-            "aspal); terang umumnya permukaan kasar atau bangunan."
+            "Dark = low values within this file's percentile range; bright = "
+            "high values. For SAR, dark is usually a smooth surface (water, "
+            "asphalt); bright is usually a rough surface or buildings."
         ),
         "images": entries,
     }
@@ -906,14 +906,14 @@ def _composite_info(entries: list[dict]) -> dict:
         "kind": "composite",
         "count": len(entries),
         "description": (
-            "Komposit false-color RGB dari beberapa band sekaligus. Warna di "
-            "sini menyatakan hubungan antar-band, bukan nilai satu besaran, "
-            "jadi tidak ada colorbar yang bisa dipasang padanya. Berkas "
-            "*_on_s1.png adalah pengecualian: lapisan MODIS/GPM berwarna "
-            "(lihat 'legend'/colored/) ditumpuk di atas citra Sentinel-1 "
-            "grayscale sebagai peta dasar."
+            "False-color RGB composite of several bands at once. Colour here "
+            "expresses the relationship between bands, not the value of a "
+            "single quantity, so no colorbar can be attached to it. The "
+            "*_on_s1.png files are an exception: coloured MODIS/GPM layers "
+            "(see 'legend'/colored/) are stacked over the grayscale "
+            "Sentinel-1 image as a base map."
         ),
-        "not_for": "Analisis kuantitatif — pakai gold/*.tif atau fusion/*.h5.",
+        "not_for": "Quantitative analysis — use gold/*.tif or fusion/*.h5.",
         "images": entries,
     }
 
@@ -921,46 +921,46 @@ def _composite_info(entries: list[dict]) -> dict:
 def _colored_info(entries: list[dict]) -> dict:
     return {
         "kind": "colored",
-        "purpose": "Publikasi dan presentasi — warna yang bisa dibaca lintas tanggal.",
+        "purpose": "Publication and presentation — colours that can be read across dates.",
         "image_mode": "RGBA (8-bit per kanal)",
         "colormap_strategy": {
             "sentinel1": (
-                "viridis, sequential perseptual-uniform. Backscatter adalah "
-                "besaran berurut, jadi colormap divergen akan mengarang titik "
-                "tengah yang tidak punya arti fisik. Ditambah satu komposit "
-                "false-color RGB (VV/VH/VV-VH)."
+                "viridis, perceptually uniform sequential. Backscatter is an "
+                "ordered quantity, so a diverging colormap would invent a "
+                "midpoint with no physical meaning. Plus one false-color "
+                "RGB composite (VV/VH/VV-VH)."
             ),
             "modis": (
-                "FLOOD: palet kelas (abu-abu = tanpa air, biru = air "
-                "permanen, oranye = banjir musiman, merah = banjir tidak biasa, "
-                "transparan = data tidak cukup); lihat 'legend' tiap entri. "
-                "NDVI RdYlGn dipatok -0.2..0.8 (merah = air/lahan terbangun, "
-                "hijau = vegetasi); NDWI BrBG dipatok -0.5..0.5 dengan nol di "
-                "tengah (cokelat = kering, biru-hijau = air). Awan transparan."
+                "FLOOD: class palette (grey = no water, blue = permanent "
+                "water, orange = seasonal flood, red = unusual flood, "
+                "transparent = insufficient data); see each entry's 'legend'. "
+                "NDVI RdYlGn is fixed at -0.2..0.8 (red = water/built-up land, "
+                "green = vegetation); NDWI BrBG is fixed at -0.5..0.5 with zero "
+                "in the middle (brown = dry, blue-green = water). Clouds are transparent."
             ),
             "gpm": (
-                "YlGnBu sequential mulai dari nol, batas atas persentil 98 per "
-                "berkas. Nol adalah nol sungguhan (bukan minimum data), dan "
-                "piksel di bawah 0.1 mm dibuat transparan supaya area kering "
-                "tidak terbaca sebagai hujan ringan."
+                "YlGnBu sequential starting at zero, with the upper bound at the "
+                "98th percentile per file. Zero is a true zero (not the data "
+                "minimum), and pixels below 0.1 mm are made transparent so dry "
+                "areas are not read as light rain."
             ),
         },
-        "nodata": "Transparan (alpha=0), sama seperti grayscale/.",
+        "nodata": "Transparent (alpha=0), same as grayscale/.",
         "grid": (
-            "Kalau Sentinel-1 ada, MODIS/GPM direproject ke grid preview S1 "
-            "(nearest-neighbour; lihat 'aligned_to') sehingga semua PNG satu "
-            "tanggal berukuran sama dan bisa ditumpuk. Piksel MODIS 250/500 m "
-            "dan sel GPM 0.1 derajat tampil sebagai blok."
+            "When Sentinel-1 is present, MODIS/GPM are reprojected onto the S1 "
+            "preview grid (nearest-neighbour; see 'aligned_to') so all PNGs "
+            "of one date have the same size and can be stacked. MODIS 250/500 m "
+            "pixels and GPM 0.1-degree cells appear as blocks."
         ),
         "ideal_use_cases": [
-            "Gambar untuk laporan, poster, dan presentasi",
-            "Perbandingan kondisi antar tanggal (skala terpatok untuk MODIS)",
-            "Overlay cepat di atas peta dasar — latar transparan langsung pas",
+            "Figures for reports, posters, and presentations",
+            "Comparing conditions across dates (fixed scale for MODIS)",
+            "Quick overlays on a base map — the transparent background fits right in",
         ],
         "caveat": (
-            "Warna sudah dikuantisasi ke 8-bit dan sebagian rentangnya "
-            "dijepit. Untuk analisis kuantitatif pakai COG di gold/ atau "
-            "HDF5 di fusion/, bukan PNG ini."
+            "Colours are quantised to 8-bit and part of the range is "
+            "clipped. For quantitative analysis use the COG in gold/ or the "
+            "HDF5 in fusion/, not this PNG."
         ),
         "images": entries,
     }
@@ -1109,7 +1109,7 @@ def generate_previews(
                 "key": spec.key,
                 "source": spec.source,
                 "band": spec.band,
-                "reason": "berkas GOLD tidak ada di disk",
+                "reason": "GOLD file is not on disk",
             })
             continue
 
@@ -1123,7 +1123,7 @@ def generate_previews(
         if not overwrite and wanted_paths and all(p.exists() for p in wanted_paths):
             skipped.append({
                 "key": spec.key, "source": spec.source, "band": spec.band,
-                "reason": "sudah ada (overwrite=False)",
+                "reason": "already exists (overwrite=False)",
             })
             continue
 
@@ -1137,14 +1137,14 @@ def generate_previews(
             logger.exception("[M10] gagal baca %s untuk %s", src_path, spec.key)
             skipped.append({
                 "key": spec.key, "source": spec.source, "band": spec.band,
-                "reason": f"gagal dibaca: {exc}",
+                "reason": f"failed to read: {exc}",
             })
             continue
 
         if layer.valid.size == 0:
             skipped.append({
                 "key": spec.key, "source": spec.source, "band": spec.band,
-                "reason": "seluruh piksel NoData",
+                "reason": "all pixels are NoData",
             })
             continue
 
@@ -1178,8 +1178,8 @@ def generate_previews(
                     "colormap": "gray",
                     "value_range": [round(g_lo, 4), round(g_hi, 4)],
                     "range_method": (
-                        "kelas tetap" if spec.categorical
-                        else f"persentil {PCT_LOW}-{PCT_HIGH}"
+                        "fixed classes" if spec.categorical
+                        else f"percentile {PCT_LOW}-{PCT_HIGH}"
                     ),
                     "size_bytes": gray_path.stat().st_size,
                 })
@@ -1208,9 +1208,9 @@ def generate_previews(
                 if not _colored_rgba(layer, spec)[..., 3].any():
                     entry["all_transparent"] = True
                     entry["note"] = (
-                        f"Seluruh piksel di bawah {spec.transparent_below} {spec.units} "
-                        "(tidak ada hujan)" if spec.transparent_below is not None
-                        else "Tidak ada kelas yang bisa ditampilkan"
+                        f"All pixels are below {spec.transparent_below} {spec.units} "
+                        "(no rain)" if spec.transparent_below is not None
+                        else "No class can be displayed"
                     )
                 color_entries.append(entry)
                 written.append(color_path)
@@ -1218,7 +1218,7 @@ def generate_previews(
             logger.exception("[M10] gagal render %s", spec.key)
             skipped.append({
                 "key": spec.key, "source": spec.source, "band": spec.band,
-                "reason": f"gagal render: {exc}",
+                "reason": f"render failed: {exc}",
             })
 
     # Komposit RGB hanya mungkin kalau VV dan VH dua-duanya berhasil dibaca.
@@ -1249,7 +1249,7 @@ def generate_previews(
             logger.exception("[M10] gagal render komposit RGB")
             skipped.append({
                 "key": S1_RGB_KEY, "source": "sentinel1", "band": "VV+VH",
-                "reason": f"gagal render: {exc}",
+                "reason": f"render failed: {exc}",
             })
 
     # Overlay MODIS/GPM di atas Sentinel-1: hanya bermakna kalau ada S1 sebagai
@@ -1269,18 +1269,18 @@ def generate_previews(
                     "key": f"{spec.key}_on_s1",
                     "source": spec.source,
                     "band": spec.band,
-                    "label": f"{spec.label} di atas Sentinel-1",
+                    "label": f"{spec.label} over Sentinel-1",
                     "units": spec.units,
                     "file": out_path.name,
-                    "colormap": f"{spec.cmap} di atas grayscale {grid_source}",
+                    "colormap": f"{spec.cmap} over grayscale {grid_source}",
                     "range_method": spec.scale,
                     "basemap": grid_source,
                     "width": layer.width,
                     "height": layer.height,
                     "interpretation": (
-                        f"{spec.interpretation} Latar abu-abu adalah citra "
-                        f"{grid_source} (garis pantai, daratan, laut) supaya "
-                        "posisi piksel terbaca secara geografis."
+                        f"{spec.interpretation} The grey background is the "
+                        f"{grid_source} image (coastline, land, sea) so that "
+                        "pixel positions can be read geographically."
                     ),
                     "size_bytes": out_path.stat().st_size,
                 }
@@ -1295,7 +1295,7 @@ def generate_previews(
                 logger.exception("[M10] gagal render overlay %s", spec.key)
                 skipped.append({
                     "key": f"{spec.key}_on_s1", "source": spec.source,
-                    "band": spec.band, "reason": f"gagal render: {exc}",
+                    "band": spec.band, "reason": f"render failed: {exc}",
                 })
 
     # PNG render lama untuk lapisan yang kali ini dilewati (mis. NDVI yang
@@ -1380,9 +1380,9 @@ def generate_previews(
         "kinds": kinds,
         "skipped": skipped,
         "usage": {
-            "grayscale": "Pembacaan ilmiah satu berkas; kontras dioptimalkan per berkas.",
-            "colored": "Publikasi dan perbandingan lintas tanggal; skala terpatok.",
-            "not_for": "Analisis kuantitatif — pakai gold/*.tif atau fusion/*.h5.",
+            "grayscale": "Scientific reading of a single file; contrast is optimised per file.",
+            "colored": "Publication and cross-date comparison; fixed scale.",
+            "not_for": "Quantitative analysis — use gold/*.tif or fusion/*.h5.",
         },
     }
     # Sidecar per level DAN per tanggal. Level karena dua level menulis ke

@@ -109,7 +109,7 @@ class TestNormalizeSourceConfigs:
         """{"gpm": ..., "GPM": ...} adalah dua key dict yang berbeda tapi satu
         sumber yang sama -- menerimanya berarti satu dari dua permintaan user
         hilang tanpa suara."""
-        with pytest.raises(ValueError, match="source ganda"):
+        with pytest.raises(ValueError, match="duplicate source"):
             normalize_source_configs({"gpm": ["RAW"], "GPM": ["PROCESSED"]})
 
     @pytest.mark.parametrize("bad_payload", [
@@ -167,7 +167,7 @@ class TestValidators:
         assert _validate_fusion_strategy("", source_count=1) is None
 
     def test_unknown_fusion_strategy_rejected(self):
-        with pytest.raises(ValueError, match="tidak dikenal"):
+        with pytest.raises(ValueError, match="unknown"):
             _validate_fusion_strategy("BEST_EFFORT", source_count=2)
 
     def test_preview_none_means_all_variants(self):
@@ -186,7 +186,7 @@ class TestValidators:
         ) == ["GRAYSCALE", "COMPOSITE"]
 
     def test_unknown_preview_option_rejected(self):
-        with pytest.raises(ValueError, match="tidak dikenal"):
+        with pytest.raises(ValueError, match="unknown"):
             _validate_preview_options(["SEPIA"])
 
 
@@ -334,11 +334,11 @@ class TestCreateDatasetWithSources:
         assert list(no_preview.preview_options) == []
 
     @pytest.mark.parametrize("payload_kwargs,sources,match", [
-        ({}, {}, "minimal 1 sumber"),
-        ({}, {"landsat": ["RAW"]}, "source tidak dikenal"),
+        ({}, {}, "at least 1 source"),
+        ({}, {"landsat": ["RAW"]}, "unknown source"),
         ({}, {"sentinel1": ["RAW"], "modis": ["RAW"]}, "fusion_strategy required"),
         ({"fusion_strategy": "HYBRID"}, {"modis": ["RAW"]}, "must be null"),
-        ({"selected_satellites": ["S1"]}, {"modis": ["RAW"]}, "tidak dikenal"),
+        ({"selected_satellites": ["S1"]}, {"modis": ["RAW"]}, "unknown"),
     ])
     def test_invalid_input_raises_before_any_insert(self, db_client, sample_region,
                                                      payload_kwargs, sources, match):

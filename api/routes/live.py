@@ -28,11 +28,11 @@ def _mgr(db: DatabaseClient) -> DatasetManager:
     return DatasetManager(db)
 
 
-@router.get("", response_model=LiveStatusResponse, summary="Status dataset live")
+@router.get("", response_model=LiveStatusResponse, summary="Live dataset status")
 async def get_live_status(db: DatabaseClient = Depends(get_db)) -> LiveStatusResponse:
     live = _mgr(db).get_live_dataset()
     if live is None:
-        raise HTTPException(404, "Dataset live belum ada")
+        raise HTTPException(404, "Live dataset does not exist yet")
 
     with db.session() as sess:
         sources = sess.scalars(select(LiveDatasetSource)).all()
@@ -81,7 +81,7 @@ async def clear_live(db: DatabaseClient = Depends(get_db)) -> LiveClearResponse:
     )
 
 
-@router.post("/backfill", response_model=LiveBackfillResponse, summary="Backfill dataset live untuk rentang tanggal tertentu")
+@router.post("/backfill", response_model=LiveBackfillResponse, summary="Backfill the live dataset for a given date range")
 async def backfill_live(req: LiveBackfillRequest, db: DatabaseClient = Depends(get_db)) -> LiveBackfillResponse:
     try:
         result = _mgr(db).trigger_live_backfill(req.date_start, req.date_end)
@@ -94,14 +94,14 @@ async def backfill_live(req: LiveBackfillRequest, db: DatabaseClient = Depends(g
     )
 
 
-@router.get("/scenes", response_model=list[LiveSceneItem], summary="Scene terbaru di dataset live")
+@router.get("/scenes", response_model=list[LiveSceneItem], summary="Latest scenes in the live dataset")
 async def list_live_scenes(
     db: DatabaseClient = Depends(get_db),
     limit: int = Query(50, ge=1, le=200),
 ) -> list[LiveSceneItem]:
     live = _mgr(db).get_live_dataset()
     if live is None:
-        raise HTTPException(404, "Dataset live belum ada")
+        raise HTTPException(404, "Live dataset does not exist yet")
 
     with db.session() as sess:
         products = sess.scalars(
@@ -132,12 +132,12 @@ def _monitor(db: DatabaseClient) -> LiveMonitor:
     return LiveMonitor(db)
 
 
-@router.get("/areas", summary="Daftar Daerah Live")
+@router.get("/areas", summary="List Live Areas")
 async def list_areas(db: DatabaseClient = Depends(get_db)) -> list[dict]:
     return _monitor(db).list_areas()
 
 
-@router.post("/areas", status_code=201, summary="Tambah Daerah Live")
+@router.post("/areas", status_code=201, summary="Add a Live Area")
 async def create_area(req: LiveAreaCreateRequest, db: DatabaseClient = Depends(get_db)) -> dict:
     try:
         return _monitor(db).create_area(req.region_id, req.name, req.retention)
@@ -145,7 +145,7 @@ async def create_area(req: LiveAreaCreateRequest, db: DatabaseClient = Depends(g
         raise HTTPException(400, str(exc))
 
 
-@router.get("/areas/{area_id}", summary="Detail Daerah Live")
+@router.get("/areas/{area_id}", summary="Live Area details")
 async def get_area(area_id: int, db: DatabaseClient = Depends(get_db)) -> dict:
     try:
         return _monitor(db).get_area(area_id)
@@ -153,7 +153,7 @@ async def get_area(area_id: int, db: DatabaseClient = Depends(get_db)) -> dict:
         raise HTTPException(404, str(exc))
 
 
-@router.patch("/areas/{area_id}", summary="Ubah nama/retensi/status Daerah Live")
+@router.patch("/areas/{area_id}", summary="Change a Live Area's name/retention/status")
 async def update_area(area_id: int, req: LiveAreaUpdateRequest,
                       db: DatabaseClient = Depends(get_db)) -> dict:
     try:
@@ -165,7 +165,7 @@ async def update_area(area_id: int, req: LiveAreaUpdateRequest,
         raise HTTPException(400, str(exc))
 
 
-@router.delete("/areas/{area_id}", summary="Hapus Daerah Live (berkas dihapus permanen, log tetap)")
+@router.delete("/areas/{area_id}", summary="Delete a Live Area (files deleted permanently, logs kept)")
 async def delete_area(area_id: int, db: DatabaseClient = Depends(get_db)) -> dict:
     import asyncio
     try:
@@ -175,7 +175,7 @@ async def delete_area(area_id: int, db: DatabaseClient = Depends(get_db)) -> dic
         raise HTTPException(404, str(exc))
 
 
-@router.post("/areas/{area_id}/check", summary="Jalankan siklus sekarang")
+@router.post("/areas/{area_id}/check", summary="Run a cycle now")
 async def run_area_check(area_id: int, db: DatabaseClient = Depends(get_db)) -> dict:
     mon = _monitor(db)
     try:
@@ -184,24 +184,24 @@ async def run_area_check(area_id: int, db: DatabaseClient = Depends(get_db)) -> 
         raise HTTPException(404, str(exc))
     started = mon.start_cycle(area_id)
     return {"area_id": area_id, "started": started,
-            "message": "Siklus dimulai" if started else "Siklus sedang berjalan"}
+            "message": "Cycle started" if started else "A cycle is already running"}
 
 
-@router.get("/areas/{area_id}/card", summary="Isi kartu daerah (scene terpilih, tanggal, forecast)")
+@router.get("/areas/{area_id}/card", summary="Area card contents (selected scene, dates, forecast)")
 async def area_card(area_id: int, date: str | None = Query(None, description="YYYY-MM-DD"),
                     db: DatabaseClient = Depends(get_db)) -> dict:
     from datetime import date as date_cls
     try:
         d = date_cls.fromisoformat(date) if date else None
     except ValueError:
-        raise HTTPException(400, "Format tanggal harus YYYY-MM-DD")
+        raise HTTPException(400, "Date format must be YYYY-MM-DD")
     try:
         return _monitor(db).get_card(area_id, d)
     except LookupError as exc:
         raise HTTPException(404, str(exc))
 
 
-@router.get("/areas/{area_id}/preview/{scene_date}/{key}.png", summary="PNG preview satu scene")
+@router.get("/areas/{area_id}/preview/{scene_date}/{key}.png", summary="PNG preview of a single scene")
 async def area_preview(area_id: int, scene_date: str, key: str,
                        db: DatabaseClient = Depends(get_db)):
     from datetime import date as date_cls
@@ -209,21 +209,21 @@ async def area_preview(area_id: int, scene_date: str, key: str,
     try:
         d = date_cls.fromisoformat(scene_date)
     except ValueError:
-        raise HTTPException(400, "Format tanggal harus YYYY-MM-DD")
+        raise HTTPException(400, "Date format must be YYYY-MM-DD")
     path = _monitor(db).preview_path(area_id, d, key)
     if path is None:
-        raise HTTPException(404, "Preview tidak ada")
+        raise HTTPException(404, "Preview not found")
     return FileResponse(path, media_type="image/png",
                         headers={"Cache-Control": "public, max-age=86400"})
 
 
-@router.get("/areas/{area_id}/events", summary="Log langkah siklus")
+@router.get("/areas/{area_id}/events", summary="Cycle step log")
 async def area_events(area_id: int, limit: int = Query(100, ge=1, le=1000),
                       db: DatabaseClient = Depends(get_db)) -> list[dict]:
     return _monitor(db).events(area_id, limit)
 
 
-@router.get("/areas/{area_id}/activity", summary="Log terbaru: langkah siklus + pipeline unduh/proses")
+@router.get("/areas/{area_id}/activity", summary="Latest log: cycle steps + download/processing pipeline")
 async def area_activity(area_id: int, limit: int = Query(5, ge=1, le=200),
                         db: DatabaseClient = Depends(get_db)) -> list[dict]:
     try:
@@ -232,20 +232,20 @@ async def area_activity(area_id: int, limit: int = Query(5, ge=1, le=200),
         raise HTTPException(404, str(exc))
 
 
-@router.get("/areas/{area_id}/log", summary="Log scene, termasuk yang sudah dihapus")
+@router.get("/areas/{area_id}/log", summary="Scene log, including deleted scenes")
 async def area_scene_log(area_id: int, db: DatabaseClient = Depends(get_db)) -> list[dict]:
     return _monitor(db).scene_log(area_id)
 
 
-@router.post("/areas/{area_id}/scenes/{scene_date}/retry", summary="Coba ulang MODIS/GPM satu scene")
+@router.post("/areas/{area_id}/scenes/{scene_date}/retry", summary="Retry MODIS/GPM for a single scene")
 async def retry_scene(area_id: int, scene_date: str, db: DatabaseClient = Depends(get_db)) -> dict:
     from datetime import date as date_cls
     try:
         d = date_cls.fromisoformat(scene_date)
         started = _monitor(db).retry_scene(area_id, d)
     except ValueError:
-        raise HTTPException(400, "Format tanggal harus YYYY-MM-DD")
+        raise HTTPException(400, "Date format must be YYYY-MM-DD")
     except LookupError as exc:
         raise HTTPException(404, str(exc))
     return {"area_id": area_id, "scene_date": scene_date, "started": started,
-            "message": "Coba ulang dimulai" if started else "Siklus daerah ini sedang berjalan"}
+            "message": "Retry started" if started else "A cycle for this area is already running"}

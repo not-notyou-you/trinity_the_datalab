@@ -48,12 +48,12 @@ OVERLAY_KEYS = {
 LABELS = {
     "s1_vv": "Sentinel-1 VV",
     "s1_vh": "Sentinel-1 VH",
-    "modis_flood": "MODIS Peta Banjir",
+    "modis_flood": "MODIS Flood Map",
     "modis_ndvi": "MODIS NDVI",
-    "modis_ndwi": "MODIS Indeks Air (NDWI)",
-    "gpm_rain_24h": "GPM Hujan 24 jam",
-    "gpm_rain_72h": "GPM Hujan 72 jam",
-    "gpm_rain_7d": "GPM Hujan 7 hari",
+    "modis_ndwi": "MODIS Water Index (NDWI)",
+    "gpm_rain_24h": "GPM Rain 24 h",
+    "gpm_rain_72h": "GPM Rain 72 h",
+    "gpm_rain_7d": "GPM Rain 7 days",
 }
 
 
@@ -143,7 +143,7 @@ def render_scene_previews(files, scene_date: date, inputs: dict) -> dict:
 
     frames = [{b: str(p) for b, p in f.items()} for f in inputs.get("s1") or []]
     if not frames:
-        return {"dir": str(out_dir), "items": {}, "skipped": {"s1": "tidak ada Sentinel-1"}}
+        return {"dir": str(out_dir), "items": {}, "skipped": {"s1": "no Sentinel-1 data"}}
 
     scratch = files.root / "_work" / f"live_{dk}"
     try:
@@ -154,7 +154,7 @@ def render_scene_previews(files, scene_date: date, inputs: dict) -> dict:
         else:
             s1 = frames[0]
         if "VH" not in s1:
-            return {"dir": str(out_dir), "items": {}, "skipped": {"s1": "band VH tidak ada"}}
+            return {"dir": str(out_dir), "items": {}, "skipped": {"s1": "VH band is missing"}}
 
         grid = m10._preview_grid(Path(s1["VH"]), LIVE_MAX_SIDE)
         vh = _read_s1_db(Path(s1["VH"]), grid)
@@ -162,7 +162,7 @@ def render_scene_previews(files, scene_date: date, inputs: dict) -> dict:
 
         for key, band in (("s1_vv", "VV"), ("s1_vh", "VH")):
             if band not in s1:
-                skipped[key] = f"band {band} tidak ada"
+                skipped[key] = f"{band} band is missing"
                 continue
             layer = vh if band == "VH" else _read_s1_db(Path(s1[band]), grid)
             p, legend = _render_gray(layer, out_dir / f"{key}.png")
@@ -171,7 +171,7 @@ def render_scene_previews(files, scene_date: date, inputs: dict) -> dict:
         for key, (source, band) in OVERLAY_KEYS.items():
             found = (inputs.get(source) or {}).get(band)
             if not found:
-                skipped[key] = "berkas sumber tidak ada"
+                skipped[key] = "source file is missing"
                 continue
             spec = _SPECS[key]
             try:
@@ -181,7 +181,7 @@ def render_scene_previews(files, scene_date: date, inputs: dict) -> dict:
                               "source_date": found[1].isoformat()}
             except Exception as exc:
                 logger.exception("[LIVE] preview %s %s gagal", key, scene_date)
-                skipped[key] = f"render gagal: {exc}"
+                skipped[key] = f"render failed: {exc}"
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
 

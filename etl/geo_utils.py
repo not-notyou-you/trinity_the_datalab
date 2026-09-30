@@ -32,28 +32,28 @@ def validate_bbox(
         min_lon, min_lat = float(min_lon), float(min_lat)
         max_lon, max_lat = float(max_lon), float(max_lat)
     except (TypeError, ValueError):
-        raise BBoxError("Koordinat harus berupa angka")
+        raise BBoxError("Coordinates must be numbers")
 
     for label, value in (("Longitude", min_lon), ("Longitude", max_lon)):
         if not -180.0 <= value <= 180.0:
-            raise BBoxError(f"{label} harus di rentang -180 sampai 180 (dapat {value})")
+            raise BBoxError(f"{label} must be between -180 and 180 (got {value})")
     for label, value in (("Latitude", min_lat), ("Latitude", max_lat)):
         if not -90.0 <= value <= 90.0:
-            raise BBoxError(f"{label} harus di rentang -90 sampai 90 (dapat {value})")
+            raise BBoxError(f"{label} must be between -90 and 90 (got {value})")
 
     if min_lon >= max_lon:
-        raise BBoxError("Longitude minimum harus lebih kecil dari longitude maksimum")
+        raise BBoxError("Min longitude must be less than max longitude")
     if min_lat >= max_lat:
-        raise BBoxError("Latitude minimum harus lebih kecil dari latitude maksimum")
+        raise BBoxError("Min latitude must be less than max latitude")
 
     span_lon, span_lat = max_lon - min_lon, max_lat - min_lat
     if span_lon < MIN_SPAN_DEG or span_lat < MIN_SPAN_DEG:
         raise BBoxError(
-            f"Area terlalu kecil, minimum {MIN_SPAN_DEG} derajat (~110 m) per sisi"
+            f"Area too small, minimum {MIN_SPAN_DEG} degrees (~110 m) per side"
         )
     if span_lon > MAX_SPAN_DEG or span_lat > MAX_SPAN_DEG:
         raise BBoxError(
-            f"Area terlalu besar, maksimum {MAX_SPAN_DEG} derajat (~1100 km) per sisi"
+            f"Area too large, maximum {MAX_SPAN_DEG} degrees (~1100 km) per side"
         )
 
     return min_lon, min_lat, max_lon, max_lat
@@ -76,7 +76,7 @@ def parse_bbox_string(raw: str) -> tuple[float, float, float, float]:
     numbers = re.findall(r"-?\d+(?:\.\d+)?", raw or "")
     if len(numbers) != 4:
         raise BBoxError(
-            "Format bbox harus 4 angka: min_lon, min_lat, max_lon, max_lat"
+            "The bbox format must be 4 numbers: min_lon, min_lat, max_lon, max_lat"
         )
     return validate_bbox(*[float(n) for n in numbers])
 
@@ -124,7 +124,7 @@ def geocode_search(query: str, limit: int = 5, country_codes: str = "id") -> lis
         timeout=GEOCODE_TIMEOUT_SEC,
     )
     if resp.status_code != 200:
-        raise RuntimeError(f"Geocoding gagal ({resp.status_code}) untuk lokasi: {query}")
+        raise RuntimeError(f"Geocoding failed ({resp.status_code}) for location: {query}")
 
     results: list[dict] = []
     for item in resp.json():

@@ -13,7 +13,7 @@ from typing import AsyncGenerator
 from fastapi import FastAPI, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from etl.database_client import DatabaseClient
 # get_db di-re-export supaya `from api.main import get_db` tetap jalan; objeknya
@@ -115,7 +115,7 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
         msg = str(err.get("msg", "")).removeprefix("Value error, ").strip()
         loc = [str(p) for p in err.get("loc", []) if p not in ("body", "query", "path")]
         messages.append(f"{'.'.join(loc)}: {msg}" if loc else msg)
-    detail = " | ".join(dict.fromkeys(m for m in messages if m)) or "Permintaan tidak valid"
+    detail = " | ".join(dict.fromkeys(m for m in messages if m)) or "Invalid request"
     return JSONResponse(status_code=422, content={"detail": detail})
 
 
@@ -151,4 +151,10 @@ app.include_router(report.router, prefix="/api/datasets", tags=["Report"])
 app.include_router(live.router, prefix="/api/live", tags=["Live"])
 app.include_router(regions.router, prefix="/api/regions", tags=["Regions"])
 app.include_router(merge.router, prefix="/api/merge", tags=["Merge"])
+# "/" milik landing page (web/index.html); aplikasi kerjanya ada di "/app".
+@app.get("/app", include_in_schema=False)
+async def web_app() -> FileResponse:
+    return FileResponse("web/app.html")
+
+
 app.mount("/", StaticFiles(directory="web", html=True), name="web")

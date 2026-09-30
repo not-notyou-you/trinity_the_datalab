@@ -131,13 +131,13 @@ def build_job_context(db, job_id: int):
     with db.session() as sess:
         job = sess.scalar(select(DatasetJob).where(DatasetJob.job_id == job_id))
         if job is None:
-            raise ValueError(f"job_id={job_id} tidak ditemukan")
+            raise ValueError(f"job_id={job_id} not found")
         dataset_id = job.dataset_id
 
     dsmgr = DatasetManager(db)
     dataset = dsmgr.get_dataset(dataset_id)
     if dataset is None:
-        raise ValueError(f"dataset_id={dataset_id} tidak ditemukan")
+        raise ValueError(f"dataset_id={dataset_id} not found")
 
     plan = load_processing_plan(db, dataset_id)
     required_tiers = dataset["required_tiers"]

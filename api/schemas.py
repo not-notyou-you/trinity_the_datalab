@@ -269,7 +269,7 @@ class CreateDatasetRequest(BaseModel):
     @model_validator(mode="after")
     def _require_location(self) -> "CreateDatasetRequest":
         if self.region_id is None and not (self.location or "").strip():
-            raise ValueError("Isi region_id atau location")
+            raise ValueError("Provide region_id or location")
         return self
 
     @model_validator(mode="after")
@@ -685,7 +685,7 @@ class RegionCreateRequest(BaseModel):
     def _strip_name(cls, v: str) -> str:
         v = v.strip()
         if not v:
-            raise ValueError("Nama lokasi tidak boleh kosong")
+            raise ValueError("Location name must not be empty")
         return v
 
     @model_validator(mode="after")
@@ -707,11 +707,11 @@ class RegionUpdateRequest(BaseModel):
     @model_validator(mode="after")
     def _at_least_one(self) -> "RegionUpdateRequest":
         if self.name is None and self.description is None:
-            raise ValueError("Tidak ada perubahan: isi name atau description")
+            raise ValueError("No changes: provide name or description")
         if self.name is not None:
             self.name = self.name.strip()
             if not self.name:
-                raise ValueError("Nama lokasi tidak boleh kosong")
+                raise ValueError("Location name must not be empty")
         return self
 
 

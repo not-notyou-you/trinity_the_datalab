@@ -49,8 +49,8 @@ class Forecast:
     model: str = "-"
     horizon_days: int = 0
     backtest: dict = field(default_factory=dict)
-    confidence: str = "Rendah"
-    direction: str = "stabil"
+    confidence: str = "Low"
+    direction: str = "stable"
     recent_mean: float | None = None
     recent_days: int = 0
     period_mean: float | None = None
@@ -67,8 +67,8 @@ _VARIABLES = [
     ("vh", "Sentinel-1 VH", "dB", "SENTINEL1", (-40.0, 5.0), False),
     ("ndvi", "MODIS NDVI", "", "MODIS", (-1.0, 1.0), False),
     ("ndwi", "MODIS NDWI", "", "MODIS", (-1.0, 1.0), False),
-    ("flood", "Luas banjir MODIS", "% piksel", "MODIS", (0.0, 100.0), False),
-    ("rain", "Curah hujan GPM", "mm/hari", "GPM", (0.0, None), True),
+    ("flood", "MODIS flood extent", "% of pixels", "MODIS", (0.0, 100.0), False),
+    ("rain", "GPM rainfall", "mm/day", "GPM", (0.0, None), True),
 ]
 
 
@@ -154,7 +154,7 @@ def _forecast_one(key, label, unit, source, pts, bounds, log, period_end, h) -> 
                 "mae": float(np.mean(np.abs(_back(pred, log) - _back(test, log)))),
                 "err": test - pred,
             }
-        naive_mae = results["naif"]["mae"]
+        naive_mae = results["naive"]["mae"]
         best = min(results, key=lambda k: results[k]["mae"])
         skill = 1 - results[best]["mae"] / naive_mae if naive_mae > 0 else 0.0
         fc.backtest = {
@@ -164,8 +164,8 @@ def _forecast_one(key, label, unit, source, pts, bounds, log, period_end, h) -> 
             "mae_by_model": {k: round(v["mae"], 4) for k, v in results.items()},
         }
     else:
-        best = "rata-rata"
-        fc.notes.append("Deret terlalu pendek untuk backtest; dipakai rata-rata periode dengan keyakinan rendah.")
+        best = "mean"
+        fc.notes.append("Series too short for a backtest; the period mean is used, with low confidence.")
 
     final = _MODELS[best](y)
     pred = final.predict(steps)
@@ -200,23 +200,23 @@ def _forecast_one(key, label, unit, source, pts, bounds, log, period_end, h) -> 
 
     skill = fc.backtest.get("skill")
     if skill is None or skill < 0.05:
-        fc.confidence = "Rendah"
+        fc.confidence = "Low"
     elif skill >= 0.2 and n >= 30:
-        fc.confidence = "Tinggi"
+        fc.confidence = "High"
     else:
-        fc.confidence = "Sedang"
+        fc.confidence = "Medium"
     if skill is not None and skill <= 0:
-        fc.notes.append("Tidak ada model yang mengalahkan metode naif pada backtest; prakiraan setara 'kondisi terakhir berlanjut'.")
+        fc.notes.append("No model beat the naive method in the backtest; the forecast is equivalent to 'the latest condition continues'.")
     if max_gap > 10:
-        fc.notes.append(f"Ada celah observasi {max_gap} hari yang diisi interpolasi linier.")
+        fc.notes.append(f"There is an observation gap of {max_gap} days that was filled by linear interpolation.")
     if last < period_end:
-        fc.notes.append(f"Observasi terakhir {last}; prakiraan dimulai dari tanggal itu.")
+        fc.notes.append(f"Last observation {last}; the forecast starts from that date.")
 
     # Arah: bandingkan rata-rata prakiraan dengan kondisi terkini; perubahan
     # di bawah 0,25 sigma periode dianggap tidak bermakna (stabil).
     diff = fc.forecast_mean - fc.recent_mean
     thr = 0.25 * (fc.period_std or 0)
-    fc.direction = "stabil" if abs(diff) <= thr else ("naik" if diff > 0 else "turun")
+    fc.direction = "stable" if abs(diff) <= thr else ("up" if diff > 0 else "down")
     return fc
 
 
@@ -315,8 +315,8 @@ class _HoltDamped(_Model):
 
 
 _MODELS = {
-    "naif": _Naive,
-    "rata-rata": _Mean,
+    "naive": _Naive,
+    "mean": _Mean,
     "SES": _SES,
     "Holt damped": _HoltDamped,
 }

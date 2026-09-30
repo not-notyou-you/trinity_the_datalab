@@ -23,15 +23,15 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
-@router.get("/{dataset_id}/report", summary="Laporan PDF komprehensif dataset")
+@router.get("/{dataset_id}/report", summary="Comprehensive PDF report for a dataset")
 async def get_dataset_report(
     dataset_id: int,
-    force: bool = Query(False, description="Lewati cache, buat ulang laporan"),
+    force: bool = Query(False, description="Skip the cache and regenerate the report"),
     db: DatabaseClient = Depends(get_db),
 ) -> FileResponse:
     info = DatasetManager(db).get_dataset(dataset_id)
     if info is None:
-        raise HTTPException(404, f"Dataset {dataset_id} tidak ditemukan")
+        raise HTTPException(404, f"Dataset {dataset_id} not found")
 
     try:
         pdf_path = ReportGenerator(dataset_id, db).generate(force=force)
@@ -43,17 +43,17 @@ async def get_dataset_report(
     return FileResponse(str(pdf_path), filename=filename, media_type="application/pdf")
 
 
-@router.get("/{dataset_id}/report/json", summary="Ringkasan laporan dalam format JSON (Section 10)")
+@router.get("/{dataset_id}/report/json", summary="Report summary in JSON format (Section 10)")
 async def get_dataset_report_json(
     dataset_id: int,
-    force: bool = Query(False, description="Lewati cache, buat ulang laporan"),
+    force: bool = Query(False, description="Skip the cache and regenerate the report"),
     db: DatabaseClient = Depends(get_db),
 ) -> FileResponse:
     """JSON ditulis di samping PDF (stem sama) oleh ReportGenerator, jadi
     endpoint ini memakai cache yang sama dengan endpoint PDF."""
     info = DatasetManager(db).get_dataset(dataset_id)
     if info is None:
-        raise HTTPException(404, f"Dataset {dataset_id} tidak ditemukan")
+        raise HTTPException(404, f"Dataset {dataset_id} not found")
 
     try:
         pdf_path = ReportGenerator(dataset_id, db).generate(force=force)

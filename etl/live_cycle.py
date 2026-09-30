@@ -68,7 +68,7 @@ def run_cycle(mon: LiveMonitor, area_id: int) -> dict:
     try:
         key, prev_status = _queue_key(mon, area_id)
         if _CYCLE_LOCK.busy():
-            _set_area(mon, area_id, status="WAITING", status_message="Menunggu giliran")
+            _set_area(mon, area_id, status="WAITING", status_message="Waiting its turn")
         # Seluruh siklus (termasuk retry MODIS/GPM di luar run_dataset_job)
         # mengalah ke unduhan Dataset Saya di slot koneksi download_guard.
         with _CYCLE_LOCK.hold(key), dg.low_priority():
@@ -160,7 +160,7 @@ def _recover_interrupted_ingest(mon: LiveMonitor, area_id: int) -> None:
             s1 = dict(src.get("sentinel1") or {})
             s1["attempts"] = int(s1.get("attempts") or 0) + 1
             s1["status"] = "FAILED"
-            s1["reason"] = "Ingest terputus (proses berhenti)"
+            s1["reason"] = "Ingest interrupted (process stopped)"
             src["sentinel1"] = s1
             r.source_status = src
             r.status = "FAILED"
@@ -178,11 +178,11 @@ def _recover_interrupted_ingest(mon: LiveMonitor, area_id: int) -> None:
         job_ids = [j.job_id for j in jobs]
     for d in sorted(stuck_dates):
         mon.log(area_id, "RECOVER", "WARNING",
-                f"Scene {d} terputus di tengah ingest, akan dicoba ulang", scene_date=d)
+                f"Scene {d} was interrupted mid-ingest and will be retried", scene_date=d)
     if job_ids:
         logger.warning("[LIVE] area=%d job LIVE_INGEST yatim ditutup FAILED: %s", area_id, job_ids)
         mon.log(area_id, "RECOVER", "WARNING",
-                f"Job ingest terputus ditutup: {', '.join(map(str, job_ids))}", job_ids=job_ids)
+                f"Interrupted ingest job(s) closed: {', '.join(map(str, job_ids))}", job_ids=job_ids)
 
 
 def _run_cycle_locked(mon: LiveMonitor, area_id: int) -> dict:
@@ -191,7 +191,7 @@ def _run_cycle_locked(mon: LiveMonitor, area_id: int) -> dict:
         if a is None or a.deleted_at is not None:
             return {"skipped": "deleted"}
         if not a.enabled:
-            mon.log(area_id, "CYCLE", "SKIPPED", "Daerah nonaktif, siklus dilewati")
+            mon.log(area_id, "CYCLE", "SKIPPED", "Area is disabled, cycle skipped")
             return {"skipped": "disabled"}
         retention, bbox_wkt, dataset_id = a.retention, a.bbox_wkt, a.dataset_id
         prev_status = a.status
@@ -199,16 +199,16 @@ def _run_cycle_locked(mon: LiveMonitor, area_id: int) -> dict:
         scenes = {r.scene_date: (r.status, r.source_status or {}) for r in rows}
         dataset = sess.get(Dataset, dataset_id) if dataset_id else None
         if dataset is None:
-            a.status, a.status_message = "ERROR", "Dataset daerah hilang"
+            a.status, a.status_message = "ERROR", "The area's dataset is missing"
             return {"error": "dataset_missing"}
         dataset_name = dataset.name
 
     kept = sorted((d for d, (st, _) in scenes.items() if st in ("READY", "PARTIAL")), reverse=True)
     filling = len(kept) < retention
     _set_area(mon, area_id, status="BACKFILLING" if filling else "RUNNING",
-              status_message="Mengisi scene awal" if filling else "Memeriksa scene baru")
+              status_message="Backfilling initial scenes" if filling else "Checking for new scenes")
     mon.log(area_id, "CYCLE", "STARTED",
-            f"Siklus dimulai ({len(kept)}/{retention} scene tersimpan)")
+            f"Cycle started ({len(kept)}/{retention} scenes stored)")
 
     try:
         new_dates = _discover_new_dates(mon, area_id, bbox_wkt, retention, kept, scenes)
@@ -223,8 +223,8 @@ def _run_cycle_locked(mon: LiveMonitor, area_id: int) -> dict:
         _update_dataset_size(mon, dataset_id, dataset_name)
     except Exception as exc:
         logger.exception("[LIVE] siklus area=%d gagal", area_id)
-        mon.log(area_id, "CYCLE", "FAILED", f"Siklus gagal: {exc}",
-                result={"level": "error", "text": f"Siklus gagal: {str(exc)[:300]}"})
+        mon.log(area_id, "CYCLE", "FAILED", f"Cycle failed: {exc}",
+                result={"level": "error", "text": f"Cycle failed: {str(exc)[:300]}"})
         _set_area(mon, area_id, status="ERROR", status_message=str(exc)[:500],
                   last_checked_at=_now())
         return {"error": str(exc)}
@@ -233,11 +233,11 @@ def _run_cycle_locked(mon: LiveMonitor, area_id: int) -> dict:
         n = len(sess.scalars(select(LiveScene).where(
             LiveScene.area_id == area_id, LiveScene.deleted_at.is_(None),
             LiveScene.status.in_(("READY", "PARTIAL")))).all())
-    msg = (f"{n}/{retention} scene tersimpan"
-           + ("" if n >= retention else " — scene Sentinel-1 yang tersedia belum cukup"))
+    msg = (f"{n}/{retention} scenes stored"
+           + ("" if n >= retention else " — not enough Sentinel-1 scenes available yet"))
     _set_area(mon, area_id, status="ACTIVE", status_message=msg, last_checked_at=_now())
     mon.log(area_id, "CYCLE", "COMPLETED",
-            f"Siklus selesai: {len(processed)} scene baru, {msg}",
+            f"Cycle completed: {len(processed)} new scene(s), {msg}",
             new_scenes=[d.isoformat() for d in processed], previous_status=prev_status,
             result=_cycle_result(mon, area_id, new_dates, n, retention))
     return {"new_scenes": [d.isoformat() for d in processed], "stored": n}
@@ -264,29 +264,29 @@ def _cycle_result(mon: LiveMonitor, area_id: int, targets: list[date],
                 elif r.status == "PARTIAL":
                     bad = [_SOURCE_NAMES.get(k, k) for k, v in (r.source_status or {}).items()
                            if isinstance(v, dict) and v.get("status") == "FAILED"]
-                    partial.append(", ".join(bad) or "sumber")
+                    partial.append(", ".join(bad) or "source")
                 elif r.status == "FAILED":
                     failed += 1
     parts = []
     if not targets:
-        parts.append(f"tidak ada scene baru ({stored}/{retention} tersimpan)")
+        parts.append(f"no new scenes ({stored}/{retention} stored)")
     else:
-        parts.append(f"{len(targets)} scene baru")
+        parts.append(f"{len(targets)} new scene(s)")
         detail = []
         if full:
-            detail.append(f"{full} lengkap")
+            detail.append(f"{full} complete")
         if partial:
             srcs = sorted(set(", ".join(partial).split(", ")))
-            detail.append(f"{len(partial)} sebagian ({'/'.join(srcs)} gagal)")
+            detail.append(f"{len(partial)} partial ({'/'.join(srcs)} failed)")
         if failed:
-            detail.append(f"{failed} gagal Sentinel-1")
+            detail.append(f"{failed} failed Sentinel-1")
         if detail:
             parts[-1] += " — " + ", ".join(detail)
     auth = dg.active_auth_failures()
     if auth:
-        parts.append("token NASA ditolak")
+        parts.append("NASA token rejected")
     level = "warn" if (partial or failed or auth) else "ok"
-    return {"level": level, "text": "Selesai: " + "; ".join(parts)}
+    return {"level": level, "text": "Done: " + "; ".join(parts)}
 
 
 # ---------------------------------------------------------------------------
@@ -312,7 +312,7 @@ def _discover_new_dates(mon, area_id, bbox_wkt, retention, kept, scenes) -> list
             date_to=date_to, max_results=200,
         )
     except Exception as exc:
-        mon.log(area_id, "DISCOVER", "FAILED", f"Gagal cek scene Sentinel-1: {exc}")
+        mon.log(area_id, "DISCOVER", "FAILED", f"Failed to check for Sentinel-1 scenes: {exc}")
         raise
     # Filter cakupan yang sama dengan orchestrator, supaya tanggal yang pasti
     # dibuang job tidak dijadikan scene.
@@ -333,7 +333,7 @@ def _discover_new_dates(mon, area_id, bbox_wkt, retention, kept, scenes) -> list
     top = sorted(set(kept) | set(candidates), reverse=True)[:retention]
     targets = sorted(d for d in top if d in candidates)
     mon.log(area_id, "DISCOVER", "OK",
-            f"{len(dates)} tanggal S1 ditemukan sejak {date_from}, {len(targets)} baru diproses",
+            f"{len(dates)} S1 date(s) found since {date_from}, {len(targets)} newly processed",
             found=[d.isoformat() for d in dates], targets=[d.isoformat() for d in targets])
     return targets
 
@@ -366,7 +366,7 @@ def _ingest(mon: LiveMonitor, area_id: int, dataset_id: int, dates: list[date]) 
         job_id = job.job_id
 
     mon.log(area_id, "INGEST", "STARTED",
-            f"Unduh & proses {len(dates)} scene ({dates[0]} s/d {dates[-1]}), job {job_id}",
+            f"Downloading & processing {len(dates)} scene(s) ({dates[0]} to {dates[-1]}), job {job_id}",
             job_id=job_id)
     try:
         run_dataset_job(mon._db, job_id)
@@ -377,7 +377,7 @@ def _ingest(mon: LiveMonitor, area_id: int, dataset_id: int, dates: list[date]) 
         job = sess.get(DatasetJob, job_id)
         job_status = job.status if job else "?"
     mon.log(area_id, "INGEST", "OK" if job_status == "COMPLETED" else "WARNING",
-            f"Job {job_id} selesai dengan status {job_status}", job_id=job_id)
+            f"Job {job_id} finished with status {job_status}", job_id=job_id)
 
     done = []
     for d in dates:
@@ -409,8 +409,8 @@ def finalize_scene(mon: LiveMonitor, area_id: int, scene_date: date) -> str:
         scene_status = "FAILED"
         previews = {}
         mon.log(area_id, "SCENE", "FAILED",
-                f"Scene {scene_date}: Sentinel-1 tidak berhasil diproses "
-                f"(percobaan {prev_attempts + 1}/{MAX_S1_ATTEMPTS})", scene_date=scene_date)
+                f"Scene {scene_date}: Sentinel-1 could not be processed "
+                f"(attempt {prev_attempts + 1}/{MAX_S1_ATTEMPTS})", scene_date=scene_date)
     else:
         previews = {}
         try:
@@ -418,7 +418,7 @@ def finalize_scene(mon: LiveMonitor, area_id: int, scene_date: date) -> str:
             previews = render_scene_previews(files, scene_date, inputs)
         except Exception as exc:
             logger.exception("[LIVE] preview %s gagal", scene_date)
-            mon.log(area_id, "PREVIEW", "FAILED", f"Preview {scene_date} gagal: {exc}",
+            mon.log(area_id, "PREVIEW", "FAILED", f"Preview for {scene_date} failed: {exc}",
                     scene_date=scene_date)
         failed = [k for k in ("modis", "gpm") if status[k]["status"] == "FAILED"]
         scene_status = "PARTIAL" if failed else "READY"
@@ -472,9 +472,9 @@ def retry_failed_sources(mon: LiveMonitor, area_id: int, skip: set[date] | None 
                 continue
             try:
                 fn(mon._db, ds_id, ds_name, region_id, bbox_tuple, d, plog=plog)
-                mon.log(area_id, "RETRY", "OK", f"{src.upper()} {d} dicoba ulang", scene_date=d)
+                mon.log(area_id, "RETRY", "OK", f"{src.upper()} {d} retried", scene_date=d)
             except Exception as exc:
-                mon.log(area_id, "RETRY", "FAILED", f"{src.upper()} {d} gagal lagi: {exc}",
+                mon.log(area_id, "RETRY", "FAILED", f"{src.upper()} {d} failed again: {exc}",
                         scene_date=d)
         finalize_scene(mon, area_id, d)
         redone.append(d)
@@ -513,7 +513,7 @@ def refresh_forecast(mon: LiveMonitor, area_id: int) -> None:
     fc = build_area_forecast(series)
     _set_area(mon, area_id, forecast=_jsonable(fc), forecast_updated_at=_now())
     mon.log(area_id, "FORECAST", "OK",
-            f"Forecast dihitung dari {len(series)} scene, {fc.get('steps', 0)} langkah")
+            f"Forecast computed from {len(series)} scene(s), {fc.get('steps', 0)} step(s)")
 
 
 # ---------------------------------------------------------------------------
