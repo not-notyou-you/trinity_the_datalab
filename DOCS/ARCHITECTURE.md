@@ -15,16 +15,16 @@ Tech stack, deployment, database schema, and on-disk layout. (Merged from the fo
 | Extensions | PostGIS 3.0+ | — | Spatial queries, geometry |
 | | TimescaleDB | — | Time-series hypertables (optional, degrades gracefully) |
 | Geospatial | rasterio 1.4+, shapely 2.0+, pyproj 3.7+, GeoAlchemy2 0.15+ | — | Raster I/O, geometry, CRS |
-| Data | numpy, scipy, pandas, h5py, xarray, dask[array] | — | Arrays, interpolation, HDF5, chunked/out-of-core arrays |
+| Data | numpy, scipy, h5py | — | Arrays, interpolation, HDF5 |
 | HDF4 | pyhdf 0.11+ | — | Reading MODIS HDF4 granules |
 | HTTP | requests, httpx | — | Downloads, async testing |
 | Scheduling | APScheduler 3.10+ | — | Live Monitoring cron (01:00/07:00/13:00/19:00 Asia/Jakarta) |
-| Resilience | tenacity 9.0+ | — | Retry with exponential backoff |
-| Visualization | matplotlib, seaborn, Pillow | — | Preview PNG generation, report charts |
+| Resilience | (built-in) | — | Shared retry/backoff and `Retry-After` handling in `etl/download_guard.py` |
+| Visualization | matplotlib, Pillow | — | Preview PNG generation, report charts |
 | PDF report | reportlab 5.0 | — | Dataset report assembly (`etl/report_generator.py`) — chosen over weasyprint because it is pure Python (no GTK/Pango on Windows). Uses the DejaVu fonts bundled with matplotlib for ✓ ⚠ ° ± glyphs |
 | PDF test reader | pypdf | — | Used only by `tests/test_report_generation.py` to read generated PDFs back |
-| DB driver / migrations | psycopg2-binary, alembic | — | Postgres driver; alembic is present in requirements.txt but the project actually migrates via hand-written `database/migrations/*.sql`, not alembic revisions |
-| System | psutil, python-dotenv, python-multipart | — | CPU/memory telemetry (`cpu_usage_percent`), `.env` loading, multipart form parsing |
+| DB driver / migrations | psycopg2-binary | — | Postgres driver; migrations are hand-written `database/migrations/*.sql` applied by `database/run_migration.py` |
+| System | psutil, python-dotenv | — | CPU/memory telemetry (`cpu_usage_percent`), `.env` loading |
 | Frontend | HTML5, CSS3, vanilla JS, Leaflet.js | — | Dashboard (no build step) |
 | Testing | pytest, pytest-asyncio, pytest-cov | — | Test suite |
 
@@ -125,7 +125,7 @@ All data access is through authorized APIs — not scraping. The CDSE token is c
 
 ## Docker (Optional)
 
-The real `docker-compose.yml` (duplicated verbatim at `config/docker-compose.yml` — two copies exist, not reconciled):
+The real `docker-compose.yml` (repo root):
 
 ```yaml
 services:

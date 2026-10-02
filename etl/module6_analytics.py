@@ -107,31 +107,6 @@ def compute_band_metrics(
     )
 
 
-def generate_quality_plot(
-    metrics: list[BandMetrics],
-    output_path: str,
-    scene_id: int,
-) -> str:
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-
-    fig, axes = plt.subplots(1, len(metrics), figsize=(6 * len(metrics), 5))
-    if len(metrics) == 1:
-        axes = [axes]
-    for ax, m in zip(axes, metrics):
-        ax.bar(
-            ["mean", "std", "min", "max"],
-            [m.backscatter_mean_db, m.backscatter_std_db, m.backscatter_min_db, m.backscatter_max_db],
-        )
-        ax.set_title(f"{m.band_name} score={m.quality_score}")
-    fig.suptitle(f"scene_{scene_id}")
-    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(output_path, dpi=120, bbox_inches="tight")
-    plt.close(fig)
-    return output_path
-
-
 def run(
     scene_id: int,
     gold_products: dict[str, str],

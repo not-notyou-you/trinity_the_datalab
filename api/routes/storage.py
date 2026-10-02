@@ -14,8 +14,6 @@ Program: Sistem Informasi - Universitas Multimedia Nusantara
 from __future__ import annotations
 
 import logging
-import os
-import shutil
 from pathlib import Path
 from typing import Literal
 
@@ -77,7 +75,6 @@ def _dir_info(path: Path, ext_filter: str | None = None) -> dict:
 
     files = []
     total_bytes = 0
-    pattern = f"*{ext_filter}" if ext_filter else "*"
 
     for f in sorted(path.rglob("*")):
         if f.is_file():

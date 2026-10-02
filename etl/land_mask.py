@@ -77,25 +77,6 @@ def get_masks_dir(dataset_root: Path) -> Path:
     return Path(dataset_root) / MASKS_DIRNAME
 
 
-def grid_from_fusion_h5(h5_path: Path) -> tuple[tuple[float, ...], Affine, tuple[int, int]]:
-    """Baca grid referensi dari satu stack fusion.
-
-    Grid diambil dari berkas nyata, bukan dihitung ulang dari bbox dan
-    S1_RESOLUTION_DEG. Resolusi fusion mengikuti raster S1 dataset itu
-    (module9._dataset_fusion_grid), bukan konstanta: AOI Jabodetabek menghasilkan
-    8801x8801 pada 9,0904e-05 derajat, sedangkan rumus konstanta memberi 8906.
-    Menghitung ulang berarti mask meleset satu setengah ratus piksel dari stack
-    yang seharusnya ia dampingi.
-    """
-    import h5py
-
-    with h5py.File(h5_path, "r") as h:
-        bbox = tuple(float(v) for v in h.attrs["aoi_bbox"])
-        t = [float(v) for v in h.attrs["transform"]]
-        shape = (int(h.attrs["height"]), int(h.attrs["width"]))
-    return bbox, Affine(t[0], t[1], t[2], t[3], t[4], t[5]), shape
-
-
 def fetch_land_geometries(bbox: tuple[float, float, float, float], database_url: str):
     """Poligon daratan yang memotong bbox, sudah dipotong ke bbox itu.
 

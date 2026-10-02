@@ -283,7 +283,7 @@ GET /api/metadata/lineage/{product_id}?direction=ancestors
 ```
 `direction=ancestors` (default) walks back to the RAW source; `direction=descendants` walks forward to derived products. Each step carries `source` plus `parent_tier`/`child_tier` so a dataset's parallel per-sensor chains (S1 RAW→COG, MODIS/GPM ALIGNED→COG) stay distinguishable. `transformation_type` values include: `CALIBRATE`, `CROP`, `LEE_FILTER`, `QUALITY_ANALYTICS`, `GOLD_EXPORT`, `COMPUTE_NDVI`, `COMPUTE_NDWI`, `ACCUMULATE_RAIN`, `FUSE`.
 
-Note: `api/routes/preview.py` (`/api/preview/*`, thumbnail-on-the-fly from COG) is **not mounted** in `api/main.py` — the gallery reads PREVIEW-tier PNGs through `/api/datasets/{id}/preview` instead, to avoid two different render/stretch definitions of "preview".
+Note: the old `/api/preview/*` router (thumbnail-on-the-fly from COG) has been **removed** — the gallery reads PREVIEW-tier PNGs through `/api/datasets/{id}/preview` instead, to avoid two different render/stretch definitions of "preview".
 
 ### Live Monitoring (Live Areas)
 

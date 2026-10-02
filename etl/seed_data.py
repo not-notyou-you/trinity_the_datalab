@@ -23,13 +23,8 @@ from etl.database_client import (
     AlertEventTypeEnum,
     AlertSeverityEnum,
     DatabaseClient,
-    JobStatusEnum,
     OrbitDirectionEnum,
-    ProcessingStage,
     ProductTierEnum,
-    RegionOfInterest,
-    SatelliteScene,
-    StorageLocationEnum,
 )
 from etl.lineage_tracker import LineageTracker
 from etl.metadata_manager import MetadataManager

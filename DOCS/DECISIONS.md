@@ -181,7 +181,7 @@ axes, not one" untuk tabelnya.
 | [etl/module5_orchestrator.py:650](../etl/module5_orchestrator.py#L650) | pemanggil `compute_tiers_to_delete` |
 | `api/schemas.py` | `ProductTierEnum` — nilai baru |
 | [api/routes/products.py:72](../api/routes/products.py#L72) | deskripsi query `tier=`; nilai rank 2 butuh `IN (...)` tiga nilai |
-| [api/routes/preview.py:157](../api/routes/preview.py#L157), [quality.py:217](../api/routes/quality.py#L217), [scenes.py:79](../api/routes/scenes.py#L79) | konstanta `ProductTierEnum.SILVER` / `.GOLD` |
+| `api/routes/preview.py` (sejak dihapus), [quality.py:217](../api/routes/quality.py#L217), [scenes.py:79](../api/routes/scenes.py#L79) | konstanta `ProductTierEnum.SILVER` / `.GOLD` |
 | DB | migration: rename nilai pada kolom `product_tier`; rank 2 dipetakan menurut `source` baris tersebut |
 
 **Trade-off**: query "ambil semua produk tahap-menengah lintas source" tidak lagi satu perbandingan kesetaraan, melainkan `IN ('DESPECKLED','INDICES','ACCUMULATED')`. Ini harga yang disengaja: satu nama seragam di posisi itu hanya benar kalau operasinya seragam, dan operasinya tidak seragam.

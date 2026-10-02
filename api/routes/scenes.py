@@ -8,12 +8,10 @@ GET /api/scenes/{id}/status — pipeline status per scene
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
-from typing import Annotated
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import and_, func, select
-from sqlalchemy.orm import Session
+from sqlalchemy import func, select
 
 from api.schemas import (
     PipelineStatusResponse,
@@ -25,8 +23,6 @@ from api.deps import get_db
 from etl.database_client import (
     DataProduct,
     DatabaseClient,
-    ProductTierEnum,
-    QualityMetric,
     SatelliteScene,
 )
 from etl.metadata_manager import MetadataManager

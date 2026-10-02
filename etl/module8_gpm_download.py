@@ -42,8 +42,6 @@ from pathlib import Path
 
 import numpy as np
 import rasterio
-from rasterio.transform import from_origin
-from rasterio.warp import reproject
 
 from etl import download_guard as dg
 from etl import folder_manager as fm
@@ -183,10 +181,6 @@ def _daily_granule_filename(date: datetime, run: str, minor: str = "B") -> str:
 
 def _run_base_url(run: str) -> str:
     return f"{GES_DISC_ROOT}/{IMERG_RUNS[run]['product']}.{IMERG_VERSION}"
-
-
-def _daily_granule_url(date: datetime, run: str) -> str:
-    return f"{_run_base_url(run)}/{date.year}/{date.month:02d}/{_daily_granule_filename(date, run)}"
 
 
 def _granule_pattern(date: datetime, run: str) -> re.Pattern:

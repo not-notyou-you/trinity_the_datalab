@@ -3,10 +3,8 @@ from __future__ import annotations
 import logging
 import socket
 import threading
-from datetime import datetime, timedelta, timezone
-from typing import Any
+from datetime import datetime, timezone
 from sqlalchemy import and_, func, select
-from sqlalchemy.orm import Session
 from etl import tier_names as tn
 from etl.database_client import (
     AlertEvent,
@@ -483,69 +481,6 @@ class MetadataManager:
         )
         return alert_id
 
-    def query_latest_scenes(
-        self,
-        n_days: int = 30,
-        region_id: int | None = None,
-        only_unprocessed: bool = False,
-    ) -> list[dict]:
-        cutoff = datetime.now(tz=timezone.utc) - timedelta(days=n_days)
-
-        with self._db.session() as sess:
-            stmt = (
-                select(
-                    SatelliteScene.scene_id,
-                    SatelliteScene.product_identifier,
-                    SatelliteScene.acquisition_datetime,
-                    SatelliteScene.orbit_direction,
-                    SatelliteScene.polarization_vv,
-                    SatelliteScene.polarization_vh,
-                )
-                .where(
-                    and_(
-                        SatelliteScene.acquisition_datetime >= cutoff,
-                        SatelliteScene.is_available == True,
-                    )
-                )
-                .order_by(SatelliteScene.acquisition_datetime.desc())
-            )
-
-            if region_id:
-                stmt = stmt.where(SatelliteScene.region_id == region_id)
-
-            rows = sess.execute(stmt).fetchall()
-
-            results = []
-            for row in rows:
-                # Deliverable terakhir pipeline adalah FUSED (rank 4), di
-                # kedua kosakata supaya baris pra-D14 tetap terhitung.
-                has_final = sess.scalar(
-                    select(func.count(DataProduct.product_id)).where(
-                        and_(
-                            DataProduct.scene_id == row.scene_id,
-                            DataProduct.product_tier.in_(tn.tiers_at_rank(4)),
-                            DataProduct.is_latest == True,
-                            DataProduct.is_valid == True,
-                        )
-                    )
-                ) > 0
-
-                if only_unprocessed and has_final:
-                    continue
-
-                results.append({
-                    "scene_id": row.scene_id,
-                    "product_identifier": row.product_identifier,
-                    "acquisition_datetime": row.acquisition_datetime.isoformat(),
-                    "orbit_direction": row.orbit_direction,
-                    "polarization_vv": row.polarization_vv,
-                    "polarization_vh": row.polarization_vh,
-                    "has_gold_product": has_gold,
-                })
-
-        logger.info("[QUERY] latest_scenes n_days=%d region=%s results=%d",
-                    n_days, region_id, len(results))
-        return results
 
     def get_scene_by_id(self, scene_id: int) -> dict | None:
         with self._db.session() as sess:

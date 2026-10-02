@@ -116,8 +116,6 @@ MODULE = "MODULE10_PREVIEW"
 # sebagai pita panjang di samping preview tanggal lain yang normal.
 MAX_SIDE = 1024
 
-# Nama lama; masih diekspor supaya pemanggil luar tidak patah.
-MAX_WIDTH = MAX_SIDE
 
 # Stretch persentil default untuk folder grayscale/. 2–98 memangkas ekor
 # outlier (speckle terang, piksel rusak) yang kalau ikut akan menekan seluruh

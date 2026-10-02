@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import logging
 import os
-import time
 from contextlib import contextmanager
 from enum import Enum as PyEnum
 from typing import Generator
@@ -13,15 +12,12 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     Column,
-    Computed,
     Date,
     DateTime,
     Enum,
-    Float,
     ForeignKey,
     Index,
     Integer,
-    JSON,
     Numeric,
     SmallInteger,
     String,
@@ -35,7 +31,7 @@ from sqlalchemy import (
     text,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, INET, JSONB, UUID
-from sqlalchemy.exc import OperationalError, SQLAlchemyError
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import DeclarativeBase, Session, relationship, sessionmaker
 from sqlalchemy.pool import QueuePool
 
@@ -1267,9 +1263,6 @@ class NasaScene(Base):
 
 
 class DatabaseClient:
-    _RETRY_ATTEMPTS = 3
-    _RETRY_BACKOFF = 2.0
-
     def __init__(self, database_url: str, pool_size: int = 5,
                  max_overflow: int = 10, echo: bool = False) -> None:
         self._database_url = database_url
@@ -1326,25 +1319,6 @@ class DatabaseClient:
         finally:
             sess.close()
 
-    @contextmanager
-    def session_with_retry(self) -> Generator[Session, None, None]:
-        attempt = 0
-        delay = self._RETRY_BACKOFF
-        while True:
-            attempt += 1
-            try:
-                with self.session() as sess:
-                    yield sess
-                return
-            except OperationalError as exc:
-                if attempt >= self._RETRY_ATTEMPTS:
-                    logger.error("All %d retry attempts exhausted. Last error: %s",
-                                 self._RETRY_ATTEMPTS, exc)
-                    raise
-                logger.warning("Transient DB error (attempt %d/%d). Retrying in %.1fs: %s",
-                               attempt, self._RETRY_ATTEMPTS, delay, exc)
-                time.sleep(delay)
-                delay *= 2
 
     def check_health(self) -> dict:
         pool = self._engine.pool

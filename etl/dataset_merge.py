@@ -106,10 +106,6 @@ class GridMismatch(ValueError):
     """Grid tidak sejajar, jadi penggabungan akan butuh resample."""
 
 
-class LayerMismatch(ValueError):
-    """Himpunan lapisan antar-stack tidak sama."""
-
-
 @dataclass(frozen=True)
 class GridSignature:
     """Identitas grid sebuah stack: apa yang harus sama supaya bisa ditempel.

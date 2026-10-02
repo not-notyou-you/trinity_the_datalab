@@ -49,13 +49,11 @@ from reportlab.platypus import (
 )
 from reportlab.platypus.tableofcontents import TableOfContents
 
-from sqlalchemy import func, select
-
 from etl import folder_manager as fm
 from etl import report_forecast as rf
 from etl import report_stats as rs
 from etl.dataset_manager import DatasetManager
-from etl.database_client import DatabaseClient, DataProduct, SatelliteScene
+from etl.database_client import DatabaseClient
 
 logger = logging.getLogger(__name__)
 
@@ -311,15 +309,6 @@ class ReportGenerator:
             })
         return issues
 
-    def _s1_orbit_counts(self) -> dict[str, int]:
-        with self.db.session() as sess:
-            rows = sess.execute(
-                select(SatelliteScene.orbit_direction, func.count(func.distinct(SatelliteScene.scene_id)))
-                .join(DataProduct, DataProduct.scene_id == SatelliteScene.scene_id)
-                .where(DataProduct.dataset_id == self.dataset_id, DataProduct.source == "SENTINEL1")
-                .group_by(SatelliteScene.orbit_direction)
-            ).all()
-        return {(getattr(orbit, "value", orbit) or "UNKNOWN"): int(n) for orbit, n in rows}
 
     def _preview_images_for_source(self, ctx: _ReportContext, source: str) -> list[tuple[Path, str]]:
         """Preview berwarna milik satu source (Section 6/7/8): SEMUA band source
@@ -914,7 +903,7 @@ class ReportGenerator:
     # -- Section 3 ------------------------------------------------------------
 
     def _section_ablation(self, story, ctx, S, chart_dir) -> None:
-        ds, st = ctx.dataset, ctx.stats
+        st = ctx.stats
         story.append(Paragraph("3. Processing Level Comparison &amp; Ablation Study", S.section))
         story.append(Paragraph(
             "This section traces each product through the lineage tiers (RAW → ALIGNED → … → COG). "
@@ -1071,7 +1060,7 @@ class ReportGenerator:
     # -- Section 5 ------------------------------------------------------------
 
     def _section_trends(self, story, ctx, S) -> None:
-        ds, st = ctx.dataset, ctx.stats
+        st = ctx.stats
         story.append(Paragraph("5. Overall Trends &amp; Patterns", S.section))
         story.append(Paragraph(
             "The time series below use actual values: S1 backscatter from <i>quality_metrics</i> (per scene), "

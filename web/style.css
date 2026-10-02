@@ -628,7 +628,6 @@ details.advanced .field-row-3 { margin-top: 14px; }
 .card-title-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .card-name { font-weight: 600; font-size: 15px; }
 .card-meta { color: var(--text-dim); font-size: 13px; margin-top: 4px; }
-.card-tiers { display: flex; gap: 6px; margin-top: 10px; flex-wrap: wrap; }
 .chip {
   font-family: var(--font-mono); font-size: 11.5px; letter-spacing: 0.06em;
   border: 1px solid var(--chip-color, var(--hairline));
@@ -707,26 +706,11 @@ details.advanced .field-row-3 { margin-top: 14px; }
 
 .empty, .empty-small { color: var(--text-dim); font-size: 13px; padding: 24px 0; text-align: center; }
 
-.live-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
-@media (max-width: 900px) { .live-grid { grid-template-columns: 1fr; } }
-
-.live-toggle-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 18px; }
 .switch { position: relative; display: inline-block; width: 46px; height: 26px; }
 .switch input { opacity: 0; width: 0; height: 0; }
-.switch-track { position: absolute; inset: 0; background: var(--hairline); border-radius: 999px; cursor: pointer; transition: background 0.2s; }
-.switch-track::before { content: ''; position: absolute; width: 20px; height: 20px; left: 3px; top: 3px; background: var(--text); border-radius: 50%; transition: transform 0.2s; }
-.switch input:checked + .switch-track { background: var(--cyan); }
-.switch input:checked + .switch-track::before { transform: translateX(20px); background: var(--ink); }
 
-.live-meta-row { display: flex; justify-content: space-between; font-size: 13px; color: var(--text-dim); padding: 8px 0; border-bottom: 1px solid var(--glass-border); }
-.live-meta-row span:last-child { color: var(--text); font-family: var(--font-mono); }
-
-.source-row { display: grid; grid-template-columns: auto 1fr auto auto; gap: 10px; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--glass-border); font-size: 12px; }
-.source-name { font-family: var(--font-mono); font-weight: 600; }
-.source-meta { color: var(--text-dim); }
 .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-dim); }
 .dot.ok { background: var(--cyan); }
-.dot.muted { background: var(--hairline); }
 
 .modal-overlay { position: fixed; inset: 0; background: rgba(6,9,16,0.55); backdrop-filter: blur(4px); display: flex; align-items: center; justify-content: center; z-index: 50; pointer-events: auto; }
 .modal-overlay.hidden { display: none; }
@@ -850,9 +834,6 @@ details.advanced .field-row-3 { margin-top: 14px; }
 }
 .btn-link:hover { color: var(--text); }
 
-.qual-rows { display: flex; flex-direction: column; gap: 8px; }
-.qual-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 12px; }
-.qual-src { min-width: 78px; color: var(--text); }
 .qual-kind { font-size: 12px; color: var(--text-dim); }
 .qual-bands { display: inline-flex; gap: 10px; flex-wrap: wrap; }
 .qual-band { font-size: 12px; color: var(--text-dim); font-family: var(--font-mono); }
@@ -866,23 +847,6 @@ details.advanced .field-row-3 { margin-top: 14px; }
 .struct-files .scene-table { min-width: 420px; }
 .struct-files .scene-table td.mono { word-break: break-all; }
 
-/* THE TRINITY brand footer — slogan strip, purely cosmetic */
-.app-footer {
-  position: fixed;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  z-index: 5;
-  text-align: center;
-  padding: 6px 12px;
-  pointer-events: none;
-}
-.app-footer-slogan {
-  font-size: 12px;
-  letter-spacing: 0.03em;
-  opacity: 0.55;
-  font-family: "IBM Plex Mono", monospace;
-}
 
 /* ---------------------------------------------------------------------------
    Galeri PREVIEW (panel Struktur)
@@ -981,56 +945,6 @@ details.advanced .field-row-3 { margin-top: 14px; }
 }
 /* Kartu katalog memakai .lm-tile (sama dengan Live); gap ikut .lm-row. */
 .preview-grid.lm-row { gap: 14px; }
-.preview-card {
-  margin: 0; display: flex; flex-direction: column; min-width: 0;
-  background: var(--glass-bg-alt);
-  border: 1px solid var(--hairline);
-  border-radius: 12px; overflow: hidden;
-  transition: border-color 0.15s ease;
-}
-.preview-card:hover { border-color: rgba(0,240,255,0.35); }
-.preview-thumb {
-  position: relative; display: block; width: 100%; padding: 0; border: 0;
-  cursor: zoom-in;
-  /* Rasio tetap agar grid tidak melompat saat gambar selesai dimuat. Gambar
-     ditampilkan utuh (contain), tidak dipotong -- citra besar/lebar dulu
-     terpotong persegi. */
-  aspect-ratio: 4 / 3;
-  /* Kotak-kotak catur: PNG preview transparan di piksel NoData, dan di atas
-     latar polos daerah kosong itu tidak bisa dibedakan dari data gelap. */
-  background:
-    repeating-conic-gradient(rgba(255,255,255,0.05) 0% 25%, transparent 0% 50%) 0 0 / 14px 14px,
-    var(--ink);
-}
-.preview-thumb img {
-  position: absolute; inset: 0; width: 100%; height: 100%;
-  object-fit: contain; display: block;
-}
-.preview-thumb:focus-visible { outline: 2px solid var(--cyan); outline-offset: -2px; }
-.preview-zoom {
-  position: absolute; right: 8px; bottom: 8px;
-  width: 26px; height: 26px; border-radius: 8px;
-  display: flex; align-items: center; justify-content: center;
-  font-size: 14px; line-height: 1; color: #fff;
-  background: rgba(10,14,26,0.65);
-  opacity: 0; transition: opacity 0.15s ease;
-}
-.preview-thumb:hover .preview-zoom, .preview-thumb:focus-visible .preview-zoom { opacity: 1; }
-.preview-card figcaption { padding: 10px 12px 12px; display: flex; flex-direction: column; gap: 6px; }
-.preview-label { font-size: 12px; font-weight: 600; color: var(--text); overflow-wrap: anywhere; }
-.preview-tags { display: flex; flex-wrap: wrap; gap: 5px; }
-.preview-tag {
-  font-size: 11.5px; padding: 2px 6px; border-radius: 999px;
-  background: rgba(255,255,255,0.07); color: var(--text-dim);
-}
-.preview-tag.mono { font-family: var(--font-mono); }
-.preview-note {
-  font-size: 12px; line-height: 1.45; color: var(--text-dim);
-  /* Interpretasi bisa panjang; dipangkas 2 baris supaya tinggi kartu dalam
-     satu baris grid tetap seragam. Teks penuh ada di title dan lightbox. */
-  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
-  line-clamp: 2; overflow: hidden;
-}
 .preview-missing { font-size: 12px; color: var(--amber); margin: 10px 0 0; }
 
 @media (max-width: 560px) {
@@ -1145,8 +1059,6 @@ body.lightbox-open { overflow: hidden; }
 .option-row:has(input:checked) { border-color: rgba(0,240,255,0.45); background: rgba(0,240,255,0.07); }
 .option-row:has(input:focus-visible) { outline: 2px solid var(--cyan); outline-offset: 2px; }
 .option-row input { accent-color: var(--cyan); margin-top: 2px; flex-shrink: 0; }
-.option-icon { width: 15px; height: 15px; flex-shrink: 0; margin-top: 1px; color: var(--text-dim); }
-.option-icon svg { width: 100%; height: 100%; display: block; }
 .option-text { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .option-label { font-size: 13px; font-weight: 600; color: var(--text); }
 .option-desc { font-size: 12px; line-height: 1.45; color: var(--text-dim); }
@@ -1601,25 +1513,6 @@ body.lightbox-open { overflow: hidden; }
   display: grid; gap: 14px; padding: 2px 0 8px;
   grid-template-columns: repeat(auto-fill, minmax(min(100%, 240px), 1fr));
 }
-.mask-card {
-  margin: 0; display: flex; flex-direction: column; min-width: 0;
-  background: var(--glass-bg-alt);
-  border: 1px solid var(--hairline);
-  border-radius: 12px; overflow: hidden;
-}
-.mask-card img {
-  width: 100%; aspect-ratio: 1 / 1; object-fit: contain;
-  display: block; background: var(--ink);
-}
-.mask-noimg {
-  aspect-ratio: 1 / 1; display: flex; align-items: center; justify-content: center;
-  font-size: 12px; color: var(--text-dim); background: var(--ink);
-}
-.mask-card figcaption {
-  padding: 10px 12px 12px; display: flex; flex-direction: column; gap: 6px;
-}
-.mask-title { font-size: 12px; font-weight: 600; color: var(--text); }
-.mask-interp { font-size: 12px; line-height: 1.5; color: var(--text-dim); }
 .mask-facts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 2px; }
 .mask-fact {
   display: flex; flex-direction: column; gap: 1px;
@@ -1891,7 +1784,6 @@ body.lightbox-open { overflow: hidden; }
 .lm-noimg { aspect-ratio: 4 / 3; display: grid; place-items: center; border: 1px dashed var(--hairline); border-radius: 6px; color: var(--lm-muted); font-size: 13px; }
 .lm-tile-head { display: flex; justify-content: space-between; gap: 6px; font-weight: 600; font-size: 13px; }
 .lm-badge { font-family: var(--font-mono); font-size: 12px; color: var(--amber); border: 1px solid rgba(240,166,60,.45); border-radius: 999px; padding: 1px 8px; white-space: nowrap; }
-.lm-sentence { margin: 0; font-size: 13px; line-height: 1.5; color: var(--text); }
 .lm-legend { display: flex; align-items: center; gap: 8px; font-family: var(--font-mono); font-size: 12px; color: var(--text); opacity: .85; }
 .lm-ramp { flex: 1; height: 8px; border-radius: 4px; }
 .lm-legend-cat { flex-wrap: wrap; gap: 4px 10px; }
@@ -1928,7 +1820,6 @@ body.lightbox-open { overflow: hidden; }
 .lm-tip { position: absolute; pointer-events: none; background: var(--ink); border: 1px solid var(--hairline); border-radius: 6px; padding: 5px 8px; font-size: 12px; white-space: nowrap; z-index: 2; }
 .lm-tip.hidden { display: none; }
 .lm-fc-note { margin: 8px 0 0; }
-.lm-image-modal img { width: 100%; max-height: 70vh; object-fit: contain; background: #fff; border-radius: 6px; }
 
 @media (max-width: 1000px) {
   .lm-charts { grid-template-columns: 1fr; }

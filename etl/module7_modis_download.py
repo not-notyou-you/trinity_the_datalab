@@ -109,11 +109,6 @@ MODIS_STANDARD_PRODUCT = {
 # etl/constants.py:MODIS_PRODUCT_SHORT_NAME.
 MODIS_PRODUCT = MODIS_FLOOD_PRODUCT
 
-# Tile default untuk AOI Jabodetabek. Nilai lama ["h30v08", "h31v08"] menunjuk
-# ke 120-140E / 0-10N (utara khatulistiwa), bukan Jakarta (~106.8E, 6S), jadi
-# crop ke AOI selalu gagal. Kalau pemanggil tidak memberi `tiles`, tile dihitung
-# dari AOI per produk lewat modis_tiles_for_bbox().
-MODIS_TILES = ["h28v09"]
 MODULE = "MODULE7_MODIS_DOWNLOAD"
 
 # Komposit 2 hari (hari itu + sehari sebelumnya), sesuai produk NRT yang

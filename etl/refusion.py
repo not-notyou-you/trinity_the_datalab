@@ -38,7 +38,6 @@ import logging
 import threading
 from collections import defaultdict
 from datetime import date as date_type
-from pathlib import Path
 
 logger = logging.getLogger(__name__)
 

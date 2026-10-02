@@ -2,7 +2,6 @@
 from __future__ import annotations
 from datetime import date, datetime
 from typing import Any
-from uuid import UUID
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 
@@ -46,17 +45,6 @@ class SceneListResponse(BaseModel):
     limit: int
     offset: int
     items: list[SceneListItem]
-
-
-class SceneQueryParams(BaseModel):
-    region_id: int | None = None
-    orbit_direction: str | None = Field(None, pattern="^(ASCENDING|DESCENDING)$")
-    date_from: datetime | None = None
-    date_to: datetime | None = None
-    min_quality: float | None = Field(None, ge=0, le=100)
-    only_gold: bool = False
-    limit: int = Field(20, ge=1, le=200)
-    offset: int = Field(0, ge=0)
 
 
 class ProductItem(BaseModel):
@@ -288,11 +276,6 @@ class CreateDatasetRequest(BaseModel):
         return self
 
 
-# Nama lama, dipertahankan supaya pemanggil internal (dan tes) yang mengimpor
-# DatasetCreateRequest tidak putus. Bentuk payloadnya sendiri sudah berubah.
-DatasetCreateRequest = CreateDatasetRequest
-
-
 class DatasetCreateResponse(BaseModel):
     dataset_id: int
     job_id: int
@@ -405,28 +388,6 @@ class SceneJobStateItem(BaseModel):
     model_config = {"from_attributes": True}
 
 
-class DatasetJobItem(BaseModel):
-    job_id: int
-    job_uuid: str
-    dataset_id: int
-    job_type: str
-    status: str
-    paused_at: datetime | None
-    paused_by: str | None
-    pause_reason: str | None
-    resumed_at: datetime | None
-    resume_count: int
-    total_scenes: int
-    downloaded_count: int
-    processed_count: int
-    failed_count: int
-    cleaned_count: int
-    created_at: datetime
-    started_at: datetime | None
-    completed_at: datetime | None
-    model_config = {"from_attributes": True}
-
-
 class ProgressLayer(BaseModel):
     key: str
     source: str
@@ -502,22 +463,6 @@ class DatasetLogsResponse(BaseModel):
     total: int
     limit: int
     logs: list[DatasetLogEntry]
-
-
-class CleanupOperationItem(BaseModel):
-    id: int
-    dataset_id: int
-    job_id: int | None
-    operation_type: str
-    status: str
-    total_files: int
-    deleted_count: int
-    freed_bytes: int
-    error_log: str | None
-    created_at: datetime
-    started_at: datetime | None
-    completed_at: datetime | None
-    model_config = {"from_attributes": True}
 
 
 class DeletionProgressResponse(BaseModel):

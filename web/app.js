@@ -1,11 +1,3 @@
-// Urutan eksekusi tahap per scene. PREVIEW harus ikut walau bukan tier
-const STAGE_ORDER = ['DOWNLOAD','CROP','LEE_FILTER','QUALITY_ANALYTICS','GOLD_EXPORT','PREVIEW','FUSION','CLEANUP'];
-// Palet tier: lima hue kategorikal, divalidasi terhadap permukaan gelap
-// #121A2B (lightness band, chroma floor, pemisahan CVD pasangan bersebelahan,
-// dan kontras). SILVER dulu #9FB0C9 yang chroma-nya di bawah ambang (terbaca
-// abu-abu) dan cuma berjarak dE 12 dari GOLD -- dua tier bersebelahan yang
-// sulit dibedakan bahkan dengan penglihatan warna normal.
-
 // Palet source untuk panel Struktur. Sengaja jadi satu-satunya dimensi warna
 // di panel itu -- tier di sana ditandai teks, bukan warna -- supaya satu hue
 // tidak pernah berarti dua hal dalam satu komponen.
@@ -14,11 +6,10 @@ const SOURCE_LABELS = { sentinel1: 'Sentinel-1', modis: 'MODIS', gpm: 'GPM', fus
 // Urutan tampil satelit, sama dengan SOURCE_ORDER di etl/processing_plan.py.
 const SOURCE_ORDER_KEYS = ['sentinel1', 'modis', 'gpm'];
 
-// Tier yang punya folder di disk, untuk rincian storage. Beda dari TIER_ORDER
-// di atas: itu rantai lineage yang bisa diminta user dan digambar di ring
-// progres, sementara PREVIEW adalah turunan (PNG hasil render dari COG) yang
-// tidak pernah ada di required_tiers tapi tetap memakan disk dan tetap harus
-// muncul di rincian. Urutannya mengikuti urutan eksekusi pipeline.
+// Tier yang punya folder di disk, untuk rincian storage. Termasuk PREVIEW:
+// turunan (PNG hasil render dari COG) yang tidak pernah ada di required_tiers
+// tapi tetap memakan disk dan tetap harus muncul di rincian. Urutannya
+// mengikuti urutan eksekusi pipeline.
 const STORAGE_TIER_ORDER = [
   'RAW', 'ALIGNED', 'DESPECKLED', 'INDICES', 'ACCUMULATED', 'COG', 'PREVIEW', 'FUSED',
   // Nama pra-D14, supaya dataset lama tetap terurut benar kalau sempat dirender.
@@ -46,9 +37,6 @@ const TIER_LEVEL = {
   SILVER: 'PROCESSED', COG: 'PROCESSED', GOLD: 'PROCESSED',
 };
 
-// Tier lintas-source: tidak bisa dipecah per sensor, jadi dikeluarkan dari
-// legenda source supaya tidak terbaca sebagai sensor keempat.
-const SOURCELESS_TIERS = ['fusion', 'preview'];
 const ACTIVE_STATUSES = new Set(['QUEUED','PREPARING','DOWNLOADING','PROCESSING','PAUSED','CLEANUP','DELETING']);
 
 const state = {

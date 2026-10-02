@@ -13,7 +13,6 @@ Run:
 from __future__ import annotations
 
 import hashlib
-from datetime import datetime, timezone
 
 import pytest
 from etl import tier_names as tn

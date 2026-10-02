@@ -73,8 +73,6 @@ FILENAME_SUFFIX: dict[str, str] = {
     HYBRID: "hybrid",
 }
 
-STRATEGIES: tuple[str, ...] = (CO_OCCURRENCE, FULL_COVERAGE, HYBRID)
-
 
 @dataclass(frozen=True)
 class FusionPlan:

@@ -15,7 +15,6 @@ from __future__ import annotations
 import os
 import pytest
 from datetime import datetime, timezone
-from unittest.mock import MagicMock
 
 from dotenv import load_dotenv
 

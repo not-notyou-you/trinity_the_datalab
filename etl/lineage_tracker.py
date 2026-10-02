@@ -13,16 +13,13 @@ import hashlib
 import logging
 import os
 from pathlib import Path
-from typing import Any
 
 from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
 
 from etl.database_client import (
     DataLineage,
     DataProduct,
     DatabaseClient,
-    ProcessingJob,
     ProcessingStage,
 )
 
@@ -192,72 +189,6 @@ class LineageTracker:
                     lineage_id, parent_product_id, transformation_type, child_product_id)
         return lineage_id
 
-    def record_full_pipeline(
-        self,
-        scene_id: int,
-        raw_product_id: int,
-        bronze_product_id: int,
-        silver_product_id: int,
-        gold_product_id: int,
-        job_ids: dict[str, int],
-        crop_params: dict | None = None,
-        lee_params: dict | None = None,
-        cog_params: dict | None = None,
-    ) -> list[int]:
-        """
-        Convenience method: record all three lineage links for a complete
-        pipeline run (RAW → BRONZE → SILVER → GOLD).
-
-        Args:
-            scene_id          : Parent scene (for logging)
-            raw_product_id    : RAW tier product (original download)
-            bronze_product_id : BRONZE tier product (after Module 2 crop)
-            silver_product_id : SILVER tier product (after Module 3 Lee filter)
-            gold_product_id   : GOLD tier product (after Module 4 COG export)
-            job_ids           : Dict mapping stage_name → job_id
-                                e.g. {'CROP': 10, 'LEE_FILTER': 11, 'COG_EXPORT': 12}
-            crop_params       : Module 2 params (bbox, resolution, etc.)
-            lee_params        : Module 3 params (window_size, looks, etc.)
-            cog_params        : Module 4 params (compression, blocksize, etc.)
-
-        Returns:
-            List of 3 lineage_ids [crop_lineage, lee_lineage, cog_lineage]
-        """
-        lineage_ids = []
-
-        # RAW → BRONZE (crop)
-        lid = self.record_transformation(
-            parent_product_id  = raw_product_id,
-            child_product_id   = bronze_product_id,
-            transformation_type = "CROP",
-            job_id             = job_ids["CROP"],
-            params             = crop_params or {"region": "Jabodetabek"},
-        )
-        lineage_ids.append(lid)
-
-        # BRONZE → SILVER (Lee filter)
-        lid = self.record_transformation(
-            parent_product_id  = bronze_product_id,
-            child_product_id   = silver_product_id,
-            transformation_type = "LEE_FILTER",
-            job_id             = job_ids["LEE_FILTER"],
-            params             = lee_params or {"window_size": 7, "looks": 1},
-        )
-        lineage_ids.append(lid)
-
-        # SILVER → GOLD (COG export)
-        lid = self.record_transformation(
-            parent_product_id  = silver_product_id,
-            child_product_id   = gold_product_id,
-            transformation_type = "COG_EXPORT",
-            job_id             = job_ids["COG_EXPORT"],
-            params             = cog_params or {"compression": "LZW", "blocksize": 512},
-        )
-        lineage_ids.append(lid)
-
-        logger.info("[LINEAGE] Full pipeline recorded for scene=%d: %s",
-                    scene_id, " → ".join(map(str, lineage_ids)))
-        return lineage_ids
 
     # ------------------------------------------------------------------
     # PROVENANCE QUERIES

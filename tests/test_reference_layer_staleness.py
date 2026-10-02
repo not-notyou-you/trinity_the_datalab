@@ -14,7 +14,6 @@ membaca lokasi yang salah tanpa pernah diberi tahu.
 from __future__ import annotations
 
 import numpy as np
-import pytest
 import rasterio
 from rasterio.transform import Affine
 

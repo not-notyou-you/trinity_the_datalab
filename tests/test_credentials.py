@@ -1,7 +1,6 @@
 # tests/test_credentials.py (FIXED TYPO)
 import os
 import sys
-import json
 from pathlib import Path
 from dotenv import load_dotenv
 import requests

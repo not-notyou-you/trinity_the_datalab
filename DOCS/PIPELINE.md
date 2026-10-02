@@ -337,7 +337,7 @@ Limits: `MAX_AREAS=5` active areas, retention 1–12 scenes (default 6). A **sce
 
 `LiveScheduler.start()` (called from `api/main.py` on startup) registers one cron: `run_live_areas` at **01:00, 07:00, 13:00, 19:00 Asia/Jakarta** — several times a day because S1 products appear in the catalogue hours after acquisition, and a cycle with nothing new costs one catalogue query. On startup, areas left in `BACKFILLING`/`RUNNING`/`WAITING` are resumed (honours `AUTO_RESUME_JOBS`). "Check now" on the card (`POST /api/live/areas/{id}/check`) starts a cycle outside the schedule.
 
-**The old daily 02:00 cron for the single LIVE dataset (`run_daily_check`) is no longer scheduled.** Its code remains only for the legacy `/api/live/backfill` endpoint.
+**The old daily 02:00 cron for the single LIVE dataset (`run_daily_check`) has been removed.** The legacy `/api/live/backfill` endpoint calls `DatasetManager.trigger_live_backfill` directly.
 
 ### One cycle (`live_cycle.run_cycle`)
 

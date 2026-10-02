@@ -102,12 +102,6 @@ def rank(tier: str) -> int:
     )
 
 
-def is_legacy(tier: str) -> bool:
-    """True untuk BRONZE/SILVER/GOLD/FUSION. RAW ada di kedua kosakata,
-    jadi bukan warisan."""
-    return _upper(tier) in LEGACY_TIERS
-
-
 def canonical_tier(tier: str, source: str | None = None) -> str:
     """Nama D14 untuk sebuah tier. Nama baru dikembalikan apa adanya.
 
@@ -127,31 +121,6 @@ def canonical_tier(tier: str, source: str | None = None) -> str:
     if t in LEGACY_TO_NEW:
         return LEGACY_TO_NEW[t]
     raise ValueError(f"Unknown tier: {tier!r}")
-
-
-def display_tier(tier: str, source: str | None = None) -> str:
-    """Seperti canonical_tier tapi TIDAK PERNAH melempar.
-
-    Nama yang tidak bisa dipetakan dikembalikan apa adanya (huruf besar).
-    Dipakai di jalur BACA — API, listing disk, UI — supaya satu baris data
-    lama tidak menjatuhkan seluruh respons.
-    """
-    try:
-        return canonical_tier(tier, source)
-    except (ValueError, KeyError):
-        return _upper(tier)
-
-
-def tier_at_rank(r: int, source: str | None = None) -> str:
-    """rank -> nama kanonik. rank 2 wajib membawa source."""
-    if r == 2:
-        if source is None:
-            raise ValueError("rank 2 branches per source, `source` is required")
-        return RANK2_BY_SOURCE[_upper(source)]
-    for name, rr in RANK.items():
-        if rr == r:
-            return name
-    raise ValueError(f"Unknown rank: {r}")
 
 
 def tiers_at_rank(r: int, *, include_legacy: bool = True) -> tuple[str, ...]:

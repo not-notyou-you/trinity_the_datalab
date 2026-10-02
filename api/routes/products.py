@@ -22,7 +22,6 @@ from etl.database_client import (
     ProductSourceEnum,
 )
 from etl.lineage_tracker import LineageTracker
-from etl.metadata_manager import MetadataManager
 from etl import tier_names as tn
 
 router = APIRouter()

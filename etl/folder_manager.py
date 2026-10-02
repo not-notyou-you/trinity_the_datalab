@@ -852,10 +852,6 @@ def get_scene_files(
     return _files_under(p)
 
 
-def get_fusion_scene_files(dataset_id: int, dataset_name: str, scene_key: str) -> list[Path]:
-    return _files_under(get_fusion_dir(dataset_id, dataset_name, scene_key))
-
-
 def get_preview_scene_files(dataset_id: int, dataset_name: str, scene_key: str) -> list[Path]:
     """Semua berkas satu scene preview, termasuk yang ada di dalam subfolder
     {LEVEL}/{grayscale,colored,composite}/ (_files_under rglob rekursif)."""
@@ -883,7 +879,7 @@ def get_preview_date_files(
 def get_sourceless_scene_files(
     dataset_id: int, dataset_name: str, tier: str, scene_key: str
 ) -> list[Path]:
-    """Versi generik get_fusion_scene_files/get_preview_scene_files, untuk
+    """Versi generik get_preview_scene_files (dan tier fusion), untuk
     pemanggil yang tier-nya baru diketahui saat runtime (mis. API listing)."""
     tier = normalize_tier(tier)
     if TIER_SOURCES[tier]:

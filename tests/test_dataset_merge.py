@@ -13,9 +13,6 @@ import numpy as np
 import pytest
 
 from etl.dataset_merge import (
-    GridMismatch,
-    MergeCandidate,
-    StackInfo,
     check_mergeable,
     find_candidates,
     merge_stacks,

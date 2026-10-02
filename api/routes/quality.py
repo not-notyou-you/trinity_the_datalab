@@ -22,11 +22,9 @@ from api.deps import get_db
 from etl.database_client import (
     DataProduct,
     DatabaseClient,
-    ProductTierEnum,
     QualityMetric,
     SatelliteScene,
 )
-from etl.metadata_manager import MetadataManager
 
 from etl import tier_names as tn
 
@@ -115,7 +113,6 @@ async def quality_summary(
 ) -> dict:
     """Returns count of PASS/FAIL/WARNING scenes and average quality score."""
     from datetime import datetime, timedelta, timezone
-    from sqlalchemy import and_
 
     cutoff = datetime.now(tz=timezone.utc) - timedelta(days=n_days)
 

@@ -1,6 +1,6 @@
 # Audit Residu Kode — The DataLab
 
-Tanggal audit: 2026-10-02 · Branch: `feat/reference-layers-and-fusion-grid` · Status: **belum ada yang dihapus**
+Tanggal audit: 2026-10-02 · Branch: `feat/reference-layers-and-fusion-grid` · Status: **fase penghapusan selesai, lihat [AUDIT_PENGHAPUSAN.md](AUDIT_PENGHAPUSAN.md)**
 
 Dokumen ini berisi daftar residu (kode mati, kode/fitur warisan, file sisa eksperimen, dependency tak terpakai) beserta analisis dampaknya. Tujuannya untuk di-review dulu sebelum ada keputusan penghapusan.
 
