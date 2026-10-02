@@ -189,6 +189,8 @@ class DatasetQualitySettings(BaseModel):
     min_cloud_cover: float | None = None
     min_quality_score: float | None = None
     resolution_m: int | None = None
+    # Satu arah orbit S1 saja; None = keduanya. Dibaca orkestrator setelah discovery.
+    orbit_direction: str | None = Field(None, pattern="^(ASCENDING|DESCENDING)$")
 
 
 class DatasetSourceConfigResponse(BaseModel):
@@ -355,6 +357,8 @@ class DatasetItem(BaseModel):
     fusion_strategy: str | None = None
     fusion_output_only: bool = False
     s1_match_tolerance_days: int = 2
+    # Arah orbit S1 dari quality_settings; None = keduanya. Ditampilkan di kartu.
+    s1_orbit_direction: str | None = None
     preview_options: list[str] = Field(default_factory=list)
     # Diisi hanya kalau dataset ini dibuat lewat "Pakai Config Sebelumnya":
     # dataset_id yang config-nya disalin. None untuk dataset yang dikonfigurasi
@@ -445,6 +449,12 @@ class DatasetProgressResponse(BaseModel):
     scenes: list[SceneJobStateItem]
     # Lapisan radar progres kartu dataset (lihat DatasetManager._progress_layers).
     layers: list[ProgressLayer] = []
+    # Dihitung DatasetManager.get_progress() untuk loading bar kartu. Harus
+    # dideklarasikan di sini: field yang tidak ada di model dibuang FastAPI.
+    queue_position: int | None = None
+    timing: dict[str, Any] | None = None
+    waiting: dict[str, Any] | None = None
+    alerts: list[dict[str, Any]] = []
 
 
 class DatasetPauseRequest(BaseModel):

@@ -1700,6 +1700,7 @@ def _run_dataset_job(db: DatabaseClient, job_id: int) -> None:
     quality_settings = dataset["quality_settings"] or {}
     min_quality_score = float(quality_settings.get("min_quality_score") or 60.0)
     min_cloud_cover = quality_settings.get("min_cloud_cover")
+    orbit_direction = quality_settings.get("orbit_direction")
     fusion_strategy = dataset.get("fusion_strategy")
 
     # --- rencana per-satelit ------------------------------------------------
@@ -1814,6 +1815,19 @@ def _run_dataset_job(db: DatabaseClient, job_id: int) -> None:
                     min_cloud_cover, job_id, before, len(scenes))
         if not scenes:
             logger.info("[ORCH] semua scene tersaring cloud_cover job_id=%d", job_id)
+            dsmgr.set_job_status(job_id, "COMPLETED", completed_at=_now())
+            _write_dataset_metadata(dsmgr, dataset_id)
+            return
+
+    # Satu arah orbit saja agar jumlah scene sebanding antar-dataset periode
+    # lain. Difilter setelah discovery (bukan di query) karena resume menjalankan
+    # discovery ulang dan harus menghasilkan himpunan scene yang sama.
+    if orbit_direction:
+        before = len(scenes)
+        scenes = [s for s in scenes if (s.get("orbit_direction") or "").upper() == orbit_direction.upper()]
+        logger.info("[ORCH] filter orbit_direction=%s job_id=%d: %d -> %d scene",
+                    orbit_direction, job_id, before, len(scenes))
+        if not scenes:
             dsmgr.set_job_status(job_id, "COMPLETED", completed_at=_now())
             _write_dataset_metadata(dsmgr, dataset_id)
             return

@@ -52,7 +52,7 @@ const SOURCELESS_TIERS = ['fusion', 'preview'];
 const ACTIVE_STATUSES = new Set(['QUEUED','PREPARING','DOWNLOADING','PROCESSING','PAUSED','CLEANUP','DELETING']);
 
 const state = {
-  datasets: [], progress: {}, logs: {}, firstLogAt: {}, pollTimer: null, livePollTimer: null,
+  datasets: [], progress: {}, logs: {}, firstLogAt: {}, etaSamples: {}, pollTimer: null, livePollTimer: null,
   openScenes: new Set(), openStructure: new Set(), openPreview: new Set(), structureHTML: {}, cardElements: {},
   // Kartu dataset yang badannya sedang dilipat (hanya kepala/ringkasan yang
   // terlihat). Kosong = semua terbuka seperti sebelumnya; per-kartu, bertahan
@@ -1230,6 +1230,8 @@ $id('createForm').addEventListener('submit', async (e) => {
   if (cloud !== '') qs.min_cloud_cover = Number(cloud);
   if (qual !== '') qs.min_quality_score = Number(qual);
   if (resolution !== '') qs.resolution_m = Number(resolution);
+  const orbit = $id('fOrbitDirection').value;
+  if (orbit) qs.orbit_direction = orbit;
   const previewOptions = selectedPreviewOptions();
   const body = {
     region_id: state.selectedRegionId,
@@ -1362,8 +1364,11 @@ function sourceChipsHTML(ds) {
   if (!cfgs.length) return '';
   return '<div class="card-sources">' + cfgs.map(c => {
     const initials = (c.processing || []).map(p => p.charAt(0)).join('+') || '-';
+    // Arah orbit hanya bermakna untuk S1; tanpa filter = kedua arah.
+    const orbit = c.source === 'sentinel1'
+      ? ' ' + ({ ASCENDING: 'ASC', DESCENDING: 'DESC' }[ds.s1_orbit_direction] || 'ASC+DESC') : '';
     return '<span class="chip" style="--chip-color:' + sourceColor(c.source) + '">'
-      + escapeHTML(SOURCE_SHORT[c.source] || c.source) + '[' + initials + ']</span>';
+      + escapeHTML(SOURCE_SHORT[c.source] || c.source) + '[' + initials + ']' + orbit + '</span>';
   }).join('') + '</div>';
 }
 
@@ -1436,6 +1441,7 @@ function cardShellHTML(ds) {
         (ds.failed_scenes ? '<div class="stat-bad"><span class="stat-num">' + ds.failed_scenes + '</span><span class="stat-label">failed</span></div>' : '') +
         '<div><span class="stat-num">' + humanBytes(ds.total_size_bytes) + '</span><span class="stat-label">size</span></div>' +
         '<div><span class="stat-num">' + logDurationText(ds.dataset_id) + '</span><span class="stat-label">duration</span></div>' +
+        etaStatHTML(ds, prog) +
       '</div>' +
       renderLogPanel(ds.dataset_id) +
       // Baris utama hanya Download + kontrol proses; sisanya (Details, Report,
@@ -1530,6 +1536,48 @@ function logDurationText(id) {
   if (times.length === 0) return '-';
   const mins = Math.floor((Math.max(...times) - Math.min(...times)) / 60000);
   return Math.floor(mins / 60) + 'h ' + (mins % 60) + 'm';
+}
+
+// Estimasi jam selesai: laju rata-rata sejauh ini (elapsed / persen) diproyeksikan
+// ke sisa persen. Ikut berubah tiap polling progress; hilang saat tidak aktif.
+const ETA_WINDOW_MS = 20 * 60 * 1000;
+function etaStatHTML(ds, prog) {
+  if (!['DOWNLOADING', 'PROCESSING'].includes(ds.status)) return '';
+  const box = text => '<div><span class="stat-num">' + text + '</span><span class="stat-label">est. finish</span></div>';
+  // Belum ada progres = belum ada laju; kotak tetap tampil sebagai penanda.
+  if (!prog) return box('calculating…');
+  let pct = Number(prog.progress_percent);
+  // progress_percent milik job bisa basi (mis. 100 sementara dataset masih
+  // DOWNLOADING); jatuh ke rasio scene dataset.
+  if (!(pct > 0 && pct < 100) && ds.total_scenes > 0) pct = ds.completed_scenes / ds.total_scenes * 100;
+  // Persen di atas cuma menghitung scene S1, padahal MODIS/GPM harian jalan
+  // duluan; rata-rata lapisan ring mencakup semua sumber dan bergerak lebih halus.
+  const layers = prog.layers || [];
+  if (layers.length) {
+    const avg = layers.reduce((a, l) => a + (Number(l.ratio) || 0), 0) / layers.length * 100;
+    if (avg > 0 && avg < 100) pct = avg;
+  }
+  if (!(pct > 0 && pct < 100)) return box('calculating…');
+  // Laju diukur browser dari sampel persen ~20 menit terakhir, bukan sejak log
+  // pertama: log pertama bisa berasal dari run sebelum pause/restart, dan tahap
+  // awal (aux harian) jalan dengan kecepatan yang lain dari unduhan S1.
+  const now = Date.now();
+  const samples = state.etaSamples[ds.dataset_id] || (state.etaSamples[ds.dataset_id] = []);
+  const last = samples[samples.length - 1];
+  if (last && pct < last.pct) samples.length = 0;           // run baru / reset
+  if (!last || pct !== last.pct) samples.push({ t: now, pct });
+  while (samples.length > 2 && now - samples[1].t > ETA_WINDOW_MS) samples.shift();
+  const first = samples[0];
+  const dPct = pct - first.pct;
+  if (samples.length < 2 || dPct <= 0 || now - first.t < 60000) return box('calculating…');
+  // Waktu sampai sekarang, bukan sampai sampel terakhir: kalau progres macet,
+  // laju turun dan estimasi ikut mundur.
+  const remainingMs = (now - first.t) / dPct * (100 - pct);
+  const finish = new Date(Date.now() + remainingMs);
+  let text = finish.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false });
+  const days = Math.round((new Date(finish).setHours(0, 0, 0, 0) - new Date().setHours(0, 0, 0, 0)) / 86400000);
+  if (days > 0) text += ' (+' + days + 'd)';
+  return box(text);
 }
 
 function renderLogPanel(id) {

@@ -302,7 +302,8 @@ main { max-width: 1500px; margin: 0 auto; padding: 108px 28px 40px; pointer-even
 
 .field { margin-bottom: 16px; }
 .field label { display: block; font-size: 13px; color: var(--text-dim); margin-bottom: 6px; }
-.field input[type="text"], .field input[type="date"], .field input[type="number"], .field textarea {
+.field select option { background: var(--panel); color: var(--text); }
+.field input[type="text"], .field input[type="date"], .field input[type="number"], .field textarea, .field select {
   width: 100%;
   background: var(--glass-bg-alt);
   border: 1px solid var(--glass-border);

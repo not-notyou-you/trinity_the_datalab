@@ -372,6 +372,14 @@ def download_scene(
             logger.info("[M1] ZIP dipakai ulang dari dataset lain (%s): %s", how, found)
             _long(out / f"{name}.zip.part").unlink(missing_ok=True)
 
+    # ZIP terpotong yang tertinggal dari run sebelumnya (dataset 59
+    # 2026-10-01: .part 605 MB dari 1642 MB di-rename jadi .zip) dulu dipakai
+    # ulang di setiap retry dan selalu gagal BadZipFile. Buang, unduh ulang.
+    if _long(zip_path).exists() and not _zip_is_complete(zip_path):
+        logger.warning("[M1] ZIP di disk rusak/terpotong, dihapus dan diunduh ulang: %s", zip_path.name)
+        _long(zip_path).unlink(missing_ok=True)
+        _long(out / f"{name}.zip.part").unlink(missing_ok=True)
+
     if _long(zip_path).exists():
         logger.info("[M1] ZIP sudah ada di disk, lewati download: %s", zip_path.name)
         file_size_mb = _long(zip_path).stat().st_size / (1024 ** 2)
@@ -429,9 +437,25 @@ def download_scene(
                         continue
 
                     if resp.status_code == 416:
-                        logger.info("[M1] File sudah lengkap di .part, rename saja.")
-                        os.replace(_long(part_path), _long(zip_path))
-                        break
+                        # 416 tidak menjamin .part lengkap: CDSE juga
+                        # menjawab 416 untuk Range pada berkas setengah jadi.
+                        if _zip_is_complete(part_path):
+                            logger.info("[M1] File sudah lengkap di .part, rename saja.")
+                            os.replace(_long(part_path), _long(zip_path))
+                            break
+                        if restarts_left > 0:
+                            logger.warning(
+                                "[M1] HTTP 416 tapi .part belum lengkap (%.0f MB), "
+                                "download diulang dari awal.", resume_from / 1e6,
+                            )
+                            session.headers.pop("Range", None)
+                            resume_from = 0
+                            _long(part_path).unlink(missing_ok=True)
+                            restarts_left -= 1
+                            attempt -= 1
+                            continue
+                        _long(part_path).unlink(missing_ok=True)
+                        raise RuntimeError("HTTP 416 berulang dan .part tidak lengkap")
 
                     # CDSE tidak selalu melayani permintaan lanjutan: endpoint
                     # /$value menjawab 501 Not Implemented untuk header Range.
@@ -510,6 +534,12 @@ def download_scene(
                                         if progress_cb:
                                             progress_cb(pct, f"{downloaded / 1e6:.0f} / {total / 1e6:.0f} MB")
 
+                    if total and downloaded < total:
+                        # Stream berakhir tanpa exception tapi kurang byte:
+                        # perlakukan seperti koneksi putus supaya di-resume.
+                        raise ConnectionError(
+                            f"stream berakhir di {downloaded} dari {total} byte"
+                        )
                     os.replace(_long(part_path), _long(zip_path))
                     logger.info("[M1] Download selesai.")
                     dg.record_connection_success(dg.CDSE)
@@ -544,7 +574,12 @@ def download_scene(
 
     checksum_md5 = _md5(zip_path)
 
-    vv_path, vh_path = _extract_bands(zip_path, out)
+    try:
+        vv_path, vh_path = _extract_bands(zip_path, out)
+    except zipfile.BadZipFile:
+        # Jangan tinggalkan ZIP rusak untuk retry berikutnya.
+        _long(zip_path).unlink(missing_ok=True)
+        raise
 
     if not keep_raw:
         _long(zip_path).unlink()

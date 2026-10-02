@@ -65,7 +65,7 @@ data/datasets/{id}_{slug}/
    by processing level then by render kind.
 7. **Datasets created before the relayout are not migrated.** They keep the old
    `{YYYYMMDD}/{tier}/{source}/` tree, `folder_manager.is_legacy_layout()`
-   detects them, and the UI shows a "format lama" notice instead of rendering a
+   detects them, and the UI shows a legacy-layout notice instead of rendering a
    tree with vocabulary that no longer applies. Their files stay downloadable.
 
 ## Tier vocabulary used below
@@ -86,9 +86,11 @@ Full chain: calibrate + crop + **Lee filter 7×7** + **QA analytics** + **COG ex
 - Input: CDSE OData query (bbox, date range, GRD/IW filter)
 - Process: OAuth2 auth → discover scenes → download SAFE ZIP (HTTP Range-resume) → extract VV/VH GeoTIFFs → MD5 verify
 - AOI coverage gate: before any download, the orchestrator unions the catalogue footprints of all frames on a date and drops the date when they cover less than `MIN_S1_AOI_COVERAGE` (5%) of the AOI. Decided per date, not per frame, so both halves of a split pass are kept. Scenes without a readable footprint are never dropped. (24_try8 downloaded 1.6 GB for a 14 Jan pass that covered 0.5% of the AOI and fused a 455 MB stack that was 99.4% NaN.)
-- Output: `RAW/sentinel1/{product_identifier}/`
+- Orbit filter: if `quality_settings.orbit_direction` is `ASCENDING` or `DESCENDING`, scenes of the other direction are dropped right after discovery (not in the catalogue query, so a resumed job re-discovers exactly the same set). Used to keep scene counts comparable between datasets of different periods. If nothing is left, the job completes with zero scenes.
+- Output: `_work/` (SAFE zip, transient — see "On-disk layout")
 - DB: Insert `satellite_scenes` row
-- Retry: 3 attempts, exponential backoff
+- Parallelism: `S1_PARALLEL_DOWNLOADS` (default 3, max 4) download workers per job, further capped by the global CDSE connection slots — see "Download Concurrency & Resilience" below.
+- Retry: up to 6 attempts on dropped connections/5xx (backoff from `CONNECTION_RETRY_BASE_S`, ~2.5 min of CDSE trouble tolerated) and up to 8 on 429 (account throttling, honouring `Retry-After`), resuming via HTTP Range from the `.part` file. A 401 mid-download (token expired during a long transfer) refreshes the shared token without consuming an attempt.
 - Reuse: `etl/download_guard.py` lets a scene already downloaded for one dataset be hardlinked/copied into a new dataset's folder instead of re-fetched (`find_reusable_file`), and detects a stalled/dead connection via a minimum-throughput window (`DOWNLOAD_MIN_KBPS`/`DOWNLOAD_STALL_WINDOW_S`) rather than only a hard timeout.
 
 **Stage 2: CALIBRATE**
@@ -128,7 +130,9 @@ Full chain: calibrate + crop + **Lee filter 7×7** + **QA analytics** + **COG ex
 ## MODIS Pipeline
 
 ### What RAW means for MODIS
-Download HDF4 + extract **flood map only** (MCDWD_L3_F2_NRT categorical, primarily the 2-day composite subdataset `Flood_2Day_250m`) + reproject → EPSG:4326 + mosaic tiles + crop AOI. **No derived indices computed.** Output at ALIGNED tier.
+Download HDF4 + extract **flood map only** (MCDWD categorical, primarily the 2-day composite subdataset `Flood_2Day_250m`) + reproject → EPSG:4326 + mosaic tiles + crop AOI. **No derived indices computed.** Output at ALIGNED tier.
+
+**Product and archive.** The flood granule is `MCDWD_L3_NRT` — the combined NRT HDF holding the 1/2/3-day and cloud-shadow layers in one file. (It used to be `MCDWD_L3_F2_NRT`, but NASA now publishes that variant only as a single-band `.tif` without the `FloodCS_1Day` gap-filler, so its `.hdf` listing was always empty and FLOOD failed for every recent date — found by Live Monitoring, Sep 2026.) Every MODIS product is looked up on the NRT archive (`nrt3.modaps.eosdis.nasa.gov`, ~7-day retention) first and on the standard LAADS archive (`ladsweb.modaps.eosdis.nasa.gov`; `MCDWD_L3`, `MOD09GA`) when NRT has nothing for that date. MCDWD uses 10°×10° geographic tiles, not the sinusoidal `hNNvNN` grid of MOD09. Only 5xx/429 listing errors are retried; a 404 (no directory for that date) is final.
 
 The 2-day layer is not used blindly, though: `etl/module7_modis_download.py` fills gaps in it from the **cloud-shadow-masked 1-day layer** (`FloodCS_1Day_250m` — never the plain, unmasked `Flood_1Day_250m`, which is the one that leaks cloud shadow/dark-urban false positives). Each output pixel's origin is recorded in a second band (`FLOOD_SOURCE_2DAY` / `FLOOD_SOURCE_1DAY_CS`), so a consumer can tell which rule produced it.
 
@@ -138,8 +142,8 @@ Full chain: flood map + **compute NDVI** `(B02_NIR − B01_Red) / (B02 + B01)` +
 ### Stages
 
 **DOWNLOAD + EXTRACT**
-- Input: LAADS DAAC query (tiles h30v08/h31v08, date)
-- Auth: NASA Earthdata Bearer token
+- Input: NRT / LAADS DAAC directory listing for the date and the tiles covering the AOI
+- Auth: NASA Earthdata Bearer token (401/403 fails fast for the whole job — it is the token, not the data)
 - Process: Download HDF4 → extract subdatasets
 - For RAW: extract FLOOD (2-day, gap-filled from cloud-shadow-masked 1-day) → reproject → crop → write ALIGNED
 - For PROCESSED: extract FLOOD + reflectance bands → compute NDVI/NDWI (per-pixel latest-clear composite) → reproject → crop → write INDICES → COG export to COG
@@ -162,8 +166,8 @@ Output grid (both levels): exactly the dataset AOI bbox at ~10 m, **nearest-neig
 ### Stages
 
 **DOWNLOAD + ACCUMULATE**
-- Input: GES DISC query (date), Final → Late → Early Run fallback as above
-- Auth: NASA Earthdata Bearer token (same as MODIS)
+- Input: GES DISC query (date), Final → Late → Early Run fallback as above. The listing request is retried on 5xx/timeouts (it used to be a single request, and one failure dropped the date to a guessed filename that 404s since the minor-version change)
+- Auth: NASA Earthdata Bearer token (same as MODIS; 401/403 fails fast)
 - For RAW: download single day → extract rainfall → crop → write ALIGNED
 - For PROCESSED: download target day + preceding 6 days → extract rainfall → build 24h/72h/7d sums → crop → write ACCUMULATED → COG export to COG
 - Non-fatal: Failures don't block the pipeline
@@ -283,6 +287,8 @@ Root attributes added: `grid_bbox` (the raster's real bounds, next to the reques
 
 Every layer's valid-pixel fraction is recorded in `layer_coverage` in the sidecar JSON, and layers below 5% valid pixels are logged as a WARNING. Three of the five dates in 22_try6 held 3.6-3.7% valid Sentinel-1 pixels and were reported as plain successes.
 
+**Coverage audit.** `audit_dataset_coverage()` (`module9_fusion.py`) runs after each fusion write and compares every stack's `sentinel1/VV` `valid_fraction` with the best one in the same dataset (the AOI is the same for all dates, so the best date shows what a complete mosaic reaches). A date below 0.7× that baseline whose value is *isolated* is reported as `dropped` — the signature of a stack written from only one of a date's S1 frames, which keeps the full grid shape and is invisible from the file itself (28 of 44 stacks across four datasets were found this way). Low values that *recur* across dates are reported as `recurring_low` instead: an AOI straddling two relative orbits legitimately alternates between coverage tiers. It only reads HDF5 attributes, logs at INFO/WARNING, never fails a job, and is also surfaced in the PDF report's quality section.
+
 ## Tier Cleanup
 
 After all stages complete, delete tiers NOT in `required_tiers` (derived from all source configs). Mark `data_products.is_valid=False` but preserve DB rows for audit.
@@ -293,13 +299,95 @@ This is a much smaller mechanism than **deleting a dataset**, which is `etl/dele
 
 `etl/location_resolver.py` turns a `CreateDatasetRequest`'s `region_id` or free-text `location` into a concrete bbox: `region_id` looks up a `regions_of_interest` row directly; free text is resolved by name first, then geocoded via Nominatim (`etl/geo_utils.py`'s `geocode_search()`) if no name matches. A geocoded location that isn't already a saved region gets auto-created as one (`source='USER'`), including reviving a previously soft-deleted region with the same name rather than creating a duplicate. `geo_utils.py` also holds the shared bbox sanity bounds (`MAX_SPAN_DEG=10.0`, `MIN_SPAN_DEG=0.001`) used by both the API layer and this resolver.
 
-## Live Scheduler
+## Job Queue
 
-`etl/live_scheduler.py`, `APScheduler.BackgroundScheduler`, started unconditionally in `api/main.py` on process startup.
+Dataset jobs (Create Dataset / Dataset Catalog) no longer each get their own thread on submission. At most `MAX_ACTIVE_JOBS` (default 2) run at once; the rest stay `QUEUED` in an in-process FIFO (`dataset_manager._pending_jobs`) and start when a running job finishes. Before this, five datasets meant fifteen simultaneous Sentinel-1 downloads and `QUEUED` was only a label. Live Area jobs do **not** use these slots — they are serialized by the Live cycle gate instead (see below).
 
-- Cron: Daily 02:00 Asia/Jakarta.
-- **Not the same codepath for every source.** SENTINEL1 goes through the full per-scene orchestrator job (`run_dataset_job`) — the same pipeline a normal dataset job runs. MODIS and GPM instead go through a lighter day-by-day loop that calls `ensure_modis_inputs_for_date()`/`ensure_gpm_inputs_for_date()` directly (helpers also used by fusion), not the full orchestrator.
-- **No advisory lock.** An earlier draft of this document claimed a PostgreSQL advisory lock serializes the scheduler across API workers — there is no such lock anywhere in the codebase (`etl/live_scheduler.py` starts a plain in-process `BackgroundScheduler` with no cross-process guard). If you run more than one API worker process, nothing here stops each one from running its own copy of the live cron. `etl/job_lock.py`'s OS-level per-job file lock (see "Concurrency & Durability Safeguards" above) prevents two processes from *writing the same job's files* concurrently, but that is a different, narrower guarantee than "only one worker runs the scheduler" — it does not stop the cron from firing twice.
+## Download Concurrency & Resilience
+
+`etl/download_guard.py`, shared by M1 (Sentinel-1), M7 (MODIS) and M8 (GPM):
+
+- **Global per-provider connection slots.** `CDSE`, `LAADS`, `GESDISC` each have one `PrioritySemaphore` (`CDSE_MAX_CONNECTIONS=3`, `LAADS_MAX_CONNECTIONS=4`, `GESDISC_MAX_CONNECTIONS=4`) shared by every job and every Live cycle in the process. Slots are handed out by priority: Live Monitoring runs inside `dg.low_priority()`, so a waiting Dataset Catalog download always gets the next free slot first. Live jobs also use a single S1 download worker instead of `S1_PARALLEL_DOWNLOADS`.
+- **StallGuard** (`DOWNLOAD_MIN_KBPS=75`, `DOWNLOAD_STALL_WINDOW_S=90`) aborts an attempt whose average rate stays below the floor, so the retry/Range-resume path takes over instead of a trickling connection holding a run for hours. Request timeout is `(30, 75)` s.
+- **Throttling** — 429/503 honour `Retry-After`, capped at `DOWNLOAD_MAX_RETRY_AFTER_S=300`; other failures back off with jitter. Every retry sleep is interruptible by cancel/pause.
+- **Circuit breaker** — `DOWNLOAD_BREAKER_THRESHOLD=2` connection failures to a provider within `DOWNLOAD_BREAKER_WINDOW_S=30` pause new requests to it for `DOWNLOAD_BREAKER_COOLDOWN_S=90`.
+- **Shared CDSE token** — one cached OAuth token per process, refreshed shortly before expiry or once when a request gets 401 (the other threads then reuse the fresh token instead of all logging in). Login and catalogue queries are retried on 429/5xx; rejected credentials fail at once.
+- **NASA auth** — a 401/403 from LAADS or GES DISC raises `NasaAuthError` immediately ("NASA_EARTHDATA_TOKEN is invalid or expired"); it is recorded so the UI can show an alert on the dataset card / Live area instead of a silent NaN layer.
+- **Progress telemetry for the UI** — the current wait (provider, reason, seconds) and the time of the last byte received are kept per dataset; `GET /api/datasets/{id}/status` / the Live area payload turn them into "waiting for server" notes and a "no progress since …" warning after `PROGRESS_STALL_AFTER_S=1800`. (Fields: INTERFACE.md "Dataset Status".)
+- **Partial downloads survive failure** — `_sweep_scratch` skips the `_work/` folder of any scene that failed in this run, so the next retry resumes the `.part` file instead of starting a ~2 GB download from zero.
+
+## Live Monitoring
+
+`etl/live_monitor.py` (areas, files, card), `etl/live_cycle.py` (the cycle), `etl/live_metrics.py`, `etl/live_preview.py`, `etl/live_interpret.py`, `etl/live_forecast.py`, `etl/live_scheduler.py`. Design brief: `LIVE_MONITORING.md` at the repo root. Rationale: DECISIONS.md D25.
+
+### Shape
+
+One **Live Area** = one `live_areas` row + one `datasets` row with `dataset_kind='LIVE_AREA'`, processed by the normal `run_dataset_job` with a fixed configuration:
+
+| Setting | Value | Why |
+|---|---|---|
+| Sources | Sentinel-1, MODIS, GPM — all `PROCESSED` | Previews and metrics need Lee-filtered S1, NDVI/NDWI and accumulated rain |
+| Kept tier | `COG` only | `compute_skip_stages()` then skips FUSION automatically — no HDF5 is written |
+| Fusion strategy | `CO_OCCURRENCE` | Multi-source validation requires one; it anchors on S1 dates, so MODIS/GPM are fetched only for scene dates |
+| Pipeline PREVIEW | off | Live renders its own 8 PNGs |
+
+Limits: `MAX_AREAS=5` active areas, retention 1–12 scenes (default 6). A **scene** is one Sentinel-1 acquisition date (all frames of that date), so 12 scenes ≈ 12 passes, not 12 days. Live Area datasets are hidden from `GET /api/datasets` and from interrupted-job recovery; the Live scheduler resumes them itself.
+
+### Schedule
+
+`LiveScheduler.start()` (called from `api/main.py` on startup) registers one cron: `run_live_areas` at **01:00, 07:00, 13:00, 19:00 Asia/Jakarta** — several times a day because S1 products appear in the catalogue hours after acquisition, and a cycle with nothing new costs one catalogue query. On startup, areas left in `BACKFILLING`/`RUNNING`/`WAITING` are resumed (honours `AUTO_RESUME_JOBS`). "Check now" on the card (`POST /api/live/areas/{id}/check`) starts a cycle outside the schedule.
+
+**The old daily 02:00 cron for the single LIVE dataset (`run_daily_check`) is no longer scheduled.** Its code remains only for the legacy `/api/live/backfill` endpoint.
+
+### One cycle (`live_cycle.run_cycle`)
+
+1. **Locking.** A per-area OS file lock (`JobLock` key `live-area-{id}`) stops two processes (e.g. overlapping `uvicorn --reload`) from running the same area. Inside the process, `_CYCLE_LOCK` (a fair `_CycleGate`) runs **one area at a time**, FIFO by `last_checked_at` (never-checked first); an area waiting its turn shows status `WAITING`. A user "retry" jumps the queue.
+2. **Recover** a scene left `PROCESSING` by a crash: reset to `FAILED` and retry it.
+3. **Discover** S1 dates. While fewer scenes are stored than `retention`, look back `min(200, retention × 12 + 14)` days (backfill); otherwise from the oldest stored scene or the last 10 days. Only the newest `retention` dates are kept as candidates; a date whose S1 failed `MAX_S1_ATTEMPTS=3` times is skipped.
+4. **Ingest** new dates through `run_dataset_job` (low priority, see above).
+5. **Finalize each scene**: metrics → 8 previews → source status. MODIS/GPM are matched with the same feature-date-or-day-before rule fusion uses; a nearest valid date is accepted and labelled "nearest". A failed MODIS/GPM source never fails the scene — it becomes `PARTIAL` and is retried on every later cycle (`retry_failed_sources`) or from the card.
+6. **Re-interpret** all stored scenes in date order (sentences compare with the previous scene), then **refresh the forecast** and store it on `live_areas.forecast`.
+7. **Retention**: delete the oldest scenes beyond `retention` (also immediately when the user lowers retention).
+8. Every step is written to `live_events`; NASA 401/403 seen during the cycle are reported as an area alert.
+
+### Metrics (`live_metrics.py`)
+
+Computed from the PROCESSED COGs, never from the PNGs, and stored as small numbers in `live_scenes.metrics` so charts and forecasts survive file deletion. S1 is read downsampled to a longest side of 2048 px (averaged in linear space). Per scene: S1 mean VV/VH (dB) and % of VH pixels below the water threshold; MODIS FLOOD class shares, NDVI mean, NDWI water %; GPM 24 h / 72 h / 7 d mean rainfall.
+
+### Previews (`live_preview.py`)
+
+Eight PNGs per scene in `{dataset root}/live/{YYYYMMDD}/{key}.png`, longest side 768 px, each with a small legend:
+
+| Row | Keys | Rendering |
+|---|---|---|
+| Sentinel-1 | `s1_vv`, `s1_vh` | grayscale dB, no overlay |
+| MODIS | `modis_flood`, `modis_ndvi`, `modis_ndwi` | colour at **40 %** opacity over S1 VH |
+| GPM | `gpm_rain_24h`, `gpm_rain_72h`, `gpm_rain_7d` | colour at 40 % over S1 VH (coarse ~10 km blocks are expected) |
+
+It reuses module10's grid, colormaps and class palette (`PREVIEW_SPECS`) so colours mean the same as in dataset previews; module10 itself is untouched. The original brief asked for MODIS LST and GPM peak intensity — neither exists in this pipeline (the MODIS products are MCDWD flood + MOD09 indices; GPM is daily IMERG), so FLOOD/NDVI/NDWI and the 7-day window are used instead.
+
+### Condition sentences (`live_interpret.py`)
+
+Rule-based, English, fixed format: **"Showing *[what]* in *[category]* condition because *[number + comparison]*."** Categories: `normal`, `alert`, `high`, `flood-indicated`, `unavailable` (with the reason, e.g. cloud cover). `THRESHOLDS` in that module is the single source for every threshold — sentences, area status, and the GPM chart's threshold lines all read it. Defaults and their sources are documented in the module docstring, e.g. VH water threshold −20 dB, VH water-area change +2 / +5 percentage points vs. the previous scene (change, not absolute %, so permanent water doesn't trigger), VV drop 1.5 dB, MODIS min 10 % observed pixels, NDWI > 0 (McFeeters), rain 24 h 20/50 mm (BMKG heavy / very heavy), 72 h 50/100 mm, 7 d 75/150 mm.
+
+**Area status** (card header) combines S1 VH, the MODIS water index (NDWI, falling back to the flood map) and GPM 72 h: `High` when VH is flood-indicated *and* rain is high or optics agree; `Alert` when any of them is raised; `Unavailable` when all three are missing; otherwise `Normal`.
+
+### Forecast (`live_forecast.py`)
+
+Pure function, no DB/disk. Steps = `ceil(n_scenes / 3)` (1–3 → 1 … 10–12 → 4). 1 point: persistence with a wide band ("not enough data"); 2–3: simple exponential smoothing (α 0.5); ≥ 4: Holt with damped trend (α 0.5, β 0.3, φ 0.8). Parameters are fixed, not fitted — with ≤ 12 points fitting only memorizes noise. 80 % band = z · RMSE(one-step) · √h · (1 + 2/n), with per-series fallback σ; clipped to physical ranges (rain ≥ 0, % in 0–100). Step dates follow the mean interval between scenes (12 days with one scene). Series: S1 mean VH (dB, line), MODIS NDWI water area (%, line), GPM 72 h rain (mm, bars + alert/high threshold lines).
+
+### Retention & deletion
+
+Deletion is a hard delete of one scene's files (S1 COGs of every frame that date, its MODIS/GPM COGs, the `live/{date}/` previews, granule-cache files no longer needed by any kept scene) plus the matching `data_products` rows. `_LiveFiles` refuses (`UnsafeDeletion`) any path that does not resolve inside the area's own `LIVE_AREA` dataset root, so files of normal datasets can never be touched. The `live_scenes` row is kept with `deleted_at`, `delete_reason`, the deleted file list and `freed_bytes`; its metrics and sentences remain for audit (`GET /api/live/areas/{id}/log`). Deleting an area cancels its running job, deletes every scene as above, then removes the rest of its `LIVE_AREA` dataset (granule cache, metadata, DB rows) through `DeletionManager`, and soft-deletes the area; `live_areas`/`live_scenes`/`live_events` rows stay. Raising retention starts a cycle to fill the gap; lowering it deletes the excess immediately.
+
+### Not done / limits
+
+- One area cycle at a time per process, so many areas with long backfills queue behind each other.
+- Same multi-worker caveat as before: the APScheduler cron has no cross-process guard, so N API workers fire N crons. The per-area file lock prevents two processes from running the **same** area concurrently, which is the harmful case, but the scheduler itself still runs per worker (D7).
+
+## Legacy Live Dataset
+
+The single `dataset_kind='LIVE'` dataset (D23) and `live_dataset_sources` still exist, and the `/api/live` (status/toggle/clear/backfill/scenes) endpoints still work on them, but nothing schedules them anymore and the UI no longer shows them. For that legacy path, SENTINEL1 went through `run_dataset_job` while MODIS/GPM went through a lighter day-by-day loop (`ensure_modis_inputs_for_date()`/`ensure_gpm_inputs_for_date()`).
 
 ## Configuration
 
@@ -308,8 +396,14 @@ This is a much smaller mechanism than **deleting a dataset**, which is `etl/dele
 The configuration that actually takes effect at runtime is environment variables, read via `etl/config.py` and directly at call sites — see DOCS/ARCHITECTURE.md "Environment Variables (.env)" for the full list. The one that matters most for pipeline behavior:
 
 ```bash
+MAX_ACTIVE_JOBS=2                  # etl/dataset_manager.py — dataset jobs running at once
 PIPELINE_MAX_CONCURRENT_SCENES=2   # etl/module5_orchestrator.py — a threading.Semaphore, not a config.json key
+S1_PARALLEL_DOWNLOADS=3            # etl/module5_orchestrator.py — clamped to 1–4
 ```
+
+## Dataset Report
+
+`etl/report_generator.py` builds a PDF + JSON report for any dataset on request (`GET /api/datasets/{id}/report`). It is isolated from the ETL: read-only against the DB and the dataset folder, never writes products or lineage, and a failure becomes an HTTP 400 rather than affecting jobs. Contents and data sources: DOCS/REPORT.md.
 
 ## GPM Storage
 
@@ -339,6 +433,8 @@ Why this exists: a fusion stack can go stale without its source scene going stal
 - `run_dataset_job` skips any scene that is already `scene_is_done` (CLEANUP/COMPLETED), so simply re-running the job is a no-op.
 - Resetting the scene's status does force a re-run, but from DOWNLOAD — and since D15 the SAFE ZIP is not retained, so that costs a full re-download (~1.7 GB/scene) for work that needs zero network bytes, because the PROCESSED-tier raster fusion actually reads is already in `sentinel-1/PROCESSED/`.
 
+Two fixes found while repairing dataset 35: the scene query now spans **all jobs of the dataset**, not just the given `job_id` (a frame recorded under a retry/resume job was otherwise missing, so a two-frame date was re-fused from one frame), and the RAW-level stack now gets its S1 inputs from `sentinel-1/RAW/` (`_s1_raw_crops_by_pid`) instead of silently falling back to a single scene.
+
 `refuse_date(db, job_id, date_key)` reconstructs the same `_JobContext` and `_SceneResult` objects `run_dataset_job` would have built, then calls the orchestrator's own `_finalize_date` — the same function that runs mosaic → preview → fusion → reference layers in the normal pipeline — rather than calling `create_fusion_stack` directly. This matters because a date covered by more than one S1 frame (mosaic case) would otherwise get a stack containing only one frame if fusion were invoked directly with a single `scene_id`.
 
 **Deliberate limit**: only works for dates whose S1 scene finished processing and whose PROCESSED-tier rasters are still on disk. A date whose rasters have already been swept must go through the full pipeline; `refuse_date` refuses rather than producing a half stack.
@@ -347,7 +443,7 @@ Not wired to an API endpoint or UI button as of this writing — invoked directl
 
 ## Cross-Dataset Merge
 
-`etl/dataset_merge.py`, `api/routes/merge.py` (`/api/merge/*`), "Gabungkan Dataset" panel in the web UI.
+`etl/dataset_merge.py`, `api/routes/merge.py` (`/api/merge/*`), "Merge Datasets" panel in Dataset Catalog.
 
 Splitting a large AOI into several bbox strips (D16 in DOCS/DECISIONS.md — a single rectangle covering an island like Jawa is majority sea) leaves N separate FUSION stacks per date, one per sub-dataset. This module stitches them back into one array per date for consumers who need to work across the original AOI.
 

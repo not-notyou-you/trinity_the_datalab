@@ -10,7 +10,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
-<link rel="stylesheet" href="style.css?v=ux2">
+<link rel="stylesheet" href="style.css?v=ux3">
 </head>
 <body>
 
@@ -124,6 +124,16 @@
                   <label for="fDateEnd">End date</label>
                   <input type="date" id="fDateEnd" required>
                 </div>
+              </div>
+              <!-- Di luar "Advanced": arah orbit menentukan konsistensi geometri
+                   SAR antar-dataset, jadi harus terlihat tanpa dibuka. -->
+              <div class="field">
+                <label for="fOrbitDirection">Sentinel-1 orbit direction</label>
+                <select id="fOrbitDirection">
+                  <option value="">Both (ascending + descending)</option>
+                  <option value="ASCENDING">Ascending only</option>
+                  <option value="DESCENDING">Descending only</option>
+                </select>
               </div>
               <details class="advanced">
                 <summary>Advanced settings (optional)</summary>
@@ -382,6 +392,6 @@
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="icons.js"></script>
-<script src="app.js?v=ux3"></script>
+<script src="app.js?v=ux10"></script>
 </body>
 </html>

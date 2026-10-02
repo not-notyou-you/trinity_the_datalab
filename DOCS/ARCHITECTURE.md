@@ -18,9 +18,11 @@ Tech stack, deployment, database schema, and on-disk layout. (Merged from the fo
 | Data | numpy, scipy, pandas, h5py, xarray, dask[array] | — | Arrays, interpolation, HDF5, chunked/out-of-core arrays |
 | HDF4 | pyhdf 0.11+ | — | Reading MODIS HDF4 granules |
 | HTTP | requests, httpx | — | Downloads, async testing |
-| Scheduling | APScheduler 3.10+ | — | Daily live ingestion cron |
+| Scheduling | APScheduler 3.10+ | — | Live Monitoring cron (01:00/07:00/13:00/19:00 Asia/Jakarta) |
 | Resilience | tenacity 9.0+ | — | Retry with exponential backoff |
-| Visualization | matplotlib, seaborn, Pillow | — | Preview PNG generation, plotting |
+| Visualization | matplotlib, seaborn, Pillow | — | Preview PNG generation, report charts |
+| PDF report | reportlab 5.0 | — | Dataset report assembly (`etl/report_generator.py`) — chosen over weasyprint because it is pure Python (no GTK/Pango on Windows). Uses the DejaVu fonts bundled with matplotlib for ✓ ⚠ ° ± glyphs |
+| PDF test reader | pypdf | — | Used only by `tests/test_report_generation.py` to read generated PDFs back |
 | DB driver / migrations | psycopg2-binary, alembic | — | Postgres driver; alembic is present in requirements.txt but the project actually migrates via hand-written `database/migrations/*.sql`, not alembic revisions |
 | System | psutil, python-dotenv, python-multipart | — | CPU/memory telemetry (`cpu_usage_percent`), `.env` loading, multipart form parsing |
 | Frontend | HTML5, CSS3, vanilla JS, Leaflet.js | — | Dashboard (no build step) |
@@ -82,14 +84,29 @@ COPERNICUS_PASSWORD=<password>
 # .env.example; used for both MODIS (LAADS DAAC) and GPM (GES DISC)
 NASA_EARTHDATA_TOKEN=<bearer-token>
 
-# Pipeline
-PIPELINE_MAX_CONCURRENT_SCENES=2
-S1_PARALLEL_DOWNLOADS=<n>          # module5_orchestrator.py
-DOWNLOAD_MIN_KBPS=<n>              # download_guard.py stall detection
-DOWNLOAD_STALL_WINDOW_S=<n>
+# Pipeline / job scheduling
+MAX_ACTIVE_JOBS=2                  # etl/dataset_manager.py — dataset jobs running at once; the rest wait FIFO (status QUEUED)
+PIPELINE_MAX_CONCURRENT_SCENES=2   # module5_orchestrator.py — scene pipelines per job
+S1_PARALLEL_DOWNLOADS=3            # module5_orchestrator.py — S1 download workers per job, clamped 1–4 (Live jobs always use 1)
 LOGS_DIR=logs_pipeline             # NOT "LOG_DIR" — plural, and this is the real default
 GDAL_CACHEMAX=<mb>
 GDAL_NUM_THREADS=<n>
+
+# Download resilience (etl/download_guard.py) — defaults shown
+DOWNLOAD_MIN_KBPS=75               # StallGuard: abort an attempt slower than this...
+DOWNLOAD_STALL_WINDOW_S=90         # ...averaged over this window
+CDSE_MAX_CONNECTIONS=3             # global connection slots per provider, shared by ALL jobs + Live
+LAADS_MAX_CONNECTIONS=4
+GESDISC_MAX_CONNECTIONS=4
+DOWNLOAD_MAX_RETRY_AFTER_S=300     # cap on an honoured Retry-After (429/503)
+CONNECTION_RETRY_BASE_S=2.5        # backoff base for dropped connections
+DOWNLOAD_BREAKER_WINDOW_S=30       # circuit breaker: N connection failures within the window...
+DOWNLOAD_BREAKER_THRESHOLD=2       # ...pause that provider...
+DOWNLOAD_BREAKER_COOLDOWN_S=90     # ...for this long
+PROGRESS_STALL_AFTER_S=1800        # UI "no progress since ..." warning threshold
+
+# Live Monitoring
+LIVE_RESULT_SHOW_S=900             # how long the "last cycle result" note stays on an area card
 ```
 
 **`DATA_DIR` has no effect.** `etl/folder_manager.py` hardcodes `DATA_ROOT = Path("data") / "datasets"` — there is no env override for it, despite an older draft of this doc suggesting one. If you need data on a different volume, symlink `data/` rather than trying to set an env var.
@@ -101,10 +118,10 @@ GDAL_NUM_THREADS=<n>
 | Source | Auth Method | Endpoint |
 |---|---|---|
 | Sentinel-1 (CDSE) | OAuth2 password grant | `identity.dataspace.copernicus.eu/auth/realms/CDSE/protocol/openid-connect/token` |
-| MODIS (LAADS DAAC) | Bearer token | `ladsweb.modaps.eosdis.nasa.gov` |
+| MODIS (LANCE NRT, then LAADS DAAC archive) | Bearer token | `nrt3.modaps.eosdis.nasa.gov` first, `ladsweb.modaps.eosdis.nasa.gov` as fallback |
 | GPM IMERG (GES DISC) | Bearer token (same NASA token) | `disc.gsfc.nasa.gov` |
 
-All data access is through authorized APIs — not scraping.
+All data access is through authorized APIs — not scraping. The CDSE token is cached per process and shared by every download thread (refreshed shortly before expiry or when the server rejects it), rather than one login per scene. A NASA 401/403 fails fast and raises a "NASA_EARTHDATA_TOKEN is invalid or expired" alert in the UI instead of being retried.
 
 ## Docker (Optional)
 
@@ -169,11 +186,15 @@ data/
 │   ├── fusion/{co-occurrence,full-coverage,hybrid}/
 │   ├── preview/{RAW,PROCESSED}/{grayscale,colored,composite}/
 │   ├── masks/                           # land_distance.tif, water_occurrence.tif — dataset-wide, not per-date
+│   ├── reports/                         # report_{YYYYMMDDTHHMMSSZ}.pdf + .json (etl/report_generator.py), latest reused as cache
+│   ├── live/{YYYYMMDD}/{key}.png        # LIVE_AREA datasets only: the 8 Live Monitoring previews per scene
 │   ├── _granule_cache/{modis,gpm}/      # raw NASA granules, shared across dates (accounted as tier RAW)
-│   └── _work/                           # scratch: SAFE zip, pre-COG Lee output — swept at end of EVERY job
+│   └── _work/                           # scratch: SAFE zip, pre-COG Lee output — swept at end of every job,
+│                                        # except a FAILED scene's folder, so its .part can resume next run
 ├── merged/                              # cross-dataset merge output (etl/dataset_merge.py) — sibling of datasets/, not inside it
 │   └── merged_{YYYYMMDD}.h5
-└── _job_locks/                          # etl/job_lock.py — one lock file per running job_id, self-releasing
+└── _job_locks/                          # etl/job_lock.py — one lock file per running job_id (and per Live Area
+                                         # cycle, key live-area-{id}), self-releasing
 
 logs/{dataset_id}_{slug}.txt     # One run log per dataset
 ```
@@ -183,7 +204,7 @@ requested gets no folder at all. Dates live in filenames, not folders — every
 writer already embeds the date, so listing dates means reading filenames back,
 not walking a `{YYYYMMDD}/` tree. Datasets created **before** this relayout
 keep their old `{YYYYMMDD}/{tier}/{source}/` tree; `folder_manager.is_legacy_layout()`
-detects them and the UI shows a "format lama" notice instead of a tree built
+detects them and the UI shows a legacy-layout notice instead of a tree built
 from vocabulary that no longer applies to their files.
 
 Storage per Sentinel-1 scene: ~2.4 GB (all tiers) or ~0.25 GB (COG+FUSED only).
@@ -214,6 +235,10 @@ fusion_products (0..1) ──── (1) satellite_scenes[s1_scene_id]
 
 reference_land_polygons                                   # unrelated to any dataset — pure reference geometry
                                                             # (not FK'd from datasets; joined spatially at mask-build time)
+
+live_areas (0..1) ──── (1) datasets[dataset_id]  (dataset_kind='LIVE_AREA', FK ON DELETE SET NULL)
+live_areas ··· live_scenes ··· live_events       # area_id / dataset_id are plain columns, NOT FKs:
+                                                 # these logs must outlive the scenes and areas they describe
 ```
 
 **`fusion_products` does not point at `data_products` at all** — its `s1_scene_id`/`modis_scene_id`/`gpm_scene_id` columns are FKs to `satellite_scenes`/`nasa_scenes` (the *inputs*), not to the FUSED-tier `data_products` row it produces. The FUSED `data_products` row for a given date is found by matching `dataset_id` + tier + the fusion filename, not by a foreign key — there is no direct link column between the two tables.
@@ -241,8 +266,8 @@ reference_land_polygons                                   # unrelated to any dat
 | ★ fusion_output_only | BOOLEAN DEFAULT FALSE | Keep only FUSED output; per-source artifacts are deleted **after** each date's stack is written (still built, not skipped) |
 | ★ s1_match_tolerance_days | SMALLINT DEFAULT 2 | FULL_COVERAGE only — how far a borrowed S1 scene may be from the target date |
 | ★ fusion_grid | JSONB | `{transform, width, height, crs, source_product_id, pinned_at}`, pinned once on first fusion and read thereafter so the grid can't drift when raster availability changes (migration 024, DECISIONS.md D16/D19) |
-| quality_settings | JSONB DEFAULT `{}` | e.g. `min_quality_score` |
-| dataset_kind | VARCHAR(10) DEFAULT `STANDARD` | `STANDARD` or `LIVE` |
+| quality_settings | JSONB DEFAULT `{}` | `min_cloud_cover`, `min_quality_score`, `resolution_m`, `orbit_direction` (`ASCENDING`/`DESCENDING`/absent = both — read by the orchestrator after S1 discovery) |
+| dataset_kind | VARCHAR(10) DEFAULT `STANDARD` | `STANDARD`, `LIVE` (legacy single live dataset, D23) or `LIVE_AREA` (one per Live Area, migration 025) — CHECK `chk_dataset_kind` |
 | status | VARCHAR(20) DEFAULT `DRAFT` | `DRAFT`, `QUEUED`, `PROCESSING`, `COMPLETED`, `FAILED`, `PAUSED`, `CANCELLED` |
 | total_scenes / completed_scenes / failed_scenes | INT DEFAULT 0 | |
 | total_size_bytes | BIGINT DEFAULT 0 | |
@@ -323,7 +348,44 @@ Note: `selected_satellites` and `processing_level` are NOT on this table — the
 | created_at | TIMESTAMPTZ | |
 | UNIQUE | (source, tile_id, product_short_name, acquisition_date) | |
 
-#### live_dataset_sources — Per-satellite enable flags for the LIVE dataset
+#### live_areas — One row per Live Area (migration 025)
+
+| Column | Type | Notes |
+|---|---|---|
+| area_id | SERIAL PK | |
+| dataset_id | INT FK → datasets ON DELETE SET NULL | The area's own `LIVE_AREA` dataset, processed by the normal pipeline |
+| name | VARCHAR(255) NOT NULL | |
+| region_id | INT FK → regions_of_interest ON DELETE SET NULL | The saved location the area was created from |
+| location_label / bbox_wkt | VARCHAR(255) / TEXT NOT NULL | Copied at creation |
+| retention | SMALLINT DEFAULT 6 | Scenes kept, CHECK 1–12 |
+| enabled | BOOLEAN DEFAULT TRUE | Scheduler skips disabled areas |
+| status | VARCHAR(20) DEFAULT `BACKFILLING` | `BACKFILLING`, `ACTIVE`, `RUNNING`, `WAITING` (queued behind another area's cycle, migration 026), `ERROR`, `DELETED` |
+| status_message | TEXT | Shown on the card |
+| last_checked_at | TIMESTAMPTZ | Also the FIFO key for the cycle queue (oldest first) |
+| forecast / forecast_updated_at | JSONB / TIMESTAMPTZ | Stored forecast so opening the card never recomputes it |
+| created_at / updated_at / deleted_at | TIMESTAMPTZ | Soft-delete; at most `MAX_AREAS=5` non-deleted areas |
+
+#### live_scenes — Per-scene log of a Live Area (never deleted)
+
+| Column | Type | Notes |
+|---|---|---|
+| live_scene_id | BIGSERIAL PK | |
+| area_id / dataset_id | INT (not FKs) | |
+| scene_date | DATE NOT NULL | The Sentinel-1 acquisition date — UNIQUE `(area_id, scene_date)` |
+| s1_product_ids | TEXT[] | All S1 frames of that date |
+| status | VARCHAR(20) | `PROCESSING`, `READY`, `PARTIAL` (a MODIS/GPM source failed — still shown), `FAILED`, `DELETED` |
+| source_status | JSONB | `{sentinel1|modis|gpm: {status: OK|FAILED|UNAVAILABLE, detail, matched_date, nearest}}` |
+| metrics / interpretations / area_status / previews | JSONB | Small summary numbers, the condition sentences, the one-line area status, and the PNG manifest |
+| deleted_at / delete_reason / deleted_files / freed_bytes | | Filled by retention or area deletion; the row itself stays for audit |
+| created_at / updated_at | TIMESTAMPTZ | |
+
+#### live_events — Step log of Live Area cycles
+
+`event_id` BIGSERIAL PK, `area_id`, `scene_date`, `step` (e.g. `CYCLE`, discovery, ingest, retention), `status`, `message`, `details` JSONB, `created_at`. Indexed on `(area_id, created_at DESC)`; merged with the area dataset's `processing_logs` by `GET /api/live/areas/{id}/activity`.
+
+#### live_dataset_sources — Per-satellite enable flags for the legacy LIVE dataset
+
+**Legacy.** Belongs to the single `dataset_kind='LIVE'` dataset (D23), which is no longer scheduled — Live Areas replaced it. Kept for the old `/api/live` endpoints and existing data.
 
 | Column | Type | Notes |
 |---|---|---|
@@ -486,4 +548,6 @@ CREATE INDEX idx_lineage_parent_id ON data_lineage(parent_product_id);
 
 ### Table Count
 
-21 domain tables (`schema_migrations` not counted) across `database/schema.sql` and `database/migrations/*.sql` — exceeds the 12-master-table academic minimum. Full list: `datasets`, `dataset_source_config`, `dataset_jobs`, `scene_job_state`, `satellite_scenes`, `nasa_scenes`, `data_products`, `dataset_versions`, `data_lineage`, `fusion_products`, `quality_metrics`, `regions_of_interest`, `reference_land_polygons`, `live_dataset_sources`, `processing_stages`, `processing_jobs`, `processing_logs`, `processing_rules`, `alert_events`, `cleanup_operations`, `api_access_logs`.
+24 domain tables (`schema_migrations` not counted) across `database/schema.sql` and `database/migrations/*.sql` (001–026) — exceeds the 12-master-table academic minimum. Full list: `datasets`, `dataset_source_config`, `dataset_jobs`, `scene_job_state`, `satellite_scenes`, `nasa_scenes`, `data_products`, `dataset_versions`, `data_lineage`, `fusion_products`, `quality_metrics`, `regions_of_interest`, `reference_land_polygons`, `live_dataset_sources`, `live_areas`, `live_scenes`, `live_events`, `processing_stages`, `processing_jobs`, `processing_logs`, `processing_rules`, `alert_events`, `cleanup_operations`, `api_access_logs`.
+
+Reports are not stored in the database either: `reports/*.pdf|json` are files in the dataset folder, regenerated when `datasets.updated_at` is newer than the latest file.

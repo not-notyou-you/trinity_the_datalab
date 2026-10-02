@@ -35,7 +35,7 @@ axes, not one" untuk tabelnya.
 - **GPM RAW**: Daily rainfall only → ALIGNED
 - **GPM PROCESSED**: + 24h/72h/7d accumulation → ACCUMULATED → COG
 
-**Trade-off**: More complex UI (per-source checkboxes instead of one toggle) and more complex pipeline orchestration. Mitigated by a "Pilih Semua" master toggle for users who don't need fine control.
+**Trade-off**: More complex UI (per-source checkboxes instead of one toggle) and more complex pipeline orchestration. Mitigated by a "Select All" master toggle for users who don't need fine control.
 
 **Schema impact**: Processing config moves from a TEXT[] column on `datasets` to a separate `dataset_source_config` junction table with per-source `processing_levels`.
 
@@ -83,6 +83,8 @@ axes, not one" untuk tabelnya.
 
 **Correction (found auditing this file against the code)**: this entry used to claim "a PostgreSQL advisory lock ensures only one API worker runs the scheduler in multi-worker deployments." No such lock exists anywhere in the codebase — `etl/live_scheduler.py` starts a plain `APScheduler.BackgroundScheduler` with no cross-process guard of any kind. Running more than one API worker process today means each one runs its own copy of the daily live-ingestion cron, with nothing serializing them. `etl/job_lock.py` (D22) prevents two processes from writing the *same job's* files concurrently once a job is running, but that does not stop the cron from firing the job twice in the first place. This is a real gap, not just a documentation error — either add the advisory lock this entry always claimed to have, or restrict live ingestion to a single designated worker process.
 
+**Update (Live Monitoring, D25)**: the only scheduled job is now `run_live_areas` at 01:00/07:00/13:00/19:00 Asia/Jakarta; the old daily 02:00 LIVE-dataset check is no longer registered. Each area cycle takes an OS file lock (`live-area-{id}`), so two workers can no longer run the *same* area concurrently — but each worker still fires its own cron and the advisory lock still does not exist.
+
 ## D8: Vanilla JS Frontend (No React/Vue)
 
 **Decision**: No frontend framework, no build step.
@@ -115,7 +117,7 @@ axes, not one" untuk tabelnya.
 
 ## D13: Clone Last Config via Backend (Hybrid Strategy)
 
-**Decision**: "Pakai Config Sebelumnya" button fetches last dataset config from DB via `GET /api/datasets/last-config`. Falls back gracefully if unavailable.
+**Decision**: "Reuse Previous Config" button (originally "Pakai Config Sebelumnya") fetches last dataset config from DB via `GET /api/datasets/last-config`. Falls back gracefully if unavailable.
 
 **Why**: 
 - **DB-persisted, not session-dependent** — user's config survives browser close, multiple devices
@@ -278,7 +280,7 @@ Konsekuensinya arah penghematan jadi berlawanan tergantung sumber daya mana yang
 
 ## D19: Penggabungan Lintas Dataset, dan Kenapa Strip Jawa Belum Bisa Digabung
 
-**Modul**: [etl/dataset_merge.py](../etl/dataset_merge.py), endpoint `/api/merge/candidates` dan `/api/merge/run`, panel "Gabungkan Dataset" di atas daftar dataset.
+**Modul**: [etl/dataset_merge.py](../etl/dataset_merge.py), endpoint `/api/merge/candidates` dan `/api/merge/run`, panel "Merge Datasets" di atas daftar dataset (Dataset Catalog).
 
 Pemecahan AOI (D16) menyisakan N stack terpisah per tanggal. Modul ini menyatukannya kembali dengan **menempel, bukan meresample**: resample akan menginterpolasi backscatter SAR, besaran fisis dalam dB yang rata-ratanya tidak bermakna di batas darat/air. Karena itu grid yang tidak sejajar **ditolak**, bukan dipaksakan — `GridMismatch` ada supaya kegagalannya terang-terangan, bukan diam-diam mengubah angka.
 
@@ -359,11 +361,13 @@ Audit grid keempat strip sekarang bersih (11 stack, 0 tidak cocok), dan kandidat
 
 ## D23: Live Ingestion sebagai Satu Dataset Tersendiri (`dataset_kind='LIVE'`)
 
+> **Di-supersede oleh [D25](#d25-live-monitoring-per-daerah-satu-dataset-live_area-per-daerah).** Dataset LIVE tunggal tidak lagi dijadwalkan dan tidak tampil di UI; endpoint `/api/live` lamanya dipertahankan hanya untuk kompatibilitas. Gagasan intinya — memakai ulang mesin dataset biasa alih-alih membangun konstruksi terpisah — justru diteruskan oleh D25.
+
 **Decision**: ingestion harian dijalankan atas SATU dataset yang ditandai `dataset_kind='LIVE'` (kolom `datasets.dataset_kind`, [etl/database_client.py:942](../etl/database_client.py#L942)), bukan sebagai flag "jadwalkan ulang" pada dataset mana pun, dan bukan konstruksi terpisah dari tabel `datasets`.
 
 **Why**: seluruh mesin pemrosesan — orchestrator, folder layout, tier cleanup, storage summary, endpoint `/api/datasets/{id}/*` — sudah dibangun di atas "satu baris `datasets`, satu folder, satu rangkaian job". Membuat live ingestion sebagai flag berulang pada dataset APA PUN berarti dataset itu punya dua identitas sekaligus (studi ablasi yang dibekukan pada rentang tanggal tertentu, DAN aliran yang terus tumbuh) — dua konsep yang butuh aturan retensi dan tampilan UI yang bertentangan. Menjadikannya dataset tersendiri berarti seluruh mesin yang sudah ada dipakai ulang tanpa modifikasi; yang baru hanya `live_dataset_sources` (per-satelit enable flag, satu baris per source karena cuma ada satu dataset LIVE) dan `etl/live_scheduler.py` (cron yang menjalankannya).
 
-**Konsekuensi**: `GET /api/datasets` (list biasa) memfilter `dataset_kind=STANDARD` secara eksplisit supaya dataset LIVE tidak muncul di daftar "Dataset Saya" bercampur dengan studi ablasi; ia hanya terlihat lewat `/api/live`.
+**Konsekuensi**: `GET /api/datasets` (list biasa) memfilter `dataset_kind=STANDARD` secara eksplisit supaya dataset LIVE tidak muncul di daftar "Dataset Catalog" (dulu "Dataset Saya") bercampur dengan studi ablasi; ia hanya terlihat lewat `/api/live`.
 
 ## D24: Layer Referensi Darat/Air sebagai Metadata Non-Fatal, Bukan Bagian Lineage
 
@@ -376,6 +380,60 @@ Audit grid keempat strip sekarang bersih (11 stack, 0 tidak cocok), dan kandidat
 - **Non-fatal karena informasi tambahan, bukan mata rantai wajib.** Dataset tanpa layer referensi (dibuat sebelum fitur ini ada, atau tabel `reference_land_polygons`/tile JRC belum termuat) tetap dataset yang sah dan lengkap — FUSED tetap bisa dipakai tanpa masks/. Menggagalkan job berjam-jam karena baris referensi belum termuat akan menghukum kesalahan konfigurasi yang tidak berkaitan dengan pipeline utama.
 - **Sungai/danau sengaja tidak dilubangi dari poligon darat.** Luapan sungai adalah sinyal yang justru dicari; melubangi poligon di sana akan membuat piksel banjir sungai selalu terhitung "laut/air", menyembunyikan tepat kejadian yang ingin ditangkap.
 - **Idempotensinya harus sadar grid, bukan cuma sadar keberadaan berkas** — lihat D20 untuk bug yang ditemukan justru dari keputusan ini (berkas ada tidak berarti berkas masih cocok dengan grid fusion saat ini).
+
+## D25: Live Monitoring per Daerah, Satu Dataset `LIVE_AREA` per Daerah
+
+**Modul**: [etl/live_monitor.py](../etl/live_monitor.py), [etl/live_cycle.py](../etl/live_cycle.py), `live_metrics/preview/interpret/forecast.py`, migrasi [025](../database/migrations/025_live_monitoring.sql)/[026](../database/migrations/026_live_area_waiting.sql). Brief: `LIVE_MONITORING.md`. Mekanisme lengkap: DOCS/PIPELINE.md "Live Monitoring".
+
+**Latar**: dataset LIVE tunggal (D23) hanya mengunduh dan menumpuk data — tidak ada yang membantu orang awam memahami kondisi daerahnya, dan data tumbuh tanpa batas. Masukan dosen: harus ada otomatisasi yang benar-benar mengurangi kerja, dan tampilan yang bisa dibaca publik.
+
+**Decision**:
+- Satu **Daerah Live** = satu baris `live_areas` + satu baris `datasets` ber-`dataset_kind='LIVE_AREA'` yang diproses `run_dataset_job` biasa dengan konfigurasi tetap (3 sumber PROCESSED, simpan COG saja, `CO_OCCURRENCE`, PREVIEW pipeline mati). Prinsip D23 dipertahankan: mesin dataset dipakai ulang, bukan disalin.
+- **Scene = tanggal akuisisi Sentinel-1**, bukan hari kalender; retensi 1–12 scene; maksimal 5 daerah.
+- Keluaran per scene adalah **angka kecil + 8 PNG + kalimat**, bukan HDF5: metrik disimpan di `live_scenes.metrics` sehingga grafik, forecast, dan audit tetap hidup setelah berkasnya dihapus retensi.
+- Kalimat kondisi **rule-based** ("Showing … in … condition because …") dengan satu tabel `THRESHOLDS`, bukan LLM: harus bisa diaudit dan menyebut angka pembanding.
+- Forecast **tanpa fitting** (SES/Holt teredam dengan parameter tetap, `ceil(n/3)` langkah): dengan ≤ 12 titik, mengoptimasi parameter cuma menghafal derau.
+- `live_scenes`/`live_events` **bukan FK** ke apa pun: log harus hidup lebih lama dari scene, dataset, dan daerah yang dirujuknya.
+- Penghapusan **hard delete** yang dibatasi ke root dataset `LIVE_AREA` milik daerah itu (`_LiveFiles`, `UnsafeDeletion`), sehingga berkas dataset biasa mustahil ikut terhapus walau granule-nya identik.
+- Siklus antardaerah **diserialkan** (`_CycleGate`, FIFO berdasarkan `last_checked_at`, status `WAITING`) dan berjalan di prioritas rendah terhadap unduhan Dataset Catalog (D26) — Live adalah pekerjaan latar, pengguna yang sedang menunggu dataset-nya didahulukan.
+
+**Penyimpangan yang disengaja dari brief**: brief meminta MODIS LST dan intensitas hujan maksimum GPM. Keduanya tidak ada di pipeline (MODIS = MCDWD flood + indeks MOD09; GPM = IMERG harian), jadi dipakai FLOOD/NDVI/NDWI dan jendela 7 hari — lebih jujur daripada mengarang produk baru hanya untuk kartu.
+
+**Trade-off**: satu siklus pada satu waktu membuat backfill beberapa daerah baru mengantre lama; dataset LIVE lama tidak dimigrasi, hanya dibiarkan.
+
+## D26: Batas Koneksi Global per Penyedia + Antrean Job, Bukan Paralelisme per Job
+
+**Modul**: [etl/download_guard.py](../etl/download_guard.py), [etl/dataset_manager.py](../etl/dataset_manager.py) (`MAX_ACTIVE_JOBS`).
+
+**Kejadian**: setiap job memulai thread-nya sendiri begitu dibuat, dan tiap job membuka `S1_PARALLEL_DOWNLOADS` koneksi CDSE. Lima dataset = 15 unduhan S1 serentak; CDSE membalas 429 dan memutus koneksi, sehingga scene sehat gagal permanen (okt_dec_2025_hybrid: 12 scene, jul_sep_2025_hybrid: 236). Status `QUEUED` hanya label. Tiap scene juga login CDSE sendiri, dan token NASA yang kedaluwarsa diulang-ulang seolah gangguan jaringan.
+
+**Decision**:
+- **Slot koneksi global per penyedia** (CDSE 3, LAADS 4, GES DISC 4) yang dibagi semua job dan siklus Live, dengan `PrioritySemaphore` agar Live (`low_priority`) selalu mengalah ke Dataset Catalog.
+- **Antrean job nyata**: paling banyak `MAX_ACTIVE_JOBS` (2) job berjalan; sisanya `QUEUED` FIFO dan dimulai saat slot kosong.
+- **Token CDSE dibagi** per proses; 401 di tengah unduhan memperbarui token tanpa menghabiskan jatah retry.
+- **429/503 menghormati `Retry-After`** (dibatasi 300 s), 429 punya jatah retry sendiri yang lebih longgar; **circuit breaker** per penyedia setelah kegagalan koneksi beruntun.
+- **NASA 401/403 gagal cepat** dan dimunculkan sebagai peringatan token di UI — itu masalah kredensial, bukan data, dan mengulanginya hanya membuang waktu lalu menghasilkan lapisan NaN diam-diam.
+- `.part` scene yang gagal **tidak disapu** di akhir job supaya retry berikutnya bisa resume.
+
+**Why bukan sekadar menurunkan `S1_PARALLEL_DOWNLOADS`**: batas per job tidak membatasi jumlah job. Yang dibatasi penyedia adalah total koneksi akun, jadi batasnya harus global.
+
+## D27: Laporan Dataset Sinkron, Read-Only, dan Tidak Mengarang Angka
+
+**Modul**: [etl/report_generator.py](../etl/report_generator.py), [etl/report_stats.py](../etl/report_stats.py), [etl/report_forecast.py](../etl/report_forecast.py), [api/routes/report.py](../api/routes/report.py). Isi: DOCS/REPORT.md.
+
+**Decision**:
+- **Sinkron**, bukan job + polling: laporan hanya membaca agregat DB, statistik piksel COG MODIS/GPM (~10 ms/berkas), dan merender chart kecil — detik, bukan jam. Pola sama dengan unduhan ZIP.
+- **Read-only & terisolasi**: tidak menulis ke DB atau ke produk; kegagalan menjadi HTTP 400, tidak mengganggu ETL.
+- **Cache seluruh PDF** di `reports/` dan pakai ulang selama lebih baru dari `datasets.updated_at`; `?force=true` membuat ulang.
+- **reportlab**, bukan weasyprint: pure Python, tanpa GTK/Pango yang menyulitkan instalasi Windows.
+- **Tidak ada angka contoh dari spesifikasi.** Spesifikasi awal mencontohkan validasi ground-truth, akurasi geolokasi, koherensi interferometrik, dan LST — tidak satu pun diukur pipeline ini. Bagian itu diisi proksi yang benar-benar terukur (konsistensi silang antarsensor, fraksi piksel valid, stabilitas backscatter musiman) dengan catatan eksplisit, atau dikosongkan.
+- **Prakiraan konservatif**: horizon = sepertiga periode dataset, model dipilih lewat backtest pada sepertiga akhir, dan model yang tidak mengalahkan metode naif tidak dipakai.
+
+## D28: Antarmuka Berbahasa Inggris, Landing Page Terpisah
+
+**Decision**: seluruh teks UI dan pesan error API diganti dari Bahasa Indonesia ke Bahasa Inggris (tab: Create Dataset, Dataset Catalog, Live Monitoring). `/` kini landing page (`web/index.html`), aplikasi pindah ke `/app`. Komentar kode tetap sebagian besar berbahasa Indonesia, begitu juga entri keputusan ini.
+
+**Konsekuensi**: label lama yang masih muncul di dokumen historis ("Buat Dataset", "Dataset Saya", "Pakai Config Sebelumnya", "Gabungkan Dataset", "format lama") merujuk ke elemen yang sama dengan nama barunya ("Create Dataset", "Dataset Catalog", "Reuse Previous Config", "Merge Datasets", legacy layout notice).
 
 ---
 

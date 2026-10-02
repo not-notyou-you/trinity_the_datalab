@@ -708,18 +708,27 @@ class DatasetManager:
                 raise ValueError("There is no job for this dataset yet")
             if job.status != "PAUSED":
                 raise ValueError(f"Job has status {job.status}, not PAUSED")
-            # Mirror retry_dataset_job: queue it and let run_dataset_job set the
-            # real stage-specific status, instead of hardcoding "PROCESSING".
-            job.status = "QUEUED"
+            job_id = job.job_id
+            # Pause tidak mematikan thread job: thread-nya cuma menunggu
+            # pause_event dan tetap memegang slot. Kalau masih hidup, resume
+            # melanjutkan thread itu (bukan memulai run baru), jadi tidak ada
+            # yang akan menimpa QUEUED -- kartu terlihat mengantre padahal
+            # sedang mengunduh. Thread hanya pernah sampai di DOWNLOADING
+            # setelah discovery, jadi status itulah yang dipulihkan.
+            with _threads_lock:
+                in_place = job_id in _running_jobs
+            # Tanpa thread hidup: antrekan dan biarkan run_dataset_job yang
+            # mengisi status sesuai tahapnya.
+            new_status = "DOWNLOADING" if in_place else "QUEUED"
+            job.status = new_status
             job.resumed_at = datetime.now(timezone.utc)
             job.resume_count = (job.resume_count or 0) + 1
-            dataset.status = "QUEUED"
-            job_id = job.job_id
+            dataset.status = new_status
             resume_count = job.resume_count
         get_pause_event(job_id).set()
         self._spawn_job_runner(job_id)
-        logger.info("[DATASET] job_id=%d resumed count=%d", job_id, resume_count)
-        return {"status": "QUEUED", "resume_count": resume_count}
+        logger.info("[DATASET] job_id=%d resumed count=%d status=%s", job_id, resume_count, new_status)
+        return {"status": new_status, "resume_count": resume_count}
 
     def recover_interrupted_jobs(self) -> list[int]:
         """Lanjutkan job yang terputus karena proses server mati/restart.
@@ -1285,6 +1294,7 @@ class DatasetManager:
             # objek ORM-nya) untuk memutuskan penghematan disk.
             "fusion_output_only": d.fusion_output_only,
             "s1_match_tolerance_days": d.s1_match_tolerance_days,
+            "s1_orbit_direction": (d.quality_settings or {}).get("orbit_direction"),
             "preview_options": list(d.preview_options or []),
             "created_at": d.created_at,
             "updated_at": d.updated_at,

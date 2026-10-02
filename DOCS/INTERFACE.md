@@ -6,6 +6,7 @@ The two ways a consumer touches this system: the REST API and the web dashboard.
 
 **Base URL**: `http://localhost:8000/api/`
 **Format**: JSON. **Auth**: None (add before public exposure). **CORS**: `*` (restrict before production).
+**Interactive docs**: `/docs` (FastAPI/Swagger). Non-API routes: `/` serves the landing page (`web/index.html`), `/app` serves the application (`web/app.html`); everything else under `/` is static files from `web/`.
 
 ### Health
 
@@ -36,7 +37,7 @@ POST /api/datasets
   "fusion_output_only": false,
   "s1_match_tolerance_days": 2,
   "preview_options": ["COLORED", "COMPOSITE"],
-  "quality_settings": { "min_cloud_cover": null, "min_quality_score": null, "resolution_m": null },
+  "quality_settings": { "min_cloud_cover": null, "min_quality_score": null, "resolution_m": null, "orbit_direction": null },
   "generate_preview": true
 }
 ```
@@ -51,7 +52,7 @@ POST /api/datasets
 - `region_id` (int, optional): the wizard's actual path — a `regions_of_interest` row picked from the map/list. This is what the UI sends.
 - `location` (string, optional): preset name, free-text (geocoded), or `"lat1,lon1,lat2,lon2"` bbox string — kept for older/CLI callers, resolved by name then geocoding. Exactly one of `region_id`/`location` must be given.
 - `description` (string, optional).
-- `quality_settings` (object, optional): `{min_cloud_cover, min_quality_score, resolution_m}`, all optional.
+- `quality_settings` (object, optional): `{min_cloud_cover, min_quality_score, resolution_m, orbit_direction}`, all optional. `orbit_direction` is `"ASCENDING"`, `"DESCENDING"` or null (both); Sentinel-1 scenes of the other direction are dropped after discovery (DOCS/PIPELINE.md, Stage 1).
 - `generate_preview` (bool, default `true`): whether the PREVIEW stage runs at all — separate from `preview_options`, which controls *which* PNG kinds it renders when it does.
 
 **Validation**:
@@ -76,14 +77,14 @@ POST /api/datasets
 → 400 { "detail": "fusion_strategy required when multiple sources configured" }
 → 400 { "detail": "sources.modis.processing must contain at least one value" }
 ```
-`job_id` is an integer (`dataset_jobs.job_id`), not a UUID.
+`job_id` is an integer (`dataset_jobs.job_id`), not a UUID. The job starts immediately only if fewer than `MAX_ACTIVE_JOBS` (default 2) dataset jobs are running; otherwise it stays `QUEUED` in a FIFO queue.
 
 #### List Datasets
 ```
 GET /api/datasets?limit=10&offset=0
 → 200 { "items": [...], "total": 42, "offset": 0, "limit": 10 }
 ```
-**Key is `items`, not `datasets`** (`DatasetManager.list_datasets`'s actual return shape) — a stale doc/consumer that reads `datasets` gets `undefined` silently rather than an error and just renders an empty list (fixed in the merge panel after shipping exactly this bug — commit `ae19569`). Only `dataset_kind=STANDARD` datasets are listed here; the LIVE dataset is reached through `/api/live`. Each item includes: id, name, region, dates, status, source_configs (array), fusion_strategy, `scenes_by_source`/`bytes_by_source` (one aggregate query for the whole page, not per-card), total_size_bytes.
+**Key is `items`, not `datasets`** (`DatasetManager.list_datasets`'s actual return shape) — a stale doc/consumer that reads `datasets` gets `undefined` silently rather than an error and just renders an empty list (fixed in the merge panel after shipping exactly this bug — commit `ae19569`). Only `dataset_kind=STANDARD` datasets are listed here; the legacy LIVE dataset is reached through `/api/live`, and Live Area datasets (`LIVE_AREA`) through `/api/live/areas`. The per-dataset endpoints below (`/report`, `/storage/*`, `/preview`, …) do work on a Live Area's `dataset_id`. Each item includes: id, name, region, dates, status, source_configs (array), fusion_strategy, `scenes_by_source`/`bytes_by_source` (one aggregate query for the whole page, not per-card), total_size_bytes.
 
 #### Get Dataset Detail
 ```
@@ -96,8 +97,19 @@ Not a scene/product listing — those live under `GET /api/scenes?dataset_id=` a
 #### Dataset Status
 ```
 GET /api/datasets/{id}/status
-→ 200 { "dataset_id": 7, "status": "PROCESSING", "progress_percent": 45, "scenes": [...] }
+→ 200 { "dataset_id": 7, "job_id": 42, "status": "PROCESSING", "total_scenes", "downloaded_count",
+        "processed_count", "failed_count", "cleaned_count", "progress_percent": 45, "paused", "pause_reason",
+        "scenes": [...], "layers": [ { "key", "source", "phase", "ratio" } ] }
 ```
+`layers` feeds the progress ring on the dataset card (one arc per source × phase: download / processing / fusion).
+
+Fields for the card's progress bar (computed by `DatasetManager.get_progress()`):
+- `queue_position` (int | null) — position in the `MAX_ACTIVE_JOBS` FIFO queue, 1 = next; null when not queued.
+- `timing` (object | null) — `{ elapsed_s, idle_s, stalled, last_activity_at }`; `stalled` is true after `PROGRESS_STALL_AFTER_S` without a received byte or log event. Null once the job has finished.
+- `waiting` (object | null) — the server wait in progress (e.g. 429 `Retry-After`, backoff): `{ source, reason, ..., remaining_s }`.
+- `alerts` (array) — `[{ source, message }]`, e.g. an expired `NASA_EARTHDATA_TOKEN`.
+
+These four fields used to be computed but missing from the `DatasetProgressResponse` model, so FastAPI dropped them and the queue position, wait notes, token alert and stall warning never appeared. They are now declared on the model.
 
 #### Pause / Resume / Cancel / Retry
 ```
@@ -146,7 +158,7 @@ GET /api/datasets/{id}/preview?scene=20250123
 GET /api/datasets/{id}/preview/{scene}/{level}/{kind}/{filename}   → PNG, level = RAW|PROCESSED
 GET /api/datasets/{id}/preview/{scene}/{kind}/{filename}           → PNG, level defaults to PROCESSED (falls back to whichever level exists) — kept for old links
 ```
-Always 200 with an empty gallery for a dataset that has no PREVIEW output yet — that is a normal state, not an error. A scene with both RAW and PROCESSED configured for the same source carries **two** levels under `by_level`; top-level `kinds` mirrors whichever level `preferred_preview_level()` picks (PROCESSED first).
+Always 200 with an empty gallery for a dataset that has no PREVIEW output yet — that is a normal state, not an error. A scene with both RAW and PROCESSED configured for the same source carries **two** levels under `by_level`; top-level `kinds` mirrors whichever level `preferred_preview_level()` picks (PROCESSED first). A scene item may also carry `coverage_quality` / `coverage_min_valid_fraction`, copied from root attributes of that date's `*_processed.h5` if present — no current pipeline stage writes those attributes, so in practice they are absent.
 
 #### Reference Layers (masks)
 ```
@@ -172,7 +184,7 @@ GET /api/datasets/{id}/storage/summary
 → 200 { "dataset_id", "legacy_layout": bool, "tiers": { "ALIGNED": {...}, "COG": {...}, ... },
         "sources": { "sentinel1": {...}, ... }, "total_size_bytes", "total_size_mb" }
 ```
-Canonical D14 tier names as keys. `legacy_layout: true` means this dataset predates the D15 relayout (`{YYYYMMDD}/{tier}/{source}/` instead of `{source}/{RAW|PROCESSED}/`) and the Struktur panel shows a "format lama" notice instead of a tree.
+Canonical D14 tier names as keys. `legacy_layout: true` means this dataset predates the D15 relayout (`{YYYYMMDD}/{tier}/{source}/` instead of `{source}/{RAW|PROCESSED}/`) and the File structure panel shows a legacy-layout notice instead of a tree.
 
 ```
 GET /api/datasets/{id}/storage/files/{tier}?source=modis&scene=20250123
@@ -187,7 +199,16 @@ DELETE /api/datasets/{id}?force=false
 ```
 `force=true` stops a running job before deleting; otherwise a dataset mid-job is rejected with 400.
 
-#### Get Last Configuration (for "Clone Last Config" feature)
+#### Report (PDF / JSON)
+```
+GET /api/datasets/{id}/report?force=false        → 200 application/pdf, filename {slug}_report.pdf
+GET /api/datasets/{id}/report/json?force=false   → 200 application/json, filename {slug}_report.json
+→ 404 dataset not found
+→ 400 { "detail": "..." }  ReportGenerationError (not enough data, or PDF assembly failed)
+```
+Synchronous — no job/polling, because the report only reads aggregates and renders small charts (seconds, not hours). The PDF and JSON are written together to `data/datasets/{id}_{slug}/reports/report_{UTC timestamp}.{pdf,json}`; the latest one is reused while it is newer than `datasets.updated_at`. `force=true` regenerates. The JSON endpoint regenerates once if the cached PDF predates the JSON export. Contents: DOCS/REPORT.md.
+
+#### Get Last Configuration (for "Reuse Previous Config")
 ```
 GET /api/datasets/last-config
 → 200 {
@@ -209,7 +230,7 @@ GET /api/datasets/last-config
 → 404 { "detail": "No dataset found yet" }
 ```
 
-Returns the most recently created dataset's configuration (region, sources with processing levels, fusion strategy, preview options). Used by frontend's "Pakai Config Sebelumnya" button to pre-populate the creation wizard.
+Returns the most recently created dataset's configuration (region, sources with processing levels, fusion strategy, preview options). Used by the frontend's "Reuse Previous Config" button to pre-populate the creation wizard.
 
 ### Scenes
 
@@ -264,17 +285,66 @@ GET /api/metadata/lineage/{product_id}?direction=ancestors
 
 Note: `api/routes/preview.py` (`/api/preview/*`, thumbnail-on-the-fly from COG) is **not mounted** in `api/main.py` — the gallery reads PREVIEW-tier PNGs through `/api/datasets/{id}/preview` instead, to avoid two different render/stretch definitions of "preview".
 
-### Live Ingestion
+### Live Monitoring (Live Areas)
+
+`etl/live_monitor.py`; behaviour in DOCS/PIPELINE.md "Live Monitoring". Responses are plain dicts (no Pydantic response model).
+
+```
+GET    /api/live/areas
+→ 200 [ { "area_id", "dataset_id", "name", "region_id", "location_label", "bbox_wkt", "retention",
+          "enabled", "status", "status_message", "running", "progress", "alerts", "last_result",
+          "last_checked_at", "scene_dates", "scene_count", "latest_scene_date", "area_status",
+          "total_size_bytes", "created_at" } ]
+
+POST   /api/live/areas   { "region_id": 3, "name": "Padang", "retention": 6 }
+→ 201 area dict        (name optional — defaults to the location name; retention 1–12, default 6)
+→ 400 more than 5 active areas, unknown region, ...
+       The first cycle (backfill) starts immediately in the background.
+
+GET    /api/live/areas/{id}                         → area dict (404 if unknown/deleted)
+PATCH  /api/live/areas/{id}   { "name"?, "retention"?, "enabled"? }
+→ 200 area dict        lowering retention deletes the excess scenes now; raising it starts a cycle
+DELETE /api/live/areas/{id}
+→ 200 { "area_id", "status": "DELETED", "freed_bytes", "deleted_scenes" }
+       files deleted permanently, live_scenes/live_events kept
+
+POST   /api/live/areas/{id}/check
+→ 200 { "area_id", "started": bool, "message": "Cycle started" | "A cycle is already running" }
+
+GET    /api/live/areas/{id}/card?date=YYYY-MM-DD
+→ 200 { "area": {...}, "scene": { "date", "status", "source_status", "metrics", "interpretations",
+          "area_status", "previews": { key: { ..., "url", "legend", "source_date" } }, "previews_skipped",
+          "updated_at" } | null,
+        "dates": [ { "date", "status", "level" } ], "forecast": {...}, "forecast_updated_at" }
+       date omitted = latest stored scene; deleted scenes never appear in "dates"
+
+GET    /api/live/areas/{id}/preview/{YYYY-MM-DD}/{key}.png    → PNG (Cache-Control: 1 day)
+       key ∈ s1_vv, s1_vh, modis_flood, modis_ndvi, modis_ndwi, gpm_rain_24h, gpm_rain_72h, gpm_rain_7d
+
+GET    /api/live/areas/{id}/events?limit=100     → cycle step log (live_events), newest first
+GET    /api/live/areas/{id}/activity?limit=5     → latest entries merging live_events with the area
+                                                   dataset's processing_logs: { "timestamp", "source",
+                                                   "stage", "status", "message", "scene_id", "details" }
+GET    /api/live/areas/{id}/log                  → every scene ever stored, INCLUDING deleted ones:
+                                                   { "date", "status", "source_status", "metrics",
+                                                     "interpretations", "area_status", "created_at",
+                                                     "deleted_at", "delete_reason", "deleted_files", "freed_bytes" }
+POST   /api/live/areas/{id}/scenes/{YYYY-MM-DD}/retry
+→ 200 { "area_id", "scene_date", "started", "message" }   re-fetch failed MODIS/GPM for one scene
+```
+Dates in Live paths are `YYYY-MM-DD` (400 otherwise), unlike the `YYYYMMDD` keys of dataset previews and merge. `forecast.series` has keys `sentinel1` / `modis` / `gpm`, each `{ label, unit, chart: line|bar, actual: [{date, value}], forecast: {...} }`; `gpm` also carries `thresholds: { alert, high }` (mm, 72 h).
+
+### Legacy Live Dataset
 
 ```
 GET  /api/live                          → { "dataset_id", "enabled", "status", "required_tiers", "bbox_wkt",
                                               "total_size_bytes", "last_checked_at", "sources": [...] }  (404 if no live dataset yet)
-POST /api/live/toggle?enabled=true      → { "status": "..." }
+POST /api/live/toggle   { "enabled": true } → { "status": "..." }
 POST /api/live/clear                    → { "status": "CLEARED", "freed_bytes", "deleted_count" }
-POST /api/live/backfill                 → { "date_start": "...", "date_end": "..." } → { "status", "job_id", "date_range" }
-GET  /api/live/scenes?limit=10          → [ { "product_id", "scene_date", "tier", "size_mb" } ]
+POST /api/live/backfill { "date_start", "date_end" } → { "status", "job_id", "date_range" }
+GET  /api/live/scenes?limit=50          → [ { "product_id", "scene_date", "tier", "size_mb" } ]
 ```
-Live is a single distinguished dataset (`dataset_kind="LIVE"`), not a list — `GET /api/live` 404s until it has been created (implicitly, the first time it's toggled on). Cron: daily 02:00 Asia/Jakarta via APScheduler.
+The single `dataset_kind="LIVE"` dataset (D23). Kept for compatibility only: it is no longer scheduled (the daily 02:00 cron was removed when Live Areas replaced it) and the web UI no longer calls these endpoints.
 
 ### Regions
 
@@ -346,13 +416,14 @@ Deletes only the derivative in `data/merged/` — the source FUSION stacks in ea
 
 Routes raise `HTTPException`, which FastAPI serializes as:
 ```json
-{ "detail": "Human-readable message (Bahasa Indonesia in most newer routes)" }
+{ "detail": "Human-readable message (English)" }
 ```
+All route messages were switched from Bahasa Indonesia to English; code comments remain mostly Indonesian.
 There is no `code`/`details` envelope — `error`/`code` fields described in earlier drafts of this document were never implemented; `web/app.js` reads `detail` directly. Two endpoints have custom handlers that keep the same `detail` key: `422` (Pydantic validation errors are flattened from FastAPI's default list-of-objects into one string, joined `"field: message | field2: message2"`) and the catch-all `500` (`{"detail": "Internal server error", "path": "..."}`, logged server-side with the full traceback).
 
 | HTTP | Typical cause |
 |---|---|
-| 400 | Invalid request body/query (e.g. bad tier name, `fusion_strategy` required, fewer than 2 `dataset_ids` for a merge) |
+| 400 | Invalid request body/query (e.g. bad tier name, `fusion_strategy` required, fewer than 2 `dataset_ids` for a merge, bad date format, 6th Live Area, report generation failed) |
 | 403 | Attempted write on a `SEEDER` region |
 | 404 | Resource doesn't exist, or exists but the requested sub-resource hasn't been produced yet (e.g. quality metrics before module6 ran) |
 | 409 | Duplicate name, or overwriting existing output without `overwrite=true` |
@@ -364,9 +435,16 @@ There is no `code`/`details` envelope — `error`/`code` fields described in ear
 
 ## Web UI
 
-### Technology
+### Technology & Pages
 
 Vanilla HTML5 + CSS3 + JavaScript. Leaflet.js for maps. No build step, no framework. Served as static files by FastAPI. Fonts: IBM Plex Mono (headings, labels, monospace data) + IBM Plex Sans (body text).
+
+| URL | File | What it is |
+|---|---|---|
+| `/` | `web/index.html` + `web/landing.css` | Landing page "Trinity: The Monitor — Three satellites. One dataset.": short pitch, buttons to the three app views, one card per satellite (Sentinel-1 radar 10 m ~7–8 days; MODIS optical 250 m daily; GPM rainfall ~10 km daily), footer link to `/docs`. Static, dimmed background map; polls `/api/health` for the status dot. |
+| `/app` (also `/app.html`) | `web/app.html` + `web/app.js` + `web/icons.js` | The application. Views are selected by hash: `#create`, `#datasets`, `#live`. |
+
+Both pages share `web/style.css` and the same floating navbar.
 
 ### Visual Design System
 
@@ -374,402 +452,204 @@ Vanilla HTML5 + CSS3 + JavaScript. Leaflet.js for maps. No build step, no framew
 
 ```css
 --ink: #0A0E1A;          /* deepest background */
---panel: #121A2B;         /* panel fill (not used directly — glass-bg replaces it) */
+--panel: #121A2B;
 --panel-alt: #182238;     /* input fields, alternate surfaces */
 --hairline: #232F49;      /* borders, dividers */
 --text: #E7ECF5;          /* primary text */
---text-dim: #00F0FF;      /* labels, secondary text (cyan, not gray) */
+--text-dim: #A3B1C9;      /* labels, secondary text */
 --cyan: #00F0FF;          /* accent: active states, status, links */
 --amber: #F0A63C;         /* warning badges */
 --coral: #EF6461;         /* danger/error badges, delete buttons */
 ```
+Per-source colours used in rings/charts: Sentinel-1 `#5B8DEF`, MODIS `#2FA07E`, GPM `#C4762E`.
 
-#### Glassmorphism Surface (Every Panel, Card, Modal, Toast, Navbar)
+#### Glassmorphism Surface
 
-Every container uses this stack — no solid backgrounds anywhere:
-
-```css
-background: rgba(10,14,26,0.16);           /* ~16% opacity black */
-backdrop-filter: blur(22px) saturate(140%); /* blur what's behind */
-border: 2px solid transparent;              /* invisible — gradient goes in ::before */
-overflow: hidden;                           /* clip blur to rounded corners */
-box-shadow:
-  inset -4px -4px 10px rgba(0,0,0,0.35),   /* inner depth: bottom-right dark */
-  inset 4px 4px 10px rgba(255,255,255,0.05),/* inner depth: top-left light */
-  0 8px 32px rgba(0,0,0,0.28);             /* outer shadow */
-```
-
-#### Gradient Border (::before Pseudo-Element)
-
-Every glass surface has a gradient border rendered via a masked `::before`:
-
-```css
-.glass::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  padding: 2px;                              /* border thickness */
-  background: linear-gradient(135deg,
-    rgba(0,240,255,0.9) 0%,                  /* cyan at top-left */
-    rgba(10,14,26,0.9) 65%                   /* fades to near-black at bottom-right */
-  );
-  -webkit-mask: linear-gradient(#fff 0 0) content-box,
-                linear-gradient(#fff 0 0);
-  -webkit-mask-composite: xor;
-  mask-composite: exclude;                   /* punches hole → only border visible */
-  pointer-events: none;
-}
-```
-
-#### Hover Glow
-
-Cards, panels, and sections gain a cyan glow on hover:
-
-```css
-.card:hover {
-  background: rgba(10,14,26,0.08);          /* slightly more transparent */
-  box-shadow:
-    inset -4px -4px 10px rgba(0,0,0,0.35),
-    inset 4px 4px 10px rgba(255,255,255,0.05),
-    0 8px 32px rgba(0,0,0,0.28),
-    0 0 46px rgba(0,240,255,0.4);           /* ← cyan glow ring */
-}
-```
+`.glass, .floatnav, .panel, .card, .modal, .toast, .region-card, …` share one stack: `background: var(--glass-bg)` (`rgba(10,14,26,0.46)`), `backdrop-filter: blur(22px) saturate(140%)`, inset light/dark shadows, and a gradient border drawn by a masked `::before` (`--glass-grad`: cyan top-left fading to near-black at 65%). Hover adds a cyan glow ring.
 
 #### Border Radius
 
 - Panels, side sections: `18px`
 - Cards, modals, inputs, map gap: `10px` (`--radius`)
-- Pills, badges, chips: `999px` (capsule)
+- Pills, badges, chips: `999px`
 
 #### Background
 
-The entire app background is a **full-viewport Leaflet map** (`position: fixed; inset: 0; z-index: -2`). On top sits a radial-gradient overlay for ambient color. Outside the "Buat Dataset" tab, the overlay adds a dark linear gradient so cards remain readable over bright map tiles.
+The app background is a **full-viewport Leaflet map** (Esri World Street Map tiles, `position: fixed; z-index: -2`) with a radial-gradient overlay. Outside Create Dataset the overlay darkens further so cards stay readable.
 
 ### Floating Navbar (Expanding Pill)
 
-The navbar is a **compact circular pill** (56px wide, showing only the logo) that expands when the user hovers anywhere in the top 1/6 of the viewport:
+A compact 56px pill showing only the logo; expands when the pointer enters the top 1/6 of the viewport (or on focus/click):
 
 ```
-COLLAPSED (default):
-┌──────┐
-│ LOGO │  ← 56px pill, border-radius: 999px
-└──────┘
-
-EXPANDED (on hover / focus / click):
-┌──────────────────────────────────────────────────────────────────┐
-│ LOGO  THE TRINITY          Buat Dataset │ Dataset Saya │ Live  ● │
-│        SENTINEL/MODIS/GPM                                        │
-└──────────────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────────────────────┐
+│ LOGO  THE TRINITY     Home │ Create Dataset │ Dataset Catalog │ Live Monitoring  ● Connected │
+│       SENTINEL/MODIS/GPM                                                       │
+└────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-- Trigger zone: `position: fixed; top: 0; width: 100vw; height: 16.667vh`
-- Transition: `max-width 0.4s cubic-bezier(.4,0,.2,1)` — brand text, tabs, and status indicator fade in with `opacity` transition + `transition-delay: 0.15–0.2s`
-- Active tab: `color: var(--ink); background: var(--cyan)` (black text on cyan fill)
-- Status dot: 8px circle — `.ok` = cyan with glow, `.degraded` = amber, `.down` = coral
+- Active tab: black text on cyan fill. "Home" is a link back to `/`.
+- Status dot from `/api/health` every 15 s: `.ok` cyan ("Connected"), `.degraded` amber ("Database issue"), `.down` coral ("Disconnected").
 
-### Tab Structure
-
-```
-┌─────────────────┬──────────────────┬──────────────┐
-│  Buat Dataset   │  Dataset Saya    │  Live        │
-│  (Create)       │  (My Datasets)   │  (Ingestion) │
-└─────────────────┴──────────────────┴──────────────┘
-```
-
-### Tab 1: Buat Dataset (Create Dataset)
+### View 1: Create Dataset (`#create`)
 
 #### Layout: Three-Column Grid
 
 ```
 ┌────────────┐  ┌──────────────────┐  ┌────────────┐
-│  Pilih     │  │                  │  │ Konfigurasi│
-│  Lokasi    │  │   Peta Wilayah   │  │            │
-│            │  │   (map gap —     │  │ Dates      │
-│ [+Tambah]  │  │    transparent   │  │ Satellites │
-│ [🔍Cari]   │  │    hole showing  │  │ Processing │
-│            │  │    Leaflet map)  │  │ Fusion     │
-│ Card list  │  │                  │  │ Preview    │
-│ of saved   │  │   Selection box  │  │ Name       │
-│ regions    │  │   (cyan border)  │  │            │
-│            │  │                  │  │ [Buat]     │
+│ Locations  │  │                  │  │ Wizard     │
+│ [+ Add     │  │   map window     │  │ 1 Region   │
+│  Location] │  │   (transparent   │  │ 2 Satellites│
+│ [search…]  │  │    hole onto the │  │ 3 Fusion   │
+│ region     │  │    Leaflet map,  │  │ 4 Review   │
+│ cards      │  │    cyan selection│  │            │
+│            │  │    box, −/+ zoom)│  │ [Next]     │
 └────────────┘  └──────────────────┘  └────────────┘
-  ~268px          flexible width        ~268px
 ```
 
-Both side panels are glass surfaces (18px radius) with internal scrolling (`.panel-scroll`). The map gap is fully transparent — it's a hole in the layout revealing the background Leaflet map, with a gradient border `::before` and an SVG mask (`#mapMask`, `fill-rule: evenodd`) blocking pointer events outside the gap so the map can only be dragged inside the window.
+Side panels scroll internally. The map gap is a hole in the layout; an SVG mask (`#mapMask`) blocks pointer events outside it so the map can only be dragged inside the window. A hint chip above it shows the selected bbox. Region cards are labelled `system` (SEEDER), `custom` (USER) or `from search`; USER cards have a delete button.
 
-**Selected region** shown as a cyan-bordered rectangle on the map, repositioned on every map move via `latLngToContainerPoint`.
+#### Reuse Previous Config
 
-#### Pre-Wizard: Clone Last Configuration
+Above the wizard, a **"Reuse Previous Config"** button appears only if a dataset has been created before (a `localStorage` cache decides visibility before the network answers; the values applied always come from `GET /api/datasets/last-config` — D13). A preview lists location, dates, `S1[RAW+PROC] · MODIS[PROC] · GPM[RAW]` and strategy. Clicking fills every wizard field; all remain editable. On API failure an inline error appears and the user can continue manually.
 
-Above the 4-step wizard, a "Pakai Config Sebelumnya" button (gear icon + text) appears only if user has previously created a dataset:
+#### Wizard (right panel, step pips 1–4)
 
-```
-┌────────────────────────────────────────┐
-│ [⚙ Pakai Config Sebelumnya]            │  ← Click to populate
-│                                        │
-│ Konfigurasi Terakhir:                  │
-│ • Jabodetabek                          │
-│ • Tanggal: 2026-08-01 s/d 2026-08-31   │
-│ • S1[RAW+PROC] · MODIS[PROC] · GPM[RAW]│
-│ • Strategi: HYBRID                     │
-└────────────────────────────────────────┘
-```
+**Step 1 — Region & Dates.** Region comes from the left panel. Start/end date. A collapsible advanced block: max cloud cover (%), minimum quality score (0–100), resolution (m), and **Sentinel-1 orbit direction** (Both / Ascending only / Descending only).
 
-On click:
-1. Fetch `GET /api/datasets/last-config`
-2. Populate form fields (region, date range, source checkboxes, fusion strategy, preview options)
-3. Focus on first field for editing
-4. User can edit before creating (dates, region, anything) -- date range is a preset, not a lock
+**Step 2 — Satellite Data Sources.** "Select All" master toggle, then one card per satellite with its own RAW / PROCESSED checkboxes:
 
-If no prior datasets exist, button hidden. If API fails, button stays visible but shows inline error.
+| Source | Card text | RAW | PROCESSED |
+|---|---|---|---|
+| Sentinel-1 SAR (ESA) | radar, sees through clouds, ~10 m, revisit ~7-8 days | calibration + crop (no Lee filter, no QA) | + Lee filter 7x7 + QA analytics + COG |
+| MODIS Optical (NASA) | flood/vegetation, 250 m, daily | flood map only (no derived indices) | + compute NDVI + NDWI from reflectance |
+| GPM IMERG Rainfall (NASA/JAXA) | precipitation, ~10 km, daily | daily precipitation (that day only) | + 24 h / 72 h / 7-day accumulation |
 
-#### User Journey (4-Step Wizard in Right Panel)
+Unchecking a source collapses its levels; at least one source with at least one level is required.
 
-**Step 1 — Region & Date**
-- Location: preset region cards (from `regions_of_interest` DB table) + free-text geocoding via Nominatim + Leaflet map
-- Region card: glass surface, selected state = `rgba(0,240,255,0.20)` bg + cyan left-edge bar (`::after`) + glow shadow
-- Date range: two `input[type=date]` fields
+**Step 3 — Fusion & Preview.** Fusion strategy (only if >1 source): `CO-OCCURRENCE` (only dates where every source has data), `FULL COVERAGE` (every day; MODIS/GPM downloaded daily, much larger download), `HYBRID` (download daily, assemble per Sentinel-1 date). For FULL_COVERAGE only: "Sentinel-1 pairing tolerance" 0–14 days (default 2). "Keep fusion output only" checkbox. Then optional preview options: GRAYSCALE (2–98 percentile stretch), COLORED (per-source colormap), COMPOSITE (false-color RGB, Sentinel-1 only).
 
-**Step 2 — Satellite & Processing Selection** (combined — each satellite has its own processing config)
+**Step 4 — Review.** Dataset name (required), description (optional), a summary of everything chosen, **Create Dataset**.
 
-Top-level master toggle:
-```
-Sumber Data Satelit:                              [☑ Pilih Semua]
-```
-"Pilih Semua" checks all 3 sources + all their processing levels.
+Validation runs per step (Next is blocked with an inline error): region selected, start ≤ end, ≥1 source with ≥1 level, strategy required iff >1 source.
 
-Each satellite is an expandable `.option-row` card. Enabling a source reveals its per-satellite processing checkboxes:
+### View 2: Dataset Catalog (`#datasets`)
+
+Polls every 10 s (`/api/datasets` + `/status` and the last 5 `/logs` of active datasets). Header has **Refresh**.
+
+#### Dataset Card
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│ ☑ Sentinel-1 SAR (ESA)                                     │
-│   radar, all-weather, ~10m, revisit ~7-8 hari               │
-│                                                             │
-│   Tingkat Pemrosesan:                        [☑ Semua]      │
-│     ☑ RAW  — kalibrasi + crop (tanpa Lee filter, tanpa QA)  │
-│     ☑ PROCESSED — + Lee filter 7×7 + QA analytics + COG     │
-└─────────────────────────────────────────────────────────────┘
-┌─────────────────────────────────────────────────────────────┐
-│ ☐ MODIS Optical (NASA)                        [disabled]    │
-│   flood/vegetation, 250m, daily                             │
-│                                                             │
-│   Tingkat Pemrosesan:                        [☐ Semua]      │
-│     ☐ RAW  — flood map saja (tanpa indeks turunan)          │
-│     ☐ PROCESSED — + hitung NDVI + NDWI dari reflectance     │
-└─────────────────────────────────────────────────────────────┘
-┌─────────────────────────────────────────────────────────────┐
-│ ☐ GPM IMERG Rainfall (NASA/JAXA)              [disabled]    │
-│   precipitation, ~10km, daily                               │
-│                                                             │
-│   Tingkat Pemrosesan:                        [☐ Semua]      │
-│     ☐ RAW  — curah hujan harian (hari itu saja)             │
-│     ☐ PROCESSED — + akumulasi 24h / 72h / 7 hari            │
-└─────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────┐
+│ (ring)  Dataset Name                         [Processing]   [˅]  │
+│         Region · 2025-01-01 - 2025-03-31                         │
+│         ▓▓▓▓▓▓▓░░░ Processing · 12 ok, 1 failed of 30 · 14 min   │
+│         S1[R+P]  MODIS[P]  GPM[P]                                │
+├──────────────────────────────────────────────────────────────────┤
+│ per-source scenes & bytes · Fusion: HYBRID (fusion output only)  │
+│ ring legend                                                      │
+│ 12 / 30 scenes done · 1 failed · 4.2 GB size · 1 h 05 duration · ETA │
+│ Latest logs (5)                                                  │
+│ [Download] [Pause] [Resume] [Retry]  [⋯]                         │
+│                                       ├ Details                  │
+│                                       ├ Report                   │
+│                                       ├ File structure           │
+│                                       ├ Preview images           │
+│                                       ├ Cancel processing        │
+│                                       └ Delete dataset           │
+└──────────────────────────────────────────────────────────────────┘
 ```
 
-Key interactions:
-- Unchecking a source collapses its processing options and grays them out
-- Each source has its own "Semua" mini-toggle for its processing levels
-- The top-level "Pilih Semua" checks all sources + all processing levels
-- At least 1 source with at least 1 processing level is required to proceed
+- **Progress ring** (`buildRingSVG`) — one arc per `layers` entry from `/status` (source × phase), coloured per source; spins while active.
+- **Progress bar** — "Queued (position N)" / "Waiting to start", "Preparing…", "Downloading/Processing · ok/failed/total" with a red share for failures, plus server-wait notes, NASA-token alerts and a "no progress since …" warning.
+- **Chips** per satellite: `R` = RAW, `P` = PROCESSED, `R+P` = both. No tier chips — tier is not a user choice (D14).
+- **Per-source stats**: `scenes_by_source` / `bytes_by_source` from one aggregate query for the whole page; scenes counted DISTINCT; sources without products are absent ("none yet") rather than zero.
+- **Collapse** button hides the body; the collapsed set and open "⋯" menus survive re-render.
+- **Actions**: Download (whole dataset ZIP; shown when size > 0), Pause / Resume / Retry by status; the "⋯" menu holds Details, **Report** (opens `/api/datasets/{id}/report` in a new tab), File structure, Preview images, Cancel processing (DOWNLOADING/PROCESSING only), Delete dataset.
 
-**Step 3 — Fusion & Preview**
+#### Details panel
+Per-source stages (Downloaded / Processed / Fused) with per-scene status, current stage and last error, from `/storage/by-source` and `/status`.
 
-Sub-step 3a — Fusion Strategy (shown only if >1 source enabled):
-```
-Strategi Fusi:
-  ○ CO-OCCURRENCE — hanya tanggal yang semua sumber punya data
-  ○ FULL_COVERAGE — setiap hari, ±1-2 hari offset OK
-  ○ HYBRID — auxiliary harian, S1 jadi jangkar
-```
+#### File structure panel
+- Storage rows per tier split into per-source segments. **Labels show the drawer, not the tier** (`tierLabel()`): `ALIGNED` → `RAW`, `COG` → `PROCESSED`, `FUSED` → `FUSION`. The download link keeps the real tier name.
+- Collapsible source → level → tier tree (native `<details>`); a single-level source collapses that layer.
+- File browser per leaf (`/storage/files/{tier}?source=`), grouped by date (read from the filename): Date | Scene | Files | Size.
+- Quality per source (`/api/quality/dataset/{id}/by-source`).
+- Reference layers (`/masks`) with legend and interpretation.
+- Legacy-layout datasets show a notice ("This dataset uses the legacy folder layout …") plus a whole-dataset download link instead of a tree.
 
-Sub-step 3b — Preview Options (optional, `.option-row` cards):
-```
-  ☐ GRAYSCALE — percentile 2-98 stretch
-  ☐ COLORED — per-source colormap
-  ☐ COMPOSITE — false color RGB (khusus S1)
-```
+#### Preview images panel
+Per source and level (e.g. SENTINEL-1 RAW, SENTINEL-1 PROCESSED, MODIS PROCESSED) with a date selector and Grayscale / Colored / Composite groups. Each image card: thumbnail, band label, colormap legend, value range, interpretation note; NoData as checkerboard. Clicking opens a **lightbox** (also used by Live Monitoring) with prev/next, legend and description.
 
-The `.option-row` component: `border: 1px solid var(--glass-border); border-radius: 12px; padding: 11px 13px`. When checked: `border-color: rgba(0,240,255,0.45); background: rgba(0,240,255,0.07)` (uses `:has(input:checked)`).
+#### Merge Datasets panel (above the list)
 
-**Step 4 — Review & Create**
-- Dataset name input, optional description textarea
-- "Buat Dataset" button (`.btn-primary`: cyan bg, black text, full-width)
-
-#### Validation Rules
-- At least 1 source must be enabled with at least 1 processing level checked
-- Each enabled source must have at least 1 processing level checked
-- Fusion strategy required if >1 source enabled, hidden if only 1
-- Date range valid (start ≤ end)
-- Region must be selected from list
-
-### Tab 2: Dataset Saya (My Datasets)
-
-#### Dataset Card Layout
+Backed by `/api/merge/candidates` and `/api/merge/run` (D19). Shown only when at least one date has stacks in more than one dataset. Fetched only from `loadDatasets()` (opening the view, Refresh, finishing a merge), **not** from the 10 s poll — `candidates` opens every FUSION HDF5 on disk.
 
 ```
-┌──────────────────────────────────────────────────────────────┐
-│  Dataset Name                              PROCESSING        │
-│  Region · Date Range                                         │
-│  ┌──────────┬──────────┬──────────┐                          │
-│  │ S1[R+P]  │ MODIS[P] │ GPM[R]   │  ← per-source processing│
-│  └──────────┴──────────┴──────────┘                          │
-│                                                              │
-│  Strategi Fusi: HYBRID                                       │
-│  S1: 5 scene · MODIS: 30 scene · GPM: 30 scene              │
-│  Storage: 2.4 GB (S1: 1.2G | MODIS: 0.8G | GPM: 0.4G)      │
-│                                                              │
-│  Live Logs (terbaru)                                        │
-│  ┌──────────────────────────────────────────────────────┐   │
-│  │ 14:02:15  S1A_IW...  LEE_FILTER  COMPLETED          │   │
-│  │ 14:01:58  S1A_IW...  CROP        COMPLETED          │   │
-│  └──────────────────────────────────────────────────────┘   │
-│                                                              │
-│  [Jeda] [Lanjutkan] [Coba lagi] [Batalkan] [Unduh] [Hapus] │
-│  [Detail] [Struktur]                                        │
-└──────────────────────────────────────────────────────────────┘
+┌ Merge Datasets ──────────────────────────── 4 dates can be merged  [▾] ┐
+│  2025-12-04    JAWA_A · JAWA_B · JAWA_C · JAWA_D                        │
+│                14 stacks · 103630 x 32040 px · 8 layers · ~22 GB  [Merge] │
+│  2025-12-06    JAWA_A · JAWA_B                                          │
+│                Already merged · 5.1 GB         [Re-merge] [Delete]      │
+│                [thumbnail] [thumbnail] [thumbnail]                      │
+└─────────────────────────────────────────────────────────────────────────┘
 ```
 
-**Key changes from Prototype**:
-- ❌ Removed tier chips (tier bukan pilihan user — lihat D14)
-- ✅ Source + processing level chips: `S1[R+P]`, `MODIS[P]`, `GPM[R]`
-  - `R` = RAW configured, `P` = PROCESSED configured, `[R+P]` = both selected
-  - Only show sources actually configured in dataset
-- ❌ Removed ring progress with tier colors
-- ✅ Fusion strategy label, plus "hasil fusi saja" when `fusion_output_only` is set
-- ✅ Live logs still show per-stage progress
-- ✅ Per-source scene count and byte breakdown (`scenes_by_source`,
-  `bytes_by_source` on `DatasetItem`). Computed from `data_products` with ONE
-  aggregate query for the whole listing page — the card re-renders on every
-  poll, so a per-dataset fan-out would multiply database load by the number of
-  cards on screen. Scenes are counted DISTINCT: one scene produces many product
-  rows (VV, VH, several tiers), so counting rows would report a multiple of the
-  real figure. Sources with no products yet are absent rather than zero, so the
-  card can tell "belum ada" from "nol byte".
+- `renderMergePanel()` filters candidates to `c.mergeable` — blocked rows (with `blocked_reason`) are visible only to direct API callers.
+- **Merge / Re-merge** send exactly the `dataset_ids` shown in that row (`overwrite=true` for Re-merge).
+- A merged row without previews shows **Build Preview** (`POST /api/merge/preview/{date}/rebuild`).
+- **Delete** (after a confirm) removes only `data/merged/` output, never the source stacks.
 
-**Card styling**: `.dataset-card` (glass surface, 18px radius, cyan border gradient on hover)
-
-#### Expandable Panels
-
-**Detail panel**:
-- Scene list per source (S1 scenes, MODIS granules, GPM daily)
-- Per-scene: product_identifier, current stage, status, last error
-- Scene status colors: COMPLETED = cyan, RUNNING = amber, FAILED = coral
-
-**Struktur panel**:
-- Storage rows per tier, each split into per-source segments. **Labels show the
-  DRAWER, not the tier name** (`tierLabel()` in `web/app.js`): `ALIGNED` renders
-  as `RAW`, `COG` as `PROCESSED`, `FUSED` as `FUSION` — because that is what the
-  user sees when they open the downloaded folder (`sentinel-1/RAW/`,
-  `sentinel-1/PROCESSED/`). The `?tier=` value in the download link keeps the
-  real tier name so the URL still resolves.
-  ```
-  RAW          700 B   1 berkas · 1 scene   [Berkas] [Unduh]   (granule cache)
-  RAW        1.00 KB   1 berkas · 1 scene   [Berkas] [Unduh]   ← tier ALIGNED
-  PROCESSED  2.50 KB   2 berkas · 1 scene   [Berkas] [Unduh]   ← tier COG
-  FUSION     3.00 KB   1 berkas · 1 scene   [Berkas] [Unduh]   ← tier FUSED
-  ```
-- Datasets created before the relayout are **not rendered as a tree at all**:
-  `storage.legacy_layout` is true and the panel shows a "format lama" notice
-  plus a whole-dataset download link. Their folder vocabulary no longer matches
-  anything else on screen.
-- Quality metrics per source: nodata%, speckle, score (served by
-  `/api/quality/dataset/{id}/by-source`, which is rank-3 based)
-- ✅ Collapsible nesting source → level → tier, built with native `<details>`
-  (open/close needs no JS state). The middle layer is **derived client-side**
-  from the tier via `TIER_LEVEL` — the disk has no level segment outside
-  `preview/`. A source with only one configured level collapses that layer
-  away: a single-child node adds a click without adding information.
-- ✅ File browser filtered by source (`/storage/files/{tier}?source=`, filtered
-  server-side) and grouped by date. Source and tier are already fixed by the
-  leaf that was clicked, so the columns are Tanggal | Scene | Berkas | Ukuran.
-  The date is read from the filename, since it is no longer a path segment.
-
-#### Preview Gallery (Inside Struktur Panel)
-
-Structure:
-```
-SENTINEL-1 RAW          [Date selector: 2024-01-15 ↕]
-Grayscale / Colored
-[Image grid 190px min]
-
-SENTINEL-1 PROCESSED   [Date selector: 2024-01-15 ↕]
-Grayscale / Colored
-[Image grid 190px min]
-
-MODIS PROCESSED        [Date selector: 2024-01-15 ↕]
-Grayscale / Colored
-[Image grid 190px min]
-```
-
-Each image card: thumbnail + label (band name), colormap tag, value range, interpretation note (3 lines max). Checkerboard for NoData.
-
-#### Merge Panel (Above the Dataset List)
-
-`data-action="toggle-merge"`, backed by `/api/merge/candidates` and `/api/merge/run` (see "Merge" above, DOCS/DECISIONS.md D19). Shown only when at least one date has stacks in more than one dataset — the normal case when an AOI was split into strips (D16).
-
-A single accordion (not one per row, since a "Gabungkan Dataset" decision spans datasets, not one card). Deliberately fetched only from `loadDatasets()` (opening the tab, pressing Refresh, finishing a merge) and **not** from the 10-second `refreshProgress` poll: `GET /api/merge/candidates` opens every FUSION HDF5 on disk to check its attributes, which is too expensive to run every poll cycle for a candidate list that only changes when a new fusion stack appears — a minutes-to-hours cadence:
+### View 3: Live Monitoring (`#live`)
 
 ```
-┌ Gabungkan Dataset ───────────────────── 4 tanggal bisa digabung  [▾] ┐
-│                                                                      │
-│  2025-12-04    JAWA_A · JAWA_B · JAWA_C · JAWA_D                     │
-│                14 stack · 103630 x 32040 px · 8 lapisan · ~22 GB     │
-│                                                       [Gabungkan]     │
-│                                                                      │
-│  2025-12-06    JAWA_A · JAWA_B                                       │
-│                Sudah digabung · 5.1 GB    [Gabung Ulang] [Hapus]     │
-│                [thumbnail] [thumbnail] [thumbnail]                   │
-└──────────────────────────────────────────────────────────────────────┘
+┌ Live Area [Padang ▾]  [+ Add Area] ─────────────────────────────────────┐
+│ area list (status dot per area)                                          │
+│ [Active] 6/6 scenes · 1.4 GB · checked 01/10/2026, 07:02 · message       │
+│ Keep [6▾] scenes  [Check now] [Report] [JSON] [Regenerate] [Delete area] │
+│ ▓▓▓▓░░ Downloading · 1 ok of 2 · 12 min   (+ latest 5 activity logs)     │
+├──────────────────────────────────────────────────────────────────────────┤
+│ PADANG · latest scene: 24 Sep 2026                                       │
+│ Alert — heavy rainfall, radar-detected wet area is growing               │
+│ Sentinel-1 (radar)                       [VV]        [VH]                │
+│ MODIS (optical) over Sentinel-1 VH       [Flood] [NDVI] [NDWI]           │
+│ GPM (precipitation) over Sentinel-1 VH   [24 h] [72 h] [7 days]          │
+│ Stored dates   [24 Sep] [12 Sep] [31 Aug] …   (coloured by level)        │
+│ Trends & forecast  [S1 mean VH] [MODIS water area] [GPM 72 h rain]       │
+│ Dashed line and band = forecast (method), not observed data.             │
+└──────────────────────────────────────────────────────────────────────────┘
 ```
 
-- Each row is one date with mergeable stacks across ≥2 datasets, showing stack count, output shape, layer count, and total input size. A row not yet merged shows a **Gabungkan** button; an already-merged row shows **Gabung Ulang** (re-merge with `overwrite=true`), a **Hapus** button, and its existing preview thumbnails. Rows with a `warnings` entry from the API show it inline (`merge-warn`).
-- **The API includes blocked (non-mergeable) candidates with their `blocked_reason`** (see REST API "Merge" above), but `renderMergePanel()` in `web/app.js` filters `data.candidates` down to `c.mergeable` before rendering anything — the panel only ever shows rows that can actually be merged right now, not near-misses. A caller of `GET /api/merge/candidates` directly does see the blocked ones.
-- Clicking **Gabungkan**/**Gabung Ulang** calls `POST /api/merge/run` with the exact `dataset_ids` shown in that row, not a re-derived candidate set, so the merge always matches what the user was looking at when they clicked.
-- An already-merged row with no preview images yet (output merged before preview rendering existed) shows a **Buat Preview** button instead of thumbnails, hitting `POST /api/merge/preview/{date}/rebuild` without re-merging. Thumbnails, once present, link to `/api/merge/preview/{date}/{filename}`.
-- **Hapus** calls `DELETE /api/merge/result/{date}` after a confirm() dialog — deletes only the merged HDF5 + its previews from `data/merged/`, never the source per-dataset FUSION stacks, so the row can always be regenerated with **Gabungkan** afterwards.
-- Merged output is never attributed to any one dataset card — it has its own row here because it spans several datasets.
-
-### Tab 3: Live (Live Ingestion)
-
-- Master toggle (`.switch` — capsule slider, cyan when ON)
-- Per-source enable rows (dot indicator + source name + processing level + last check/ingest timestamps)
-  - E.g., "Sentinel-1 [RAW+PROCESSED] · Last check: 2 hours ago · Last ingest: 1 hour ago"
-- Total storage size, overall last checked timestamp
-- Backfill form (date range + submit)
-- Recent ingested scenes table (`GET /api/live/scenes`, `loadLiveScenes()` in `web/app.js`), three columns only — the response (`LiveSceneItem`) doesn't carry source/stage/status, just tier:
-  | Tanggal | Tier | Ukuran |
-  |---|---|---|
-  | 2024-09-08 14:02 | PROCESSED | 125.0 MB |
-  | 2024-09-07 09:15 | RAW | 65.0 MB |
+- **Area selector + list** from `GET /api/live/areas`; **+ Add Area** opens the add modal.
+- **Meta row**: status pill (`Backfilling initial scenes`, `Checking for new scenes`, `Active`, `Waiting its turn`, `Error`), `scene_count/retention`, size, last check, status message; retention select (1–12, `PATCH`), **Check now** (`POST …/check`, disabled while running), **Report / JSON / Regenerate** for the area's dataset (once it has a scene), **Delete area** (confirm modal stating the bytes to be freed).
+- **Progress** while a cycle runs: phase, ok/failed counts, elapsed time, wait/stall notes, NASA token alert, and the latest 5 entries of `GET …/activity`. After a cycle, a short result line (`last_result`) stays for `LIVE_RESULT_SHOW_S`.
+- **Card** (`GET …/card?date=`): header with area status sentence; 8 preview tiles in rows of 2–3–3. A tile shows "nearest DD Mon" when MODIS/GPM came from another date, "not available" when missing, and **Retry download** when that MODIS/GPM source FAILED (`POST …/scenes/{date}/retry`). Clicking a tile opens the lightbox with the legend and the condition sentence (category in bold, coloured by level) — sentences are not shown on the tiles themselves.
+- **Stored dates**: newest first; clicking switches the tiles and sentences; deleted scenes never appear.
+- **Charts**: three inline SVGs (`lmChartSVG`) — S1 mean VH (line), MODIS NDWI water area % (line), GPM 72 h rain (bars with alert/high threshold lines); dashed forecast with uncertainty band, selected date marked, hover tooltips.
+- An area with no processed scene yet shows "… is being prepared" with the progress bar.
+- Polls every 10 s only while some area is running, BACKFILLING or WAITING.
 
 ### Modals
 
-Glass surfaces (`border-radius: 10px; padding: 24px; width: 360px`), backdrop `rgba(6,9,16,0.55)` + `blur(4px)`. Used for:
-- Add location (2-tab: search via Nominatim / manual coordinates)
-- Delete location (soft-delete confirmation)
-- Delete dataset (with force-stop checkbox)
-- Cancel dataset
-- Clear live data
-
-All close on Escape key.
+Glass surfaces, backdrop blur; all close on Escape.
+- **Add New Location** (two tabs: *Search by Name* via OpenStreetMap/Nominatim, *Manual Coordinates* with optional pasted `min_lon, min_lat, max_lon, max_lat`)
+- **Delete this location?** (soft delete; existing datasets stay accessible)
+- **Delete this dataset?** (with "Force-stop any running process")
+- **Cancel this dataset?** (Keep Running / Yes, Cancel It)
+- **Add Live Area** (location select from saved locations + "Location not listed? Add a new one", optional name, scenes to keep 1–12 default 6, **Save & Start**)
+- **Generic confirm** for Live actions (delete area, etc.)
 
 ### Toasts
 
-Bottom-right stack. Glass surface with gradient border. Success = cyan tint, Error = coral tint. Auto-dismiss after 4.2s with `translateY` entrance animation.
+Bottom-right stack, glass surface. Success = cyan tint, error = coral tint. Auto-dismiss after ~4 s.
 
 ### UI Language
 
-Primary: **Indonesian (Bahasa Indonesia)**. All labels, tooltips, status messages.
-
-Status labels: Antrian (Queued), Sedang Diproses (Processing), Selesai (Completed), Gagal (Failed), Dijeda (Paused), Dibatalkan (Cancelled).
+**English** throughout the UI and API messages (switched from Bahasa Indonesia). Dates are formatted `en-GB`. Dataset status badges show the raw status in sentence case (Queued, Preparing, Downloading, Processing, Paused, Completed, Failed, Cancelled, Deleting).
 
 ### Responsive Behavior
 
-- **≤900px**: Single-column stack, map gap hidden, navbar trigger zone shrinks to 92px fixed height
-- **≤1180px**: Narrower side panels (232px), shorter map window
-- **≤560px**: Preview grid columns narrow to `minmax(140px, 1fr)`, option-row padding tightens
-- `prefers-reduced-motion`: All animations and transitions disabled
+- **≤1180px**: narrower side panels (232px), shorter map window
+- **≤900px**: single-column stack, map gap hidden, Live grid one column
+- **≤560–640px**: preview and Live tile grids drop to 1–2 columns, option rows tighten
+- `prefers-reduced-motion`: animations and transitions disabled
